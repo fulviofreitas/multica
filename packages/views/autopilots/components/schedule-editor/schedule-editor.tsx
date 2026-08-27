@@ -6,14 +6,11 @@ import {
   useMemo,
   useRef,
   useState,
-  type ComponentProps,
-  type ComponentType,
   type ReactNode,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Clock, Pencil } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
-import { Input } from "@multica/ui/components/ui/input";
 import {
   InputGroup,
   InputGroupAddon,
@@ -49,6 +46,8 @@ import {
 } from "./cron-mapping";
 import { classifyScheduleRejection } from "./validate";
 import { useDescribeSchedule } from "./describe";
+import { NumberField } from "./number-field";
+import { getSchedulePreviewState } from "./preview-state";
 import {
   clampWindow,
   defaultAtTime,
@@ -138,91 +137,6 @@ function ScheduleField({
           handing its 8px to the visible control and inflating the block. */}
       <div className="flex min-w-0 flex-col gap-2">{children}</div>
     </fieldset>
-  );
-}
-
-/** Number field whose DOM text and model value cannot drift apart: clearing it
- *  is allowed while typing, and blur reconciles the box with the model —
- *  clamping an out-of-range number into the field's bounds, and snapping back to
- *  the committed value when the box holds no number at all. Without the clamp,
- *  typing "24" into a 1–23 field would commit the 2 of the first keystroke and
- *  then reject the pair, leaving "every 2 hours" — a schedule the user never
- *  chose — behind. */
-function NumberField({
-  value,
-  min,
-  max,
-  onCommit,
-  className,
-  ariaLabel,
-  autoFocus,
-  // The box this field is drawn in. Standing alone it brings its own; inside an
-  // InputGroup the group owns the border, the ring and the focus slot, and
-  // InputGroupInput is the same field with all three given up.
-  component: Field = Input,
-}: {
-  value: number;
-  min: number;
-  max: number;
-  onCommit: (value: number) => void;
-  className?: string;
-  ariaLabel: string;
-  autoFocus?: boolean;
-  component?: ComponentType<ComponentProps<"input">>;
-}) {
-  const [text, setText] = useState(String(value));
-  const lastValueRef = useRef(value);
-  if (lastValueRef.current !== value) {
-    lastValueRef.current = value;
-    setText(String(value));
-  }
-  return (
-    <Field
-      type="number"
-      aria-label={ariaLabel}
-      // Caller-gated: set only when the user just revealed this field, never on
-      // first mount.
-      autoFocus={autoFocus}
-      min={min}
-      max={max}
-      value={text}
-      onChange={(e) => {
-        setText(e.target.value);
-        const n = parseInt(e.target.value, 10);
-        if (!Number.isNaN(n) && n >= min && n <= max) onCommit(n);
-      }}
-      // The native stepper stops dead at the bounds; every other field in this
-      // panel wraps, so these do too. Stepping off 31 gives day 1 back, not
-      // another press that does nothing.
-      onKeyDown={(e) => {
-        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-        e.preventDefault();
-        const typed = parseInt(text, 10);
-        // An out-of-range box is not somewhere to step FROM — stepping is what
-        // brings it back in, and it lands on the bound it overshot. Clamping
-        // first and then stepping would step off that bound instead, so the
-        // bound itself could never be reached: in a 1-31 field, an arrow on a
-        // typed "0" gave 2, and one on "40" gave 30.
-        const stepped =
-          Number.isNaN(typed) || typed >= min && typed <= max
-            ? (Number.isNaN(typed) ? value : typed) + (e.key === "ArrowUp" ? 1 : -1)
-            : Math.min(max, Math.max(min, typed));
-        const wrapped = stepped > max ? min : stepped < min ? max : stepped;
-        setText(String(wrapped));
-        if (wrapped !== lastValueRef.current) onCommit(wrapped);
-      }}
-      onBlur={() => {
-        const n = parseInt(text, 10);
-        if (Number.isNaN(n)) {
-          setText(String(lastValueRef.current));
-          return;
-        }
-        const clamped = Math.min(max, Math.max(min, n));
-        setText(String(clamped));
-        if (clamped !== lastValueRef.current) onCommit(clamped);
-      }}
-      className={className}
-    />
   );
 }
 
@@ -446,11 +360,6 @@ export function ScheduleEditor({
   const rejection = liveRejection ?? verdict?.rejection ?? null;
   const scheduleRejection = rejection !== null ? classifyScheduleRejection(rejection) : null;
   const cronErrorDetail = scheduleRejection?.detail ?? null;
-  const previewUnavailable =
-    previewIsCurrent &&
-    ((preview.error !== null && cronErrorDetail === null) ||
-      (preview.isSuccess && nextRuns === null));
-
   // The preview arrives one round trip after every edit. Unmounting the line
   // while it is in flight makes it blink out and back on each keystroke, so the
   // last answer stays on screen and its text is replaced in place. It is dimmed
@@ -480,14 +389,15 @@ export function ScheduleEditor({
       at: Date.parse(iso),
     }));
   }, [shownPreview, i18n.language]);
-  const previewIsPending = !previewIsSettled;
-  // Busy/dimming only makes sense over the list: the unavailable message never
-  // settles, and dimming it forever would read as a permanent loading state.
-  const previewShowsList =
-    cronErrorDetail === null &&
-    !previewUnavailable &&
-    shownPreview !== null &&
-    shownPreview.runs.length > 0;
+  const previewState = getSchedulePreviewState({
+    advanced,
+    current: previewIsCurrent,
+    status: preview.isSuccess ? "success" : preview.error !== null ? "error" : "pending",
+    nextRuns,
+    rejected: cronErrorDetail !== null,
+    accepted: serverAccepted,
+    hasShownRuns: shownPreview !== null && shownPreview.runs.length > 0,
+  });
 
   // A malformed timestamp must degrade to "no countdown", never to NaN, so every
   // value is checked before it becomes a Date (see the list below).
@@ -796,9 +706,9 @@ export function ScheduleEditor({
             // a statement about the expression: the server took it and the
             // controls cannot show it; we could not ask; we have not asked yet.
             <p>
-              {serverAccepted
+              {previewState.advancedNotice === "accepted"
                 ? t(($) => $.schedule_editor.advanced_hint)
-                : previewUnavailable
+                : previewState.advancedNotice === "unavailable"
                   ? t(($) => $.schedule_editor.advanced_unverified)
                   : t(($) => $.schedule_editor.advanced_checking)}
             </p>
@@ -817,20 +727,20 @@ export function ScheduleEditor({
             instead of tearing the section down, so a re-render of the same
             schedule never flashes — it just dims and reports busy until the
             answer is current. */}
-        {cronErrorDetail === null && (
+        {previewState.body !== "hidden" && (
         <div
-          aria-busy={previewShowsList ? previewIsPending : undefined}
+          aria-busy={previewState.body === "runs" ? previewState.busy : undefined}
           className={cn(
             "mt-2.5 min-h-14 border-t border-border/60 pt-2.5 transition-opacity",
-            previewShowsList && previewIsPending && "opacity-50",
+            previewState.body === "runs" && previewState.busy && "opacity-50",
           )}
         >
           <p className="mb-1.5 font-medium text-foreground">
             {t(($) => $.schedule_editor.next_runs_label)}
           </p>
-          {previewUnavailable ? (
+          {previewState.body === "unavailable" ? (
             <p>{t(($) => $.schedule_editor.preview_unavailable)}</p>
-          ) : shownPreview !== null && shownPreview.runs.length > 0 ? (
+          ) : previewState.body === "runs" && shownPreview !== null ? (
             // A grid, not per-row flex: the localized dates are not fixed-width,
             // so only a shared column can line the countdowns up with each
             // other. max-content sizes that column to the widest date.
@@ -855,7 +765,7 @@ export function ScheduleEditor({
                 </li>
               ))}
             </ul>
-          ) : previewIsSettled ? (
+          ) : previewState.body === "empty" ? (
             // An empty list from a readable response: valid syntax, never fires.
             <p>{t(($) => $.schedule_editor.no_upcoming_runs)}</p>
           ) : null}
