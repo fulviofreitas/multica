@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Flat table facets must be evaluated before LIMIT/OFFSET and COUNT. This
@@ -104,18 +106,12 @@ func TestListIssues_TableFacetsAreServerSide(t *testing.T) {
 			url.QueryEscape(metadata),
 			query,
 		)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var response struct {
 			Issues []IssueResponse `json:"issues"`
 			Total  int64           `json:"total"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&response)
 		ids := make([]string, 0, len(response.Issues))
 		for _, issue := range response.Issues {
 			ids = append(ids, issue.ID)
@@ -267,14 +263,11 @@ func TestQueryIssues_PostTwinMatchesGet(t *testing.T) {
 	}
 
 	// Malformed body fails closed.
-	badRecorder := httptest.NewRecorder()
+
 	badRequest := httptest.NewRequest("POST", "/api/issues/query", strings.NewReader("not json"))
 	badRequest.Header.Set("X-User-ID", testUserID)
 	badRequest.Header.Set("X-Workspace-ID", testWorkspaceID)
-	testHandler.QueryIssues(badRecorder, badRequest)
-	if badRecorder.Code != http.StatusBadRequest {
-		t.Fatalf("malformed body: expected 400, got %d", badRecorder.Code)
-	}
+	testutil.Call(t, testHandler.QueryIssues, badRequest).Want(http.StatusBadRequest)
 }
 
 // Offset pages are only stable when the full ORDER BY is deterministic. All
@@ -327,8 +320,7 @@ func TestListIssues_OffsetPaginationStableOnCreatedAtTies(t *testing.T) {
 			"/api/issues?workspace_id=%s&metadata=%s&sort=status&direction=asc&limit=2&offset=%d",
 			testWorkspaceID, url.QueryEscape(metadata), offset,
 		)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("ListIssues offset=%d: expected 200, got %d: %s", offset, w.Code, w.Body.String())
 		}
@@ -336,9 +328,7 @@ func TestListIssues_OffsetPaginationStableOnCreatedAtTies(t *testing.T) {
 			Issues []IssueResponse `json:"issues"`
 			Total  int64           `json:"total"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&response)
 		if response.Total != totalIssues {
 			t.Fatalf("offset=%d total = %d, want %d", offset, response.Total, totalIssues)
 		}

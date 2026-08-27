@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type terminalWakeupRecorder struct {
@@ -48,14 +49,7 @@ func TestTerminalTransitionsNotifyRuntime(t *testing.T) {
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position, assignee_type, assignee_id)
-		VALUES ($1, 'terminal wakeup fixture', 'in_progress', 'none', $2, 'member', 999099, 0, 'agent', $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, agentID).Scan(&issueID); err != nil {
-		t.Fatalf("setup: create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'terminal wakeup fixture'"), "status": testutil.Raw("'in_progress'"), "priority": testutil.Raw("'none'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": testutil.Raw("999099"), "position": testutil.Raw("0"), "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID})
 
 	var taskID string
 	if err := testPool.QueryRow(ctx, `

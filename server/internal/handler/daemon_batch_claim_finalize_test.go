@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type batchClaimReceiptResponse struct {
@@ -31,9 +32,7 @@ func TestClaimTasksByRuntime_MaxTasksZeroClaimsNothing(t *testing.T) {
 	taskID := seedQueuedIssueTask(t, ctx, a, rt, i)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, 0)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -58,9 +57,7 @@ func TestClaimTasksByRuntime_MaxTasksNegativeIsBadRequest(t *testing.T) {
 	}
 	rt := createClaimReclaimRuntime(t, context.Background(), "Batch neg rt")
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, -1)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for negative max_tasks, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 // TestClaimTasksByRuntime_SkipsInvalidRuntimeID pins the MUL-4257 review fix:
@@ -76,9 +73,7 @@ func TestClaimTasksByRuntime_SkipsInvalidRuntimeID(t *testing.T) {
 	seedQueuedIssueTask(t, ctx, a, rt, i)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{"not-a-uuid", rt}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 (invalid id skipped, not 500), got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -93,24 +88,10 @@ func TestClaimTasksByRuntime_SkipsInvalidRuntimeID(t *testing.T) {
 func seedCommentBackedQueuedTask(t *testing.T, ctx context.Context, agentID, runtimeID, issueID string) (string, string) {
 	t.Helper()
 	var commentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
-		VALUES ($1, $2, 'member', $3, 'please handle this')
-		RETURNING id
-	`, testWorkspaceID, issueID, testUserID).Scan(&commentID); err != nil {
-		t.Fatalf("seed comment: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID) })
+	commentID = dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": testutil.Raw("'member'"), "author_id": testUserID, "content": testutil.Raw("'please handle this'")})
 
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, trigger_comment_id, status, priority)
-		VALUES ($1, $2, $3, $4, 'queued', 0)
-		RETURNING id
-	`, agentID, runtimeID, issueID, commentID).Scan(&taskID); err != nil {
-		t.Fatalf("seed comment-backed task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "trigger_comment_id": commentID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("0")})
 	return taskID, commentID
 }
 
@@ -141,9 +122,7 @@ func TestClaimTasksByRuntime_PersistsCommentDeliveryReceipt(t *testing.T) {
 	taskID, commentID := seedCommentBackedQueuedTask(t, ctx, a, rt, i)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -176,30 +155,14 @@ func TestClaimTasksByRuntime_StaleReclaimRecordsDeliveryReceipt(t *testing.T) {
 	a, i := createClaimReclaimAgentAndIssue(t, ctx, rt, "Batch stale-receipt agent")
 
 	var commentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
-		VALUES ($1, $2, 'member', $3, 'stale reclaim comment')
-		RETURNING id
-	`, testWorkspaceID, i, testUserID).Scan(&commentID); err != nil {
-		t.Fatalf("seed comment: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID) })
+	commentID = dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": i, "author_type": testutil.Raw("'member'"), "author_id": testUserID, "content": testutil.Raw("'stale reclaim comment'")})
 
 	// Stale dispatched, comment-backed, never started, past the 90s window.
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, trigger_comment_id, status, priority, dispatched_at, started_at)
-		VALUES ($1, $2, $3, $4, 'dispatched', 0, now() - interval '120 seconds', NULL)
-		RETURNING id
-	`, a, rt, i, commentID).Scan(&taskID); err != nil {
-		t.Fatalf("seed stale dispatched comment task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": a, "runtime_id": rt, "issue_id": i, "trigger_comment_id": commentID, "status": testutil.Raw("'dispatched'"), "priority": testutil.Raw("0"), "dispatched_at": testutil.Raw("now() - interval '120 seconds'"), "started_at": testutil.Raw("NULL")})
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -222,14 +185,7 @@ func TestClaimTasksByRuntime_SkipsRuntimeOwnedByAnotherDaemon(t *testing.T) {
 
 	// Runtime bound to a different daemon in the same (handler-test) workspace.
 	var rt string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
-		VALUES ($1, 'other-daemon-machine', 'Other daemon RT', 'cloud', 'handler_test_runtime', 'online', 'x', '{}'::jsonb, now(), 'private', $2)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&rt); err != nil {
-		t.Fatalf("create other-daemon runtime: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_runtime WHERE id = $1`, rt) })
+	rt = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("'other-daemon-machine'"), "name": testutil.Raw("'Other daemon RT'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'handler_test_runtime'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'x'"), "metadata": testutil.Raw("'{}'::jsonb"), "last_seen_at": testutil.Raw("now()"), "visibility": testutil.Raw("'private'"), "owner_id": testUserID})
 
 	a, i := createClaimReclaimAgentAndIssue(t, ctx, rt, "Other daemon agent")
 	taskID := seedQueuedIssueTask(t, ctx, a, rt, i)
@@ -237,9 +193,7 @@ func TestClaimTasksByRuntime_SkipsRuntimeOwnedByAnotherDaemon(t *testing.T) {
 	// postBatchClaim sends daemon_id = batchClaimTestDaemonID ("batch-claim-review"),
 	// which differs from the runtime's "other-daemon-machine".
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -262,14 +216,11 @@ func TestClaimTasksByRuntime_RequiresDaemonID(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/claim",
 		map[string]any{"runtime_ids": []string{}, "max_tasks": 5},
 		testWorkspaceID, batchClaimTestDaemonID)
-	testHandler.ClaimTasksByRuntime(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when daemon_id is missing, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ClaimTasksByRuntime, req).Want(http.StatusBadRequest)
 }
 
 // TestClaimTasksByRuntime_RepairsStaleCommentPlan pins the MUL-4257 review
@@ -291,14 +242,7 @@ func TestClaimTasksByRuntime_RepairsStaleCommentPlan(t *testing.T) {
 
 	// A surviving member comment on the issue.
 	var survivorID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
-		VALUES ($1, $2, 'member', $3, 'please still handle this')
-		RETURNING id
-	`, testWorkspaceID, issueID, testUserID).Scan(&survivorID); err != nil {
-		t.Fatalf("seed survivor comment: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, survivorID) })
+	survivorID = dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": testutil.Raw("'member'"), "author_id": testUserID, "content": testutil.Raw("'please still handle this'")})
 
 	// Stale plan: trigger_comment_id NULL, only coalesced survivor remains.
 	var staleID string
@@ -313,9 +257,7 @@ func TestClaimTasksByRuntime_RepairsStaleCommentPlan(t *testing.T) {
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID) })
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rt}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimReceiptResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)

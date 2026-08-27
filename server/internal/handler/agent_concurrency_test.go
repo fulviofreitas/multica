@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestCreateAgent_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
@@ -42,11 +42,7 @@ func TestCreateAgent_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
 				body["max_concurrent_tasks"] = tt.value
 			}
 
-			w := httptest.NewRecorder()
-			testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-			if w.Code != tt.wantCode {
-				t.Fatalf("status = %d, want %d: %s", w.Code, tt.wantCode, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(tt.wantCode)
 
 			if tt.wantCode == http.StatusBadRequest {
 				if !strings.Contains(w.Body.String(), "between 1 and 50") {
@@ -56,9 +52,7 @@ func TestCreateAgent_MaxConcurrentTasksBoundsAndDefault(t *testing.T) {
 			}
 
 			var response AgentResponse
-			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
+			w.Decode(&response)
 			t.Cleanup(func() {
 				testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, response.ID)
 			})
@@ -94,15 +88,11 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 
 	for _, value := range []int32{0, -1, 51} {
 		t.Run(fmt.Sprintf("rejects_%d", value), func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
 				"max_concurrent_tasks": value,
 			}), "id", agentID)
-			testHandler.UpdateAgent(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusBadRequest)
 			if !strings.Contains(w.Body.String(), "between 1 and 50") {
 				t.Fatalf("error should explain the 1-50 range: %s", w.Body.String())
 			}
@@ -114,15 +104,11 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 
 	for _, value := range []int32{1, 50} {
 		t.Run(fmt.Sprintf("accepts_%d", value), func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
 				"max_concurrent_tasks": value,
 			}), "id", agentID)
-			testHandler.UpdateAgent(w, req)
-
-			if w.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 			if got := readPersisted(); got != value {
 				t.Fatalf("persisted max_concurrent_tasks = %d, want %d", got, value)
 			}
@@ -130,30 +116,22 @@ func TestUpdateAgent_MaxConcurrentTasksBoundsAndOmission(t *testing.T) {
 	}
 
 	t.Run("omitted preserves existing value", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
 			"description": "concurrency unchanged",
 		}), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		if got := readPersisted(); got != 50 {
 			t.Fatalf("omitted max_concurrent_tasks changed value to %d, want 50", got)
 		}
 	})
 
 	t.Run("null preserves existing value", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPut, "/api/agents/"+agentID, map[string]any{
 			"max_concurrent_tasks": nil,
 		}), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		if got := readPersisted(); got != 50 {
 			t.Fatalf("null max_concurrent_tasks changed value to %d, want 50", got)
 		}

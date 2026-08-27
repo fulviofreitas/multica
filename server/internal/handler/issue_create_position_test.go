@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -28,13 +29,13 @@ func TestCreateIssuePositionTopOfColumn(t *testing.T) {
 	// previous one, which is exactly the desired behavior.
 	createIssueAndGetPosition := func(t *testing.T, title string) (string, float64) {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 			"title":    title,
 			"status":   "todo",
 			"priority": "low",
 		})
-		testHandler.CreateIssue(w, req)
+		w := testutil.Call(t, testHandler.CreateIssue, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateIssue %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
 		}
@@ -68,16 +69,13 @@ func TestCreateIssuePositionTopOfColumn(t *testing.T) {
 // API should land below the explicit minimum, not at 0.
 func TestCreateIssuePositionBelowExplicitMinimum(t *testing.T) {
 	// Create a seed issue via the API.
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    "position-seed issue",
 		"status":   "todo",
 		"priority": "low",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("seed CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var seed IssueResponse
 	json.NewDecoder(w.Body).Decode(&seed)
 	t.Cleanup(func() { deleteTestIssue(t, seed.ID) })
@@ -93,16 +91,13 @@ func TestCreateIssuePositionBelowExplicitMinimum(t *testing.T) {
 	}
 
 	// Now create a new issue. It must land below -9999, not at 0.
-	w2 := httptest.NewRecorder()
+
 	req2 := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    "position-new issue",
 		"status":   "todo",
 		"priority": "low",
 	})
-	testHandler.CreateIssue(w2, req2)
-	if w2.Code != http.StatusCreated {
-		t.Fatalf("new CreateIssue: expected 201, got %d: %s", w2.Code, w2.Body.String())
-	}
+	w2 := testutil.Call(t, testHandler.CreateIssue, req2).Want(http.StatusCreated)
 	var newIssue IssueResponse
 	json.NewDecoder(w2.Body).Decode(&newIssue)
 	t.Cleanup(func() { deleteTestIssue(t, newIssue.ID) })
@@ -130,9 +125,7 @@ func TestAutopilotCreateIssuePositionBelowCurrentMinimum(t *testing.T) {
 		"priority": "low",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("seed CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var seed IssueResponse
 	json.NewDecoder(w.Body).Decode(&seed)
 	t.Cleanup(func() { deleteTestIssue(t, seed.ID) })
@@ -161,9 +154,7 @@ func TestAutopilotCreateIssuePositionBelowCurrentMinimum(t *testing.T) {
 		"issue_title_template": autopilotIssueTitle,
 	})
 	testHandler.CreateAutopilot(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var autopilot AutopilotResponse
 	if err := json.NewDecoder(w.Body).Decode(&autopilot); err != nil {
 		t.Fatalf("decode autopilot: %v", err)

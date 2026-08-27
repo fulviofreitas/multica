@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -38,16 +39,7 @@ func chatPendingCtxAs(t *testing.T, req *http.Request, userID string) *http.Requ
 func insertChatSessionAs(t *testing.T, agentID, creatorID string) string {
 	t.Helper()
 	var sessionID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
-		VALUES ($1, $2, $3, 'pending-tasks-test', 'active')
-		RETURNING id
-	`, testWorkspaceID, agentID, creatorID).Scan(&sessionID); err != nil {
-		t.Fatalf("insert chat session: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
-	})
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": creatorID, "title": testutil.Raw("'pending-tasks-test'"), "status": testutil.Raw("'active'")})
 	return sessionID
 }
 
@@ -56,16 +48,7 @@ func insertChatSessionAs(t *testing.T, agentID, creatorID string) string {
 func insertPendingChatTask(t *testing.T, agentID, sessionID, status string) string {
 	t.Helper()
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, $3, 0, $4)
-		RETURNING id
-	`, agentID, handlerTestRuntimeID(t), status, sessionID).Scan(&taskID); err != nil {
-		t.Fatalf("insert pending chat task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": handlerTestRuntimeID(t), "status": status, "priority": testutil.Raw("0"), "chat_session_id": sessionID})
 	return taskID
 }
 
@@ -90,30 +73,13 @@ func insertQueuedChatInputWithAttachment(
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM chat_draft_restore WHERE id = $1`, messageID)
 	})
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO attachment (
-			workspace_id, uploader_type, uploader_id, filename, url,
-			content_type, size_bytes, chat_session_id, chat_message_id
-		)
-		VALUES (
-			$1, 'member', $2, 'queued.png', 'https://cdn.example.com/queued.png',
-			'image/png', 9, $3, $4
-		)
-		RETURNING id
-	`, testWorkspaceID, testUserID, sessionID, messageID).Scan(&attachmentID); err != nil {
-		t.Fatalf("insert queued attachment: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID)
-	})
+	attachmentID = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "uploader_type": testutil.Raw("'member'"), "uploader_id": testUserID, "filename": testutil.Raw("'queued.png'"), "url": testutil.Raw("'https://cdn.example.com/queued.png'"), "content_type": testutil.Raw("'image/png'"), "size_bytes": testutil.Raw("9"), "chat_session_id": sessionID, "chat_message_id": messageID})
 	return taskID, messageID, attachmentID
 }
 
 func decodePendingTasks(t *testing.T, w *httptest.ResponseRecorder) PendingChatTasksResponse {
 	t.Helper()
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp PendingChatTasksResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode pending tasks: %v", err)
@@ -123,9 +89,7 @@ func decodePendingTasks(t *testing.T, w *httptest.ResponseRecorder) PendingChatT
 
 func decodeHasPending(t *testing.T, w *httptest.ResponseRecorder) bool {
 	t.Helper()
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp HasPendingChatTasksResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode has-any: %v", err)
@@ -233,9 +197,7 @@ func TestGetPendingChatTask_ReturnsActiveHeadAndFIFOQueue(t *testing.T) {
 	w := httptest.NewRecorder()
 	testHandler.GetPendingChatTask(w, chatPendingCtxAs(t, req, testUserID))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp PendingChatTaskResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode pending task queue: %v", err)
@@ -274,18 +236,9 @@ func TestGetPendingChatTask_ReturnsActiveHeadAndFIFOQueue(t *testing.T) {
 		"sessionId", sessionID,
 		"taskId", laterID,
 	)
-	prioritizeW := httptest.NewRecorder()
-	testHandler.PrioritizeQueuedChatTask(
-		prioritizeW,
-		chatPendingCtxAs(t, prioritizeReq, testUserID),
-	)
-	if prioritizeW.Code != http.StatusOK {
-		t.Fatalf("expected prioritize 200, got %d: %s", prioritizeW.Code, prioritizeW.Body.String())
-	}
+	prioritizeW := testutil.Call(t, testHandler.PrioritizeQueuedChatTask, chatPendingCtxAs(t, prioritizeReq, testUserID)).Want(http.StatusOK)
 	var prioritized PrioritizeQueuedChatTaskResponse
-	if err := json.Unmarshal(prioritizeW.Body.Bytes(), &prioritized); err != nil {
-		t.Fatalf("decode prioritize response: %v", err)
-	}
+	prioritizeW.JSON(&prioritized)
 	if prioritized.TaskID != laterID || prioritized.ActiveTaskID != activeID {
 		t.Fatalf("prioritize response is not server-authoritative: %+v", prioritized)
 	}
@@ -474,17 +427,11 @@ func TestPrioritizeQueuedChatTask_StaleTargetPreservesExistingPriority(t *testin
 		"sessionId", sessionID,
 		"taskId", staleID,
 	)
-	w := httptest.NewRecorder()
-	testHandler.PrioritizeQueuedChatTask(w, chatPendingCtxAs(t, req, testUserID))
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.PrioritizeQueuedChatTask, chatPendingCtxAs(t, req, testUserID)).Want(http.StatusConflict)
 	var conflictBody struct {
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &conflictBody); err != nil {
-		t.Fatalf("decode stale-task conflict: %v", err)
-	}
+	w.JSON(&conflictBody)
 	if conflictBody.Error != "task is no longer queued" {
 		t.Fatalf("stale-task error = %q", conflictBody.Error)
 	}
@@ -530,17 +477,11 @@ func TestPrioritizeQueuedChatTask_RejectsWhileVisibleHeadIsUnclaimed(t *testing.
 		"sessionId", sessionID,
 		"taskId", targetID,
 	)
-	w := httptest.NewRecorder()
-	testHandler.PrioritizeQueuedChatTask(w, chatPendingCtxAs(t, req, testUserID))
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.PrioritizeQueuedChatTask, chatPendingCtxAs(t, req, testUserID)).Want(http.StatusConflict)
 	var conflictBody struct {
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &conflictBody); err != nil {
-		t.Fatalf("decode unclaimed-head conflict: %v", err)
-	}
+	w.JSON(&conflictBody)
 	if conflictBody.Error != "there is no active reply to replace" {
 		t.Fatalf("unclaimed-head error = %q", conflictBody.Error)
 	}
@@ -582,11 +523,7 @@ func TestPrioritizeQueuedChatTask_BroadcastsQueueInvalidation(t *testing.T) {
 		"sessionId", sessionID,
 		"taskId", taskID,
 	)
-	w := httptest.NewRecorder()
-	testHandler.PrioritizeQueuedChatTask(w, chatPendingCtxAs(t, req, testUserID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.PrioritizeQueuedChatTask, chatPendingCtxAs(t, req, testUserID)).Want(http.StatusOK)
 
 	select {
 	case event := <-got:
@@ -635,11 +572,7 @@ func TestClearQueuedChatTasks_PreservesUnclaimedHeadAndDeletesFollowUps(t *testi
 		"sessionId",
 		sessionID,
 	)
-	w := httptest.NewRecorder()
-	testHandler.ClearQueuedChatTasks(w, chatPendingCtxAs(t, req, testUserID))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ClearQueuedChatTasks, chatPendingCtxAs(t, req, testUserID)).Want(http.StatusNoContent)
 
 	if got := taskStatus(t, taskIDs[0]); got != "queued" {
 		t.Fatalf("unclaimed head status = %q, want queued", got)

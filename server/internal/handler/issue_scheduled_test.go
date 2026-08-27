@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Backs the Project Gantt view: only issues with at least one of
@@ -21,12 +21,7 @@ func TestListIssues_ScheduledFilter(t *testing.T) {
 	// with due_date only, and one with neither. Using a dedicated project so
 	// the assertion isn't polluted by other issues seeded by parallel tests.
 	var projectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("Gantt Scheduled %d", suffix)).Scan(&projectID); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": fmt.Sprintf("Gantt Scheduled %d", suffix)})
 
 	insertIssue := func(title string, startDate, dueDate *time.Time) string {
 		var number int
@@ -58,18 +53,12 @@ func TestListIssues_ScheduledFilter(t *testing.T) {
 	list := func(query string) (ids []string, total int64) {
 		path := fmt.Sprintf("/api/issues?workspace_id=%s&project_id=%s&limit=500%s",
 			testWorkspaceID, projectID, query)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var resp struct {
 			Issues []IssueResponse `json:"issues"`
 			Total  int64           `json:"total"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode list response: %v", err)
-		}
+		w.Decode(&resp)
 		for _, iss := range resp.Issues {
 			ids = append(ids, iss.ID)
 		}
@@ -108,12 +97,7 @@ func TestListIssuesReturnsStage(t *testing.T) {
 	suffix := time.Now().UnixNano()
 
 	var projectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("Stage List %d", suffix)).Scan(&projectID); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": fmt.Sprintf("Stage List %d", suffix)})
 
 	var number int
 	if err := testPool.QueryRow(ctx, `
@@ -125,29 +109,16 @@ func TestListIssuesReturnsStage(t *testing.T) {
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, position, number, project_id, stage)
-		VALUES ($1, $2, 'todo', 'none', 'member', $3, 0, $4, $5, 2)
-		RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("stage-list-%d", suffix), testUserID, number, projectID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": fmt.Sprintf("stage-list-%d", suffix), "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'none'"), "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "position": testutil.Raw("0"), "number": number, "project_id": projectID, "stage": testutil.Raw("2")})
 
 	path := fmt.Sprintf("/api/issues?workspace_id=%s&project_id=%s&limit=500", testWorkspaceID, projectID)
-	w := httptest.NewRecorder()
-	testHandler.ListIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 
 	var resp struct {
 		Issues []IssueResponse `json:"issues"`
 		Total  int64           `json:"total"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.Total != 1 || len(resp.Issues) != 1 {
 		t.Fatalf("expected one staged issue, total=%d len=%d", resp.Total, len(resp.Issues))
 	}

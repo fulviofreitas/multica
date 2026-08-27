@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // seedRunningChatTask inserts a running chat task (chat_session_id set) for the
@@ -16,16 +18,7 @@ import (
 func seedRunningChatTask(t *testing.T, agentID, sessionID string) string {
 	t.Helper()
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id, started_at)
-		VALUES ($1, $2, 'running', 0, $3, now())
-		RETURNING id
-	`, agentID, handlerTestRuntimeID(t), sessionID).Scan(&taskID); err != nil {
-		t.Fatalf("seed running chat task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": handlerTestRuntimeID(t), "status": testutil.Raw("'running'"), "priority": testutil.Raw("0"), "chat_session_id": sessionID, "started_at": testutil.Raw("now()")})
 	return taskID
 }
 
@@ -35,16 +28,7 @@ func seedRunningChatTask(t *testing.T, agentID, sessionID string) string {
 func seedAgentChatAttachment(t *testing.T, agentID, sessionID, taskID string) string {
 	t.Helper()
 	var id string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO attachment (workspace_id, task_id, chat_session_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-		VALUES ($1, $2, $3, 'agent', $4, 'chart.png', 'https://cdn.example/chart.png', 'image/png', 123)
-		RETURNING id
-	`, testWorkspaceID, taskID, sessionID, agentID).Scan(&id); err != nil {
-		t.Fatalf("seed agent chat attachment: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, id)
-	})
+	id = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "task_id": taskID, "chat_session_id": sessionID, "uploader_type": testutil.Raw("'agent'"), "uploader_id": agentID, "filename": testutil.Raw("'chart.png'"), "url": testutil.Raw("'https://cdn.example/chart.png'"), "content_type": testutil.Raw("'image/png'"), "size_bytes": testutil.Raw("123")})
 	return id
 }
 
@@ -134,9 +118,7 @@ func TestUploadFile_TaskScopedChatAttachment(t *testing.T) {
 
 	t.Run("agent uploads for own chat task", func(t *testing.T) {
 		w := uploadWithTaskID(t, agentID, taskID, taskID)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 		var resp AttachmentResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("decode: %v; body: %s", err, w.Body.String())
@@ -168,9 +150,7 @@ func TestUploadFile_TaskScopedChatAttachment(t *testing.T) {
 		// A plain member request (no task-token headers) is rejected by the
 		// task-token boundary before any task lookup.
 		w := uploadWithTaskID(t, "", "", taskID)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("member upload: expected 403, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 	})
 
 	t.Run("forged agent headers without task token rejected", func(t *testing.T) {
@@ -188,9 +168,7 @@ func TestUploadFile_TaskScopedChatAttachment(t *testing.T) {
 			"X-Task-ID":      taskID,
 			// deliberately NO X-Actor-Source
 		})
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("forged non-task-token upload: expected 403, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 	})
 
 	t.Run("different agent's task rejected", func(t *testing.T) {
@@ -199,9 +177,7 @@ func TestUploadFile_TaskScopedChatAttachment(t *testing.T) {
 		// Actor is agentID (valid X-Agent-ID/X-Task-ID pair), but the upload
 		// targets a task owned by a different agent.
 		w := uploadWithTaskID(t, agentID, taskID, otherTask)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("foreign task upload: expected 403, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 	})
 
 	t.Run("same agent's other chat task rejected", func(t *testing.T) {
@@ -212,24 +188,18 @@ func TestUploadFile_TaskScopedChatAttachment(t *testing.T) {
 		otherSession := createHandlerTestChatSession(t, agentID)
 		otherChatTask := seedRunningChatTask(t, agentID, otherSession)
 		w := uploadWithTaskID(t, agentID, taskID, otherChatTask)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("cross-task upload: expected 403, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 	})
 
 	t.Run("non-chat task rejected", func(t *testing.T) {
 		issueTask := createHandlerTestTaskForAgent(t, agentID) // no chat_session_id
 		w := uploadWithTaskID(t, agentID, issueTask, issueTask)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("non-chat task upload: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 	})
 
 	t.Run("malformed task_id rejected", func(t *testing.T) {
 		w := uploadWithTaskID(t, agentID, taskID, "not-a-uuid")
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("bad task_id: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 	})
 }
 
@@ -330,14 +300,7 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 		// A loose session attachment with NO task_id (e.g. legacy row) must be
 		// left alone — binding is scoped to the producing task.
 		var looseID string
-		if err := testPool.QueryRow(context.Background(), `
-			INSERT INTO attachment (workspace_id, chat_session_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-			VALUES ($1, $2, 'agent', $3, 'loose.png', 'https://cdn.example/loose.png', 'image/png', 10)
-			RETURNING id
-		`, testWorkspaceID, sessionID, agentID).Scan(&looseID); err != nil {
-			t.Fatalf("seed loose attachment: %v", err)
-		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, looseID) })
+		looseID = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "chat_session_id": sessionID, "uploader_type": testutil.Raw("'agent'"), "uploader_id": agentID, "filename": testutil.Raw("'loose.png'"), "url": testutil.Raw("'https://cdn.example/loose.png'"), "content_type": testutil.Raw("'image/png'"), "size_bytes": testutil.Raw("10")})
 
 		if _, err := testHandler.TaskService.CompleteTask(context.Background(),
 			parseUUID(taskID), []byte(`{"output":"done"}`), "", "", "", false, "", ""); err != nil {
@@ -356,22 +319,9 @@ func TestCompleteTask_BindsChatAttachments(t *testing.T) {
 		// never re-pointed at the new reply.
 		taskID := seedRunningChatTask(t, agentID, sessionID)
 		var claimedID string
-		if err := testPool.QueryRow(context.Background(), `
-			INSERT INTO attachment (workspace_id, task_id, chat_session_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-			VALUES ($1, $2, $3, 'agent', $4, 'claimed.png', 'https://cdn.example/claimed.png', 'image/png', 10)
-			RETURNING id
-		`, testWorkspaceID, taskID, sessionID, agentID).Scan(&claimedID); err != nil {
-			t.Fatalf("seed attachment: %v", err)
-		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, claimedID) })
+		claimedID = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "task_id": taskID, "chat_session_id": sessionID, "uploader_type": testutil.Raw("'agent'"), "uploader_id": agentID, "filename": testutil.Raw("'claimed.png'"), "url": testutil.Raw("'https://cdn.example/claimed.png'"), "content_type": testutil.Raw("'image/png'"), "size_bytes": testutil.Raw("10")})
 		var priorMsgID string
-		if err := testPool.QueryRow(context.Background(), `
-			INSERT INTO chat_message (chat_session_id, role, content)
-			VALUES ($1, 'assistant', 'prior') RETURNING id
-		`, sessionID).Scan(&priorMsgID); err != nil {
-			t.Fatalf("seed prior message: %v", err)
-		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM chat_message WHERE id = $1`, priorMsgID) })
+		priorMsgID = dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": testutil.Raw("'assistant'"), "content": testutil.Raw("'prior'")})
 		if _, err := testPool.Exec(context.Background(),
 			`UPDATE attachment SET chat_message_id = $1 WHERE id = $2`, priorMsgID, claimedID); err != nil {
 			t.Fatalf("pre-bind attachment: %v", err)

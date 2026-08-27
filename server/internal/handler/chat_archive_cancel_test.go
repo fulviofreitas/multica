@@ -39,6 +39,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -396,11 +397,7 @@ func archiveChatSession(t *testing.T, sessionID string) {
 	req = withChatTestWorkspaceCtx(t, req)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	w := httptest.NewRecorder()
-	testHandler.SetChatSessionArchived(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("archive returned %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SetChatSessionArchived, req).Want(http.StatusOK)
 }
 
 func (f *archiveCancelFixture) taskStatus(t *testing.T, taskID string) string {
@@ -502,16 +499,7 @@ func TestNoHistoryNoteNamesTheActualChannel(t *testing.T) {
 	}
 
 	var instID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO channel_installation (workspace_id, agent_id, channel_type, config, status, installer_user_id)
-		VALUES ($1, $2, 'wecom', '{"app_id":"bot-history-note"}'::jsonb, 'active', $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&instID); err != nil {
-		t.Fatalf("create installation: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM channel_installation WHERE id = $1`, instID)
-	})
+	instID = dbfx.Insert(t, "channel_installation", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "channel_type": testutil.Raw("'wecom'"), "config": testutil.Raw("'{\"app_id\":\"bot-history-note\"}'::jsonb"), "status": testutil.Raw("'active'"), "installer_user_id": testUserID})
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO channel_chat_session_binding
 			(chat_session_id, installation_id, channel_type, channel_chat_id, chat_type)

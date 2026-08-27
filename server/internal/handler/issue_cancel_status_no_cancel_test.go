@@ -3,9 +3,10 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // activeTaskStatuses are the non-terminal states CancelAgentTasksByIssue sweeps
@@ -61,15 +62,11 @@ func TestUpdateIssueCancelStatusDoesNotCancelActiveTasks(t *testing.T) {
 			ownerTask := insertIssueTaskWithStatus(t, ownerAgent, issueID, status)
 			mentionTask := insertRunningIssueTask(t, mentionAgent, issueID)
 
-			w := httptest.NewRecorder()
 			req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{
 				"status": "cancelled",
 			})
 			req = withURLParam(req, "id", issueID)
-			testHandler.UpdateIssue(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("UpdateIssue cancel: expected 200, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 			if got := taskStatus(t, ownerTask); got != status {
 				t.Fatalf("assignee's %s task must survive issue → cancelled, got status %q", status, got)
@@ -100,17 +97,13 @@ func TestBatchUpdateIssueCancelStatusDoesNotCancelActiveTasks(t *testing.T) {
 		issueIDs = append(issueIDs, issueID)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
 		"issue_ids": issueIDs,
 		"updates": map[string]any{
 			"status": "cancelled",
 		},
 	})
-	testHandler.BatchUpdateIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("BatchUpdateIssues cancel: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 
 	for status, taskID := range taskByStatus {
 		if got := taskStatus(t, taskID); got != status {

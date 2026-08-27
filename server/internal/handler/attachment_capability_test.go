@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/auth"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 const capabilityTestAttachmentID = "11111111-2222-3333-4444-555555555555"
@@ -199,9 +200,7 @@ func TestDownloadAttachmentWithCapability_ServesWithoutAuthentication(t *testing
 	req, w := newCapabilityRequest(id, capabilityQuery(t, id, time.Now()))
 	testHandler.DownloadAttachmentWithCapability(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if !bytes.Equal(w.Body.Bytes(), body) {
 		t.Fatalf("body = %q, want %q", w.Body.String(), body)
 	}
@@ -248,9 +247,7 @@ func TestDownloadAttachmentWithCapability_RejectsInvalidCapabilities(t *testing.
 			req, w := newCapabilityRequest(id, tc.query)
 			testHandler.DownloadAttachmentWithCapability(w, req)
 
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 			if bytes.Contains(w.Body.Bytes(), body) {
 				t.Fatal("rejected response leaked the attachment body")
 			}
@@ -269,9 +266,7 @@ func TestDownloadAttachmentWithCapability_PreservesRangeAndHeaders(t *testing.T)
 	req.Header.Set("Range", "bytes=100-199")
 	testHandler.DownloadAttachmentWithCapability(w, req)
 
-	if w.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want 206; body len=%d", w.Code, w.Body.Len())
-	}
+	testutil.Equal(t, w.Code, http.StatusPartialContent, "HTTP status")
 	if got := w.Header().Get("Content-Range"); got != "bytes 100-199/4096" {
 		t.Fatalf("Content-Range = %q", got)
 	}
@@ -297,13 +292,7 @@ func TestGetAttachmentByID_ProxyModeReturnsRedeemableCapability(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.GetAttachmentByID(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAttachmentByID, req).Want(http.StatusOK)
 	var resp AttachmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
@@ -348,13 +337,7 @@ func TestGetAttachmentByID_ProxyModeDownloadURLForcesAttachment(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.GetAttachmentByID(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAttachmentByID, req).Want(http.StatusOK)
 	var resp AttachmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
@@ -383,9 +366,7 @@ func TestGetAttachmentByID_ProxyModeDownloadURLForcesAttachment(t *testing.T) {
 	// Redeeming it forces an attachment disposition even for an image.
 	req2, w2 := newCapabilityRequest(id, parsed.Query())
 	testHandler.DownloadAttachmentWithCapability(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("redeem status = %d, want 200; body=%s", w2.Code, w2.Body.String())
-	}
+	testutil.Equal(t, w2.Code, http.StatusOK, "HTTP status")
 	if !bytes.Equal(w2.Body.Bytes(), body) {
 		t.Fatalf("redeemed body mismatch: got %q", w2.Body.String())
 	}
@@ -426,9 +407,7 @@ func TestDownloadAttachment_StillRequiresAuthentication(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.DownloadAttachment(w, req)
+	w := testutil.Call(t, testHandler.DownloadAttachment, req)
 
 	if w.Code == http.StatusOK {
 		t.Fatalf("unauthenticated request to the legacy download path succeeded: %s", w.Body.String())

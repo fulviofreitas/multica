@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateIssue_SquadPrivateLeader_PlainMemberBlocked verifies that a
@@ -15,32 +17,18 @@ func TestCreateIssue_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Create Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Create Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
-	w := httptest.NewRecorder()
 	r := newRequestAs(memberID, "POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":         "Should be blocked",
 		"assignee_type": "squad",
 		"assignee_id":   squadID,
 	})
-	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateIssue, r).Want(http.StatusForbidden)
 }
 
 // TestUpdateIssue_SquadPrivateLeader_PlainMemberBlocked verifies that a
@@ -49,45 +37,22 @@ func TestUpdateIssue_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Update Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Update Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create an unassigned issue as workspace owner.
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, 'update target')
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": testutil.Raw("'update target'")})
 
-	w := httptest.NewRecorder()
 	r := newRequestAs(memberID, "PATCH", "/api/issues/"+issueID, map[string]any{
 		"assignee_type": "squad",
 		"assignee_id":   squadID,
 	})
 	r = withURLParam(r, "id", issueID)
-	testHandler.UpdateIssue(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, r).Want(http.StatusForbidden)
 }
 
 // TestCreateIssue_SquadPrivateLeader_OwnerAllowed verifies that the LEADER
@@ -99,39 +64,24 @@ func TestCreateIssue_SquadPrivateLeader_OwnerAllowed(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, ownerID, _ := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Owner Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Owner Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// The AGENT OWNER assigns — allowed. (MUL-3963: workspace owner/admin no
 	// longer bypasses a private leader's invocation gate.)
-	w := httptest.NewRecorder()
+
 	r := newRequestAs(ownerID, "POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":         "Owner assigns private-leader squad",
 		"assignee_type": "squad",
 		"assignee_id":   squadID,
 	})
-	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, r).Want(http.StatusCreated)
 
 	var created IssueResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&created)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, created.ID)
 		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID)
@@ -150,16 +100,7 @@ func TestComment_SquadPrivateLeader_PlainMemberNoEnqueue(t *testing.T) {
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Comment Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Comment Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create issue assigned to the squad as workspace owner.
 	var issueID string
@@ -177,15 +118,12 @@ func TestComment_SquadPrivateLeader_PlainMemberNoEnqueue(t *testing.T) {
 	})
 
 	// Plain member posts a plain comment (not a @mention).
-	w := httptest.NewRecorder()
+
 	r := newRequestAs(memberID, "POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "any update on this?",
 	})
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// The private leader must NOT have a queued task.
 	var count int
@@ -217,16 +155,7 @@ func TestChildDone_SquadPrivateLeader_PlainMemberWakesLeader(t *testing.T) {
 	agentID, ownerID, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader ChildDone Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader ChildDone Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create parent issue assigned to the squad (as the AGENT OWNER, who is
 	// allowed to invoke the private leader under MUL-3963).
@@ -237,9 +166,7 @@ func TestChildDone_SquadPrivateLeader_PlainMemberWakesLeader(t *testing.T) {
 		"assignee_id":   squadID,
 	})
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create parent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var parent IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
 		t.Fatalf("decode parent: %v", err)
@@ -264,9 +191,7 @@ func TestChildDone_SquadPrivateLeader_PlainMemberWakesLeader(t *testing.T) {
 		"status":          "in_progress",
 	})
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var child IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
 		t.Fatalf("decode child: %v", err)
@@ -282,9 +207,7 @@ func TestChildDone_SquadPrivateLeader_PlainMemberWakesLeader(t *testing.T) {
 	})
 	r = withURLParam(r, "id", child.ID)
 	testHandler.UpdateIssue(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue (child done): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// The private leader MUST have a queued task on the parent — child-done
 	// wakes the parent's own leader regardless of who closed the child.
@@ -317,16 +240,7 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 	workerAgentID := createHandlerTestAgent(t, "squad-private-leader-childdone-worker", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader ChildDone AgentActor Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader ChildDone AgentActor Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Parent assigned to the squad by the agent owner (allowed under MUL-3963).
 	w := httptest.NewRecorder()
@@ -336,9 +250,7 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 		"assignee_id":   squadID,
 	})
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create parent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var parent IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
 		t.Fatalf("decode parent: %v", err)
@@ -364,9 +276,7 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 		"status":          "in_progress",
 	})
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var child IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
 		t.Fatalf("decode child: %v", err)
@@ -400,9 +310,7 @@ func TestChildDone_SquadPrivateLeader_AgentActorWakesLeader(t *testing.T) {
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", child.ID)
 	testHandler.UpdateIssue(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue (child done): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// The private leader MUST have a queued task on the parent.
 	var count int
@@ -429,16 +337,7 @@ func TestComment_SquadPrivateLeader_AgentActorAllowed(t *testing.T) {
 	otherAgentID := createHandlerTestAgent(t, "squad-private-leader-agent-actor", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Agent Actor Test', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Agent Actor Test'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create issue assigned to the squad.
 	var issueID string
@@ -472,17 +371,14 @@ func TestComment_SquadPrivateLeader_AgentActorAllowed(t *testing.T) {
 	})
 
 	// Agent posts a comment with an explicit squad mention.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "[@Squad](mention://squad/" + squadID + ") agent reporting in",
 	})
 	r.Header.Set("X-Agent-ID", otherAgentID)
 	r.Header.Set("X-Task-ID", taskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// The private leader SHOULD have a queued task — the agent-actor mention's
 	// top-of-chain originator is the leader's owner, so A2A-by-originator

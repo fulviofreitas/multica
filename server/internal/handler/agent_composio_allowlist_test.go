@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // allowlistFixture seeds an agent owned by a freshly-created user (not the
@@ -35,22 +37,7 @@ func allowlistFixture(t *testing.T) (agentID, agentOwnerID string) {
 		t.Fatalf("add owner as workspace member: %v", err)
 	}
 
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args
-		)
-		VALUES ($1, 'allowlist-test-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'workspace', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id
-	`, testWorkspaceID, handlerTestRuntimeID(t), agentOwnerID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'allowlist-test-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": handlerTestRuntimeID(t), "visibility": testutil.Raw("'workspace'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": agentOwnerID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 	return agentID, agentOwnerID
 }
 
@@ -91,9 +78,7 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 			"composio_toolkit_allowlist": []string{" Notion ", "NOTION", "github", ""},
 		},
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent owner write: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	stored, isNull := readAllowlistColumn(t, agentID)
 	if isNull {
 		t.Fatalf("after owner write, allowlist still NULL")
@@ -108,9 +93,7 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 		ownerID, http.MethodPut, "/api/agents/"+agentID,
 		map[string]any{"composio_toolkit_allowlist": []string{}},
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent owner empty write: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	stored, isNull = readAllowlistColumn(t, agentID)
 	if isNull {
 		t.Fatalf("empty array must persist as empty TEXT[], not NULL")
@@ -125,9 +108,7 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 		ownerID, http.MethodPut, "/api/agents/"+agentID,
 		map[string]any{"composio_toolkit_allowlist": nil},
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent owner null write: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	_, isNull = readAllowlistColumn(t, agentID)
 	if !isNull {
 		t.Errorf("explicit null must persist as NULL")
@@ -158,8 +139,7 @@ func TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner(t *testing.T) {
 	}
 
 	// Workspace owner (testUserID) is NOT the agent owner.
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, withURLParam(newRequest(
+	w := testutil.Call(t, testHandler.UpdateAgent, withURLParam(newRequest(
 		http.MethodPut, "/api/agents/"+agentID,
 		map[string]any{
 			// Touch some other field too, so the request is otherwise
@@ -169,10 +149,7 @@ func TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner(t *testing.T) {
 				"github", "slack", // would-be widening
 			},
 		},
-	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent admin sweep: got %d: %s", w.Code, w.Body.String())
-	}
+	), "id", agentID)).Want(http.StatusOK)
 	// The non-owner-edit must NOT have replaced the allowlist; the
 	// description update must have landed.
 	stored, isNull := readAllowlistColumn(t, agentID)
@@ -187,9 +164,7 @@ func TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner(t *testing.T) {
 	// (unchanged) DB row, and the owner-only redaction at the end of
 	// UpdateAgent then strips it for the admin caller.
 	var resp AgentResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	if len(resp.ComposioToolkitAllowlist) != 0 {
 		t.Errorf("admin response leaked allowlist contents: %v", resp.ComposioToolkitAllowlist)
 	}
@@ -220,9 +195,7 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	testHandler.GetAgent(w, withURLParam(newRequestAs(
 		ownerID, http.MethodGet, "/api/agents/"+agentID, nil,
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgent as owner: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var ownerResp AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &ownerResp); err != nil {
 		t.Fatalf("decode owner response: %v", err)
@@ -239,9 +212,7 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	testHandler.GetAgent(w, withURLParam(newRequest(
 		http.MethodGet, "/api/agents/"+agentID, nil,
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgent as ws-owner: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var adminResp AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &adminResp); err != nil {
 		t.Fatalf("decode admin response: %v", err)
@@ -271,9 +242,7 @@ func TestAgentAllowlistSuppressedWhenComposioFlagDisabled(t *testing.T) {
 		ownerID, http.MethodPut, "/api/agents/"+agentID,
 		map[string]any{"composio_toolkit_allowlist": []string{"github"}},
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent owner write with flag off: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	stored, isNull := readAllowlistColumn(t, agentID)
 	if isNull || len(stored) != 1 || stored[0] != "notion" {
 		t.Fatalf("flag-off write changed allowlist: stored=%v isNull=%v; want unchanged [notion]", stored, isNull)
@@ -290,9 +259,7 @@ func TestAgentAllowlistSuppressedWhenComposioFlagDisabled(t *testing.T) {
 	testHandler.GetAgent(w, withURLParam(newRequestAs(
 		ownerID, http.MethodGet, "/api/agents/"+agentID, nil,
 	), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgent owner with flag off: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var getResp AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &getResp); err != nil {
 		t.Fatalf("decode get response: %v", err)

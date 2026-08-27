@@ -2,10 +2,8 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -38,15 +36,11 @@ func TestCreateComment_BumpsIssueActivity(t *testing.T) {
 	// evaluated per statement and the issue was inserted moments ago.
 	time.Sleep(10 * time.Millisecond)
 
-	w := httptest.NewRecorder()
 	r := withURLParam(
 		newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "a fresh comment"}),
 		"id", issueID,
 	)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	var after, activityAfter time.Time
 	if err := testPool.QueryRow(ctx, `SELECT updated_at, last_activity_at FROM issue WHERE id = $1`, issueID).Scan(&after, &activityAfter); err != nil {
@@ -213,17 +207,11 @@ func TestCommentMutationEventsCarryIssueRevision(t *testing.T) {
 		deletedEvent = event
 	})
 
-	update := httptest.NewRecorder()
-	h.UpdateComment(update, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
+	update := testutil.Call(t, h.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content": "after",
-	}), "commentId", commentID))
-	if update.Code != http.StatusOK {
-		t.Fatalf("UpdateComment = %d: %s", update.Code, update.Body.String())
-	}
+	}), "commentId", commentID)).Want(http.StatusOK)
 	var response CommentResponse
-	if err := json.NewDecoder(update.Body).Decode(&response); err != nil {
-		t.Fatalf("decode update response: %v", err)
-	}
+	update.Decode(&response)
 	if response.IssueRevision != 2 {
 		t.Fatalf("update response issue_revision = %d, want 2", response.IssueRevision)
 	}
@@ -232,11 +220,7 @@ func TestCommentMutationEventsCarryIssueRevision(t *testing.T) {
 		t.Fatalf("update event issue_revision = %#v, want 2", updatedEvent.Payload)
 	}
 
-	deleted := httptest.NewRecorder()
-	h.DeleteComment(deleted, withURLParam(newRequest(http.MethodDelete, "/api/comments/"+commentID, nil), "commentId", commentID))
-	if deleted.Code != http.StatusNoContent {
-		t.Fatalf("DeleteComment = %d: %s", deleted.Code, deleted.Body.String())
-	}
+	testutil.Call(t, h.DeleteComment, withURLParam(newRequest(http.MethodDelete, "/api/comments/"+commentID, nil), "commentId", commentID)).Want(http.StatusNoContent)
 	deletedPayload, ok := deletedEvent.Payload.(map[string]any)
 	if !ok || deletedPayload["issue_revision"] != int64(3) {
 		t.Fatalf("delete event issue_revision = %#v, want 3", deletedEvent.Payload)

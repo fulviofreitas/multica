@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -20,17 +20,7 @@ func seedNULTask(t *testing.T, label string) (agentID, taskID string) {
 	t.Helper()
 	ctx := context.Background()
 
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args)
-		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'private', 1, $4, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id`, testWorkspaceID, label, handlerTestRuntimeID(t), testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("seed agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": label, "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": handlerTestRuntimeID(t), "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 
 	// The task needs an issue: requireDaemonTaskAccess resolves the workspace
 	// through it, and a task with no issue / chat / autopilot link 404s before
@@ -47,15 +37,7 @@ func seedNULTask(t *testing.T, label string) (agentID, taskID string) {
 		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
 	})
 
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
-		VALUES ($1, $2, $3, 'running', 0, now())
-		RETURNING id`, agentID, handlerTestRuntimeID(t), issueID).Scan(&taskID); err != nil {
-		t.Fatalf("seed running task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": handlerTestRuntimeID(t), "issue_id": issueID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("0"), "started_at": testutil.Raw("now()")})
 	return agentID, taskID
 }
 
@@ -81,7 +63,6 @@ func TestCompleteTaskCallbackWithNULSucceeds(t *testing.T) {
 	ctx := context.Background()
 	_, taskID := seedNULTask(t, "nul-complete-agent")
 
-	w := httptest.NewRecorder()
 	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
 		"output":           "done\x00 summary text",
 		"work_dir":         "/tmp/work\x00dir",
@@ -89,10 +70,7 @@ func TestCompleteTaskCallbackWithNULSucceeds(t *testing.T) {
 		"session_id":       "sess-nul-complete",
 	})
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask returned %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	var (
 		status      string
@@ -138,7 +116,6 @@ func TestReportTaskMessagesCallbackWithNULSucceeds(t *testing.T) {
 	ctx := context.Background()
 	_, taskID := seedNULTask(t, "nul-messages-agent")
 
-	w := httptest.NewRecorder()
 	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/messages", taskID, map[string]any{
 		"messages": []any{
 			map[string]any{
@@ -158,10 +135,7 @@ func TestReportTaskMessagesCallbackWithNULSucceeds(t *testing.T) {
 		},
 	})
 
-	testHandler.ReportTaskMessages(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ReportTaskMessages returned %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ReportTaskMessages, req).Want(http.StatusOK)
 
 	var (
 		msgType    string
@@ -207,7 +181,6 @@ func TestReportTaskMessagesCreatesUUIDv7(t *testing.T) {
 	ctx := context.Background()
 	_, taskID := seedNULTask(t, "uuidv7-messages-agent")
 
-	w := httptest.NewRecorder()
 	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/messages", taskID, map[string]any{
 		"messages": []any{
 			map[string]any{
@@ -218,10 +191,7 @@ func TestReportTaskMessagesCreatesUUIDv7(t *testing.T) {
 		},
 	})
 
-	testHandler.ReportTaskMessages(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ReportTaskMessages returned %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ReportTaskMessages, req).Want(http.StatusOK)
 
 	var rawID string
 	if err := testPool.QueryRow(ctx, `

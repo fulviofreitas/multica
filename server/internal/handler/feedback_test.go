@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestCreateFeedbackHappyPath(t *testing.T) {
@@ -15,16 +16,9 @@ func TestCreateFeedbackHappyPath(t *testing.T) {
 	req := newRequest("POST", "/api/feedback", CreateFeedbackRequest{
 		Message: "Love the product, dark mode flashes on startup",
 	})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusCreated)
 	var resp FeedbackResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.ID == "" {
 		t.Fatal("expected feedback id in response")
 	}
@@ -45,16 +39,9 @@ func TestCreateFeedbackStoresStructuredContext(t *testing.T) {
 			},
 		},
 	})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusCreated)
 	var resp FeedbackResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 
 	var metadata []byte
 	if err := testPool.QueryRow(
@@ -101,12 +88,7 @@ func TestCreateFeedbackRejectsMalformedContext(t *testing.T) {
 		"message": "Desktop route crashed",
 		"context": "not-an-object",
 	})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusBadRequest)
 }
 
 func TestCreateFeedbackRejectsUnknownContextKind(t *testing.T) {
@@ -121,12 +103,7 @@ func TestCreateFeedbackRejectsUnknownContextKind(t *testing.T) {
 			},
 		},
 	})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusBadRequest)
 }
 
 func TestCreateFeedbackRejectsEmptyContextFields(t *testing.T) {
@@ -178,23 +155,14 @@ func TestCreateFeedbackRejectsEmptyContextFields(t *testing.T) {
 				Message: "Desktop route crashed",
 				Context: &tt.context,
 			})
-			w := httptest.NewRecorder()
-			testHandler.CreateFeedback(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusBadRequest)
 		})
 	}
 }
 
 func TestCreateFeedbackEmptyMessage(t *testing.T) {
 	req := newRequest("POST", "/api/feedback", CreateFeedbackRequest{Message: "   "})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusBadRequest)
 }
 
 func TestCreateFeedbackRateLimit(t *testing.T) {
@@ -204,18 +172,13 @@ func TestCreateFeedbackRateLimit(t *testing.T) {
 		req := newRequest("POST", "/api/feedback", CreateFeedbackRequest{
 			Message: "feedback #" + strconv.Itoa(i),
 		})
-		w := httptest.NewRecorder()
-		testHandler.CreateFeedback(w, req)
+		w := testutil.Call(t, testHandler.CreateFeedback, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("iteration %d: expected 201, got %d: %s", i, w.Code, w.Body.String())
 		}
 	}
 	req := newRequest("POST", "/api/feedback", CreateFeedbackRequest{Message: "one too many"})
-	w := httptest.NewRecorder()
-	testHandler.CreateFeedback(w, req)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateFeedback, req).Want(http.StatusTooManyRequests)
 }
 
 // clearFeedbackForTestUser wipes all feedback rows for the shared test user

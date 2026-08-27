@@ -27,15 +27,7 @@ func TestBacklogToCustomBacklogStatusDoesNotTrigger(t *testing.T) {
 
 	agentID := createHandlerTestAgent(t, "Backlog Category Move Agent", nil)
 	parkedKey := fmt.Sprintf("later_%d", time.Now().UnixNano())
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO issue_status (workspace_id, key, name, description, category, color, position)
-		VALUES ($1, $2, 'Later', '', 'backlog', '#ff0000', 1)
-	`, testWorkspaceID, parkedKey); err != nil {
-		t.Fatalf("create custom backlog status: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, parkedKey)
-	})
+	dbfx.InsertNoID(t, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": parkedKey, "name": testutil.Raw("'Later'"), "description": testutil.Raw("''"), "category": testutil.Raw("'backlog'"), "color": testutil.Raw("'#ff0000'"), "position": testutil.Raw("1")}, "workspace_id = $1 AND key = $2", testWorkspaceID, parkedKey)
 
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":         "Parked issue",

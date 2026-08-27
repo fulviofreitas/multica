@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -94,21 +94,15 @@ func TestUpdateIssueMergesChannelMediaAppendedAfterEditorBase(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	create := httptest.NewRecorder()
 	createReq := newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":       "Channel media description merge",
 		"description": "Original",
 		"status":      "todo",
 		"priority":    "none",
 	})
-	testHandler.CreateIssue(create, createReq)
-	if create.Code != http.StatusCreated {
-		t.Fatalf("create issue: status %d: %s", create.Code, create.Body.String())
-	}
+	create := testutil.Call(t, testHandler.CreateIssue, createReq).Want(http.StatusCreated)
 	var created IssueResponse
-	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
-		t.Fatalf("decode created issue: %v", err)
-	}
+	create.Decode(&created)
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID)
 	})
@@ -128,40 +122,29 @@ func TestUpdateIssueMergesChannelMediaAppendedAfterEditorBase(t *testing.T) {
 		t.Fatalf("append remote channel media: %v", err)
 	}
 
-	update := httptest.NewRecorder()
 	updateReq := newRequest(http.MethodPut, "/api/issues/"+created.ID, map[string]any{
 		"description":      "Original with local edit",
 		"description_base": "Original",
 	})
 	updateReq = withURLParam(updateReq, "id", created.ID)
-	testHandler.UpdateIssue(update, updateReq)
-	if update.Code != http.StatusOK {
-		t.Fatalf("update issue: status %d: %s", update.Code, update.Body.String())
-	}
+	update := testutil.Call(t, testHandler.UpdateIssue, updateReq).Want(http.StatusOK)
 	var merged IssueResponse
-	if err := json.NewDecoder(update.Body).Decode(&merged); err != nil {
-		t.Fatalf("decode merged issue: %v", err)
-	}
+	update.Decode(&merged)
 	if merged.Description == nil || !strings.Contains(*merged.Description, "Original with local edit") || !strings.Contains(*merged.Description, channelmedia.DownloadPath(attachmentID)) {
 		t.Fatalf("merged description = %#v", merged.Description)
 	}
 
 	// Once the client has adopted the media-bearing description as its base,
 	// removing the image is an explicit edit and must remain possible.
-	remove := httptest.NewRecorder()
+
 	removeReq := newRequest(http.MethodPut, "/api/issues/"+created.ID, map[string]any{
 		"description":      "Original with local edit",
 		"description_base": *merged.Description,
 	})
 	removeReq = withURLParam(removeReq, "id", created.ID)
-	testHandler.UpdateIssue(remove, removeReq)
-	if remove.Code != http.StatusOK {
-		t.Fatalf("remove image: status %d: %s", remove.Code, remove.Body.String())
-	}
+	remove := testutil.Call(t, testHandler.UpdateIssue, removeReq).Want(http.StatusOK)
 	var removed IssueResponse
-	if err := json.NewDecoder(remove.Body).Decode(&removed); err != nil {
-		t.Fatalf("decode image removal: %v", err)
-	}
+	remove.Decode(&removed)
 	if removed.Description == nil || *removed.Description != "Original with local edit" {
 		t.Fatalf("description after explicit image removal = %#v", removed.Description)
 	}
@@ -173,21 +156,15 @@ func TestBatchUpdateIssuePreservesMarkedChannelMedia(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	create := httptest.NewRecorder()
 	createReq := newRequest(http.MethodPost, "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":       "Batch channel media merge",
 		"description": "Original",
 		"status":      "todo",
 		"priority":    "none",
 	})
-	testHandler.CreateIssue(create, createReq)
-	if create.Code != http.StatusCreated {
-		t.Fatalf("create issue: status %d: %s", create.Code, create.Body.String())
-	}
+	create := testutil.Call(t, testHandler.CreateIssue, createReq).Want(http.StatusCreated)
 	var created IssueResponse
-	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
-		t.Fatalf("decode created issue: %v", err)
-	}
+	create.Decode(&created)
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID)
 	})
@@ -206,17 +183,13 @@ func TestBatchUpdateIssuePreservesMarkedChannelMedia(t *testing.T) {
 		t.Fatalf("append channel media: %v", err)
 	}
 
-	update := httptest.NewRecorder()
 	updateReq := newRequest(http.MethodPut, "/api/issues/batch?workspace_id="+testWorkspaceID, map[string]any{
 		"issue_ids": []string{created.ID},
 		"updates": map[string]any{
 			"description": "Batch edit",
 		},
 	})
-	testHandler.BatchUpdateIssues(update, updateReq)
-	if update.Code != http.StatusOK {
-		t.Fatalf("batch update: status %d: %s", update.Code, update.Body.String())
-	}
+	testutil.Call(t, testHandler.BatchUpdateIssues, updateReq).Want(http.StatusOK)
 
 	var description string
 	if err := testPool.QueryRow(ctx, `SELECT description FROM issue WHERE id = $1`, created.ID).Scan(&description); err != nil {

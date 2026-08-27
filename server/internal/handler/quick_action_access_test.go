@@ -3,8 +3,9 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Cross-member access regression for private quick actions (MUL-5465, review
@@ -38,19 +39,7 @@ func seedPrivateQuickActionOwnedByOther(t *testing.T) string {
 	agentID := createHandlerTestAgent(t, "QA Access Agent", []byte("null"))
 
 	var actionID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO quick_action (
-			workspace_id, name, description, assignee_type, assignee_id, prompt,
-			visibility, created_by_type, created_by_id
-		) VALUES ($1, 'Other Private', '', 'agent', $2, 'secret prompt', 'private', 'member', $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, otherUserID).Scan(&actionID); err != nil {
-		t.Fatalf("seed private quick action: %v", err)
-	}
-
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM quick_action WHERE id = $1`, actionID)
-	})
+	actionID = dbfx.Insert(t, "quick_action", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Other Private'"), "description": testutil.Raw("''"), "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID, "prompt": testutil.Raw("'secret prompt'"), "visibility": testutil.Raw("'private'"), "created_by_type": testutil.Raw("'member'"), "created_by_id": otherUserID})
 	return actionID
 }
 
@@ -63,12 +52,7 @@ func TestUpdateQuickActionRejectsNonOwnerOfPrivateAction(t *testing.T) {
 		}),
 		"id", actionID,
 	)
-	rr := httptest.NewRecorder()
-	testHandler.UpdateQuickAction(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("a non-owner must not reach another member's private action: got %d, want 404", rr.Code)
-	}
+	testutil.Call(t, testHandler.UpdateQuickAction, req).Want(http.StatusNotFound)
 
 	// The prompt must be untouched, not merely un-returned.
 	var name string
@@ -88,12 +72,7 @@ func TestDeleteQuickActionRejectsNonOwnerOfPrivateAction(t *testing.T) {
 		newRequest(http.MethodDelete, "/api/quick-actions/"+actionID, nil),
 		"id", actionID,
 	)
-	rr := httptest.NewRecorder()
-	testHandler.DeleteQuickAction(rr, req)
-
-	if rr.Code != http.StatusNotFound {
-		t.Fatalf("a non-owner must not delete another member's private action: got %d, want 404", rr.Code)
-	}
+	testutil.Call(t, testHandler.DeleteQuickAction, req).Want(http.StatusNotFound)
 
 	var alive int
 	if err := testPool.QueryRow(context.Background(),

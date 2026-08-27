@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Backs issue #3563 / MUL-2847: ListIssues must validate and clamp the `limit`
@@ -70,8 +71,7 @@ func TestListIssues_LimitValidation(t *testing.T) {
 	call := func(query string) (int, listResp, string) {
 		path := fmt.Sprintf("/api/issues?workspace_id=%s&project_id=%s%s",
 			testWorkspaceID, projectID, query)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil))
 		var resp listResp
 		body := w.Body.String()
 		if w.Code == http.StatusOK {
@@ -194,8 +194,7 @@ func TestListIssues_LimitClamp(t *testing.T) {
 	call := func(query string) (int, listResp, string) {
 		path := fmt.Sprintf("/api/issues?workspace_id=%s&project_id=%s%s",
 			testWorkspaceID, projectID, query)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil))
 		var resp listResp
 		body := w.Body.String()
 		if w.Code == http.StatusOK {

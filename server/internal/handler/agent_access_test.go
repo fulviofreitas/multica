@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -98,22 +99,7 @@ func privateAgentTestFixture(t *testing.T) (agentID, ownerID, memberID string) {
 		t.Fatalf("add plain member: %v", err)
 	}
 
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args
-		)
-		VALUES ($1, 'private-access-test-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id
-	`, testWorkspaceID, handlerTestRuntimeID(t), ownerID).Scan(&agentID); err != nil {
-		t.Fatalf("create private agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'private-access-test-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": handlerTestRuntimeID(t), "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": ownerID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 
 	return agentID, ownerID, memberID
 }
@@ -139,23 +125,17 @@ func TestGetAgent_PrivateAgentForbidsPlainMember(t *testing.T) {
 	// Workspace owner (testUserID): allowed via role.
 	w := httptest.NewRecorder()
 	testHandler.GetAgent(w, withURLParam(newRequest("GET", "/api/agents/"+agentID, nil), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgent as workspace owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Agent owner (plain member who happens to own the agent): allowed.
 	w = httptest.NewRecorder()
 	testHandler.GetAgent(w, withURLParam(newRequestAs(ownerID, "GET", "/api/agents/"+agentID, nil), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgent as agent owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Plain member (not in allowed_principals): denied with 403.
 	w = httptest.NewRecorder()
 	testHandler.GetAgent(w, withURLParam(newRequestAs(memberID, "GET", "/api/agents/"+agentID, nil), "id", agentID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("GetAgent as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestListAgents_FiltersPrivateForPlainMember verifies that the workspace
@@ -172,9 +152,7 @@ func TestListAgents_FiltersPrivateForPlainMember(t *testing.T) {
 	// Workspace owner sees the agent.
 	w := httptest.NewRecorder()
 	testHandler.ListAgents(w, newRequest("GET", "/api/agents", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgents as owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if !listContainsAgent(t, w.Body.Bytes(), agentID) {
 		t.Fatalf("ListAgents as owner did not include private agent %s", agentID)
 	}
@@ -182,9 +160,7 @@ func TestListAgents_FiltersPrivateForPlainMember(t *testing.T) {
 	// Plain member does NOT see the agent.
 	w = httptest.NewRecorder()
 	testHandler.ListAgents(w, newRequestAs(memberID, "GET", "/api/agents", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgents as plain member: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if listContainsAgent(t, w.Body.Bytes(), agentID) {
 		t.Fatalf("ListAgents as plain member leaked private agent %s", agentID)
 	}
@@ -215,15 +191,11 @@ func TestListAgentTasks_PrivateAgentForbidsPlainMember(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.ListAgentTasks(w, withURLParam(newRequestAs(ownerID, "GET", "/api/agents/"+agentID+"/tasks", nil), "id", agentID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgentTasks as owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	w = httptest.NewRecorder()
 	testHandler.ListAgentTasks(w, withURLParam(newRequestAs(memberID, "GET", "/api/agents/"+agentID+"/tasks", nil), "id", agentID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("ListAgentTasks as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestCreateIssue_AssignToPrivateAgentForbidsPlainMember verifies that the
@@ -252,25 +224,19 @@ func TestCreateIssue_AssignToPrivateAgentForbidsPlainMember(t *testing.T) {
 	// longer grants the ability to invoke someone else's private agent.
 	w := httptest.NewRecorder()
 	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body(testUserID)))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateIssue as workspace owner (not agent owner): expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Agent owner (plain member who happens to own the agent): allowed.
 	w = httptest.NewRecorder()
 	testHandler.CreateIssue(w, newRequestAs(ownerID, "POST", "/api/issues?workspace_id="+testWorkspaceID, body(ownerID)))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue as agent owner: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Plain member: denied with 403 — closes the back door where issue
 	// assignment would otherwise hand the agent a task without going
 	// through chat / @-mention.
 	w = httptest.NewRecorder()
 	testHandler.CreateIssue(w, newRequestAs(memberID, "POST", "/api/issues?workspace_id="+testWorkspaceID, body(memberID)))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateIssue as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestCreateChatSession_PrivateAgentForbidsPlainMember verifies that members
@@ -298,13 +264,10 @@ func TestCreateChatSession_PrivateAgentForbidsPlainMember(t *testing.T) {
 		"agent_id": agentID,
 		"title":    "should be denied",
 	}
-	w := httptest.NewRecorder()
+
 	req := newRequestAs(memberID, "POST", "/api/chat/sessions", body)
 	req = req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, memberRow))
-	testHandler.CreateChatSession(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateChatSession as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateChatSession, req).Want(http.StatusForbidden)
 }
 
 // TestGetAgent_RejectsForgedAgentIDHeader is the regression test for the
@@ -319,17 +282,13 @@ func TestGetAgent_RejectsForgedAgentIDHeader(t *testing.T) {
 
 	agentID, _, memberID := privateAgentTestFixture(t)
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(memberID, "GET", "/api/agents/"+agentID, nil)
 	// Forge X-Agent-ID without X-Task-ID. Pre-fix this would have made
 	// resolveActor return ("agent", agentID) and canAccessPrivateAgent
 	// would have unconditionally allowed the read.
 	req.Header.Set("X-Agent-ID", agentID)
 	req = withURLParam(req, "id", agentID)
-	testHandler.GetAgent(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("GetAgent with forged X-Agent-ID: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetAgent, req).Want(http.StatusForbidden)
 }
 
 // TestListChatMessages_PrivateAgentForbidsAfterAccessRevoked is the regression
@@ -352,16 +311,7 @@ func TestListChatMessages_PrivateAgentForbidsAfterAccessRevoked(t *testing.T) {
 	// that existed before the member lost access (or before the gate
 	// landed).
 	var sessionID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
-		VALUES ($1, $2, $3, 'pre-revocation session', 'active')
-		RETURNING id
-	`, testWorkspaceID, agentID, memberID).Scan(&sessionID); err != nil {
-		t.Fatalf("seed chat session: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
-	})
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": memberID, "title": testutil.Raw("'pre-revocation session'"), "status": testutil.Raw("'active'")})
 
 	memberRow, err := testHandler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      util.MustParseUUID(memberID),
@@ -371,14 +321,10 @@ func TestListChatMessages_PrivateAgentForbidsAfterAccessRevoked(t *testing.T) {
 		t.Fatalf("load plain member row: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(memberID, "GET", "/api/chat/sessions/"+sessionID+"/messages", nil)
 	req = req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, memberRow))
 	req = withURLParam(req, "sessionId", sessionID)
-	testHandler.ListChatMessages(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("ListChatMessages on stale session: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ListChatMessages, req).Want(http.StatusForbidden)
 }
 
 // TestMentionAgent_RejectsCrossWorkspaceAgentUUID is the regression test for
@@ -459,16 +405,7 @@ func TestMentionAgent_RejectsCrossWorkspaceAgentUUID(t *testing.T) {
 
 	// Multica's mention format is markdown-linked: [@Name](mention://agent/<uuid>).
 	mention := "[@Foreign](mention://agent/" + foreignAgentID + ")"
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
-		VALUES ($1, $2, 'member', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, issueID, testUserID, mention).Scan(&commentID); err != nil {
-		t.Fatalf("create test comment: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM comment WHERE id = $1`, commentID)
-	})
+	commentID = dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "author_type": testutil.Raw("'member'"), "author_id": testUserID, "content": mention})
 
 	issue, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(issueID))
 	if err != nil {

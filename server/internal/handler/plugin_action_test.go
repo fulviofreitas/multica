@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	publicapiv1 "github.com/multica-ai/multica/server/pkg/publicapi/v1"
 )
 
@@ -40,17 +41,11 @@ func installPluginForAction(t *testing.T, scopes []string) string {
 	versionID := withLocalPluginSource(t, manifest)
 
 	body, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": scopes})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 	var installed struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
-		t.Fatalf("decode installation: %v", err)
-	}
+	recorder.JSON(&installed)
 	return installed.ID
 }
 
@@ -87,38 +82,23 @@ func TestPluginInstallTokenRunsIssueCommentWorkflow(t *testing.T) {
 	}
 	issueID := createTestIssue(t, "Install token workflow", "todo", "none")
 
-	get := httptest.NewRecorder()
-	testHandler.GetPluginIssue(get, pluginInstallTokenRequest(http.MethodGet, "/v1/issues/"+issueID, token, nil,
-		map[string]string{"issue_ref": issueID}))
-	if get.Code != http.StatusOK {
-		t.Fatalf("install-token issue read status=%d body=%s", get.Code, get.Body.String())
-	}
+	get := testutil.Call(t, testHandler.GetPluginIssue, pluginInstallTokenRequest(http.MethodGet, "/v1/issues/"+issueID, token, nil,
+		map[string]string{"issue_ref": issueID})).Want(http.StatusOK)
 
 	patchRequest := pluginInstallTokenRequest(http.MethodPatch, "/v1/issues/"+issueID, token,
 		map[string]any{"title": "Updated by install token"}, map[string]string{"issue_ref": issueID})
 	patchRequest.Header.Set("If-Match", get.Header().Get("ETag"))
-	patch := httptest.NewRecorder()
-	testHandler.PatchPluginIssue(patch, patchRequest)
-	if patch.Code != http.StatusOK {
-		t.Fatalf("install-token issue patch status=%d body=%s", patch.Code, patch.Body.String())
-	}
+	testutil.Call(t, testHandler.PatchPluginIssue, patchRequest).Want(http.StatusOK)
 
-	create := httptest.NewRecorder()
-	testHandler.CreatePluginComment(create, pluginInstallTokenRequest(http.MethodPost, "/v1/issues/"+issueID+"/comments", token,
-		map[string]any{"content": "created with a real mpi token"}, map[string]string{"issue_ref": issueID}))
-	if create.Code != http.StatusCreated {
-		t.Fatalf("install-token comment create status=%d body=%s", create.Code, create.Body.String())
-	}
+	create := testutil.Call(t, testHandler.CreatePluginComment, pluginInstallTokenRequest(http.MethodPost, "/v1/issues/"+issueID+"/comments", token,
+		map[string]any{"content": "created with a real mpi token"}, map[string]string{"issue_ref": issueID})).Want(http.StatusCreated)
 	var comment publicapiv1.Comment
-	if err := json.Unmarshal(create.Body.Bytes(), &comment); err != nil {
-		t.Fatalf("decode install-token comment: %v", err)
-	}
+	create.JSON(&comment)
 	if comment.AuthorType != "plugin" || comment.AuthorID != installationID {
 		t.Fatalf("install-token comment attribution = %+v", comment)
 	}
 
-	list := httptest.NewRecorder()
-	testHandler.ListPluginComments(list, pluginInstallTokenRequest(http.MethodGet, "/v1/issues/"+issueID+"/comments", token, nil,
+	list := testutil.Call(t, testHandler.ListPluginComments, pluginInstallTokenRequest(http.MethodGet, "/v1/issues/"+issueID+"/comments", token, nil,
 		map[string]string{"issue_ref": issueID}))
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), comment.ID) {
 		t.Fatalf("install-token comment list status=%d body=%s", list.Code, list.Body.String())
@@ -135,15 +115,9 @@ func TestPluginInstallTokenEnforcesGrantedScope(t *testing.T) {
 
 	request := pluginInstallTokenRequest(http.MethodPatch, "/v1/issues/"+issueID, token,
 		map[string]any{"title": "must not update"}, map[string]string{"issue_ref": issueID})
-	response := httptest.NewRecorder()
-	testHandler.PatchPluginIssue(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("ungranted install-token patch status=%d body=%s", response.Code, response.Body.String())
-	}
+	response := testutil.Call(t, testHandler.PatchPluginIssue, request).Want(http.StatusForbidden)
 	var problem publicapiv1.Problem
-	if err := json.Unmarshal(response.Body.Bytes(), &problem); err != nil {
-		t.Fatalf("decode scope problem: %v", err)
-	}
+	response.JSON(&problem)
 	if problem.Code != "forbidden" || !strings.Contains(problem.Detail, "issues:write") {
 		t.Fatalf("unexpected scope problem: %+v", problem)
 	}
@@ -158,16 +132,12 @@ func TestPluginActionRequiresAGrantedScope(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testHandler.GetPluginIssue(recorder, pluginActionRequest(http.MethodGet, "/issues", installationID, nil,
 		map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("granted scope was refused: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 
 	recorder = httptest.NewRecorder()
 	testHandler.CreatePluginComment(recorder, pluginActionRequest(http.MethodPost, "/comments", installationID,
 		map[string]any{"content": "hello"}, map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("ungranted scope status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusForbidden, "HTTP status")
 	if !strings.Contains(recorder.Body.String(), "comments:write") {
 		t.Fatalf("refusal does not name the missing scope: %s", recorder.Body.String())
 	}
@@ -184,16 +154,10 @@ func TestPluginIssueUsesStableDTOAndRevisionETag(t *testing.T) {
 	installationID := installPluginForAction(t, []string{"issues:read", "issues:write"})
 	issueID := createTestIssue(t, "Plugin public DTO test", "todo", "none")
 
-	get := httptest.NewRecorder()
-	testHandler.GetPluginIssue(get, pluginActionRequest(http.MethodGet, "/v1/issues/"+issueID, installationID, nil,
-		map[string]string{"issue_ref": issueID}))
-	if get.Code != http.StatusOK {
-		t.Fatalf("get issue status=%d body=%s", get.Code, get.Body.String())
-	}
+	get := testutil.Call(t, testHandler.GetPluginIssue, pluginActionRequest(http.MethodGet, "/v1/issues/"+issueID, installationID, nil,
+		map[string]string{"issue_ref": issueID})).Want(http.StatusOK)
 	var issue publicapiv1.Issue
-	if err := json.Unmarshal(get.Body.Bytes(), &issue); err != nil {
-		t.Fatalf("decode public issue: %v", err)
-	}
+	get.JSON(&issue)
 	if issue.ID != issueID || issue.Identifier == "" || issue.Revision < 1 || issue.Metadata == nil || issue.Properties == nil {
 		t.Fatalf("unexpected public issue: %+v", issue)
 	}
@@ -202,9 +166,7 @@ func TestPluginIssueUsesStableDTOAndRevisionETag(t *testing.T) {
 		t.Fatalf("ETag = %q, want %q", got, wantETag)
 	}
 	var raw map[string]any
-	if err := json.Unmarshal(get.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode issue map: %v", err)
-	}
+	get.JSON(&raw)
 	for _, appOnly := range []string{"labels", "attachments", "reactions"} {
 		if _, leaked := raw[appOnly]; leaked {
 			t.Fatalf("App-only field %q leaked into Public API: %s", appOnly, get.Body.String())
@@ -214,15 +176,9 @@ func TestPluginIssueUsesStableDTOAndRevisionETag(t *testing.T) {
 	patchRequest := pluginActionRequest(http.MethodPatch, "/v1/issues/"+issueID, installationID,
 		map[string]any{"title": "Updated through Public API"}, map[string]string{"issue_ref": issueID})
 	patchRequest.Header.Set("If-Match", wantETag)
-	patch := httptest.NewRecorder()
-	testHandler.PatchPluginIssue(patch, patchRequest)
-	if patch.Code != http.StatusOK {
-		t.Fatalf("patch issue status=%d body=%s", patch.Code, patch.Body.String())
-	}
+	patch := testutil.Call(t, testHandler.PatchPluginIssue, patchRequest).Want(http.StatusOK)
 	var updated publicapiv1.Issue
-	if err := json.Unmarshal(patch.Body.Bytes(), &updated); err != nil {
-		t.Fatalf("decode updated issue: %v", err)
-	}
+	patch.JSON(&updated)
 	if updated.Title != "Updated through Public API" || updated.Revision <= issue.Revision {
 		t.Fatalf("unexpected updated issue: %+v", updated)
 	}
@@ -233,30 +189,18 @@ func TestPluginIssueUsesStableDTOAndRevisionETag(t *testing.T) {
 	staleRequest := pluginActionRequest(http.MethodPatch, "/v1/issues/"+issueID, installationID,
 		map[string]any{"description": "stale"}, map[string]string{"issue_ref": issueID})
 	staleRequest.Header.Set("If-Match", wantETag)
-	stale := httptest.NewRecorder()
-	testHandler.PatchPluginIssue(stale, staleRequest)
-	if stale.Code != http.StatusConflict {
-		t.Fatalf("stale patch status=%d body=%s", stale.Code, stale.Body.String())
-	}
+	stale := testutil.Call(t, testHandler.PatchPluginIssue, staleRequest).Want(http.StatusConflict)
 	var conflict publicapiv1.Problem
-	if err := json.Unmarshal(stale.Body.Bytes(), &conflict); err != nil {
-		t.Fatalf("decode revision conflict: %v", err)
-	}
-	if conflict.Code != "revision_conflict" {
-		t.Fatalf("conflict code = %q", conflict.Code)
-	}
+	stale.JSON(&conflict)
+	testutil.Equal(t, conflict.Code, "revision_conflict", "HTTP status")
 }
 
 func TestPluginIssueConditionalPatchHasSingleWinner(t *testing.T) {
 	installationID := installPluginForAction(t, []string{"issues:read", "issues:write"})
 	issueID := createTestIssue(t, "Plugin conditional write test", "todo", "none")
 
-	get := httptest.NewRecorder()
-	testHandler.GetPluginIssue(get, pluginActionRequest(http.MethodGet, "/v1/issues/"+issueID, installationID, nil,
-		map[string]string{"issue_ref": issueID}))
-	if get.Code != http.StatusOK {
-		t.Fatalf("get issue status=%d body=%s", get.Code, get.Body.String())
-	}
+	get := testutil.Call(t, testHandler.GetPluginIssue, pluginActionRequest(http.MethodGet, "/v1/issues/"+issueID, installationID, nil,
+		map[string]string{"issue_ref": issueID})).Want(http.StatusOK)
 	etag := get.Header().Get("ETag")
 
 	start := make(chan struct{})
@@ -270,8 +214,7 @@ func TestPluginIssueConditionalPatchHasSingleWinner(t *testing.T) {
 				map[string]any{"title": title}, map[string]string{"issue_ref": issueID})
 			request.Header.Set("If-Match", etag)
 			<-start
-			response := httptest.NewRecorder()
-			testHandler.PatchPluginIssue(response, request)
+			response := testutil.Call(t, testHandler.PatchPluginIssue, request)
 			results <- response.Code
 		}(title)
 	}
@@ -297,17 +240,13 @@ func TestPluginActionRefusedWithoutAnInstallation(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testHandler.GetPluginIssue(recorder, pluginActionRequest(http.MethodGet, "/issues", "", nil,
 		map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("missing installation header status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusBadRequest, "HTTP status")
 
 	// An installation id that does not exist is a 404, never a pass-through.
 	recorder = httptest.NewRecorder()
 	testHandler.GetPluginIssue(recorder, pluginActionRequest(http.MethodGet, "/issues",
 		"11111111-1111-1111-1111-111111111111", nil, map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("unknown installation status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusNotFound, "HTTP status")
 }
 
 func TestPluginActionStopsWhenTheInstallationIsDisabled(t *testing.T) {
@@ -317,38 +256,28 @@ func TestPluginActionStopsWhenTheInstallationIsDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testHandler.DisablePlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/disable", nil,
 		map[string]string{"id": testWorkspaceID, "installationId": installationID}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("disable status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 
 	// A surface left open in a stale tab keeps its bridge; disabling has to cut
 	// it off server-side or "disabled" only means "hidden".
 	recorder = httptest.NewRecorder()
 	testHandler.GetPluginIssue(recorder, pluginActionRequest(http.MethodGet, "/issues", installationID, nil,
 		map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("disabled installation status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusForbidden, "HTTP status")
 }
 
 func TestPluginCommentIsAuthoredByTheUserAndMarkedWithThePlugin(t *testing.T) {
 	installationID := installPluginForAction(t, []string{"issues:read", "comments:write"})
 	issueID := createTestIssue(t, "Plugin action attribution test", "todo", "none")
 
-	recorder := httptest.NewRecorder()
-	testHandler.CreatePluginComment(recorder, pluginActionRequest(http.MethodPost, "/comments", installationID,
-		map[string]any{"content": "posted through a plugin"}, map[string]string{"issue_ref": issueID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("create comment status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.CreatePluginComment, pluginActionRequest(http.MethodPost, "/comments", installationID,
+		map[string]any{"content": "posted through a plugin"}, map[string]string{"issue_ref": issueID})).Want(http.StatusCreated)
 	var created struct {
 		ID         string `json:"id"`
 		AuthorType string `json:"author_type"`
 		AuthorID   string `json:"author_id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode comment: %v", err)
-	}
+	recorder.JSON(&created)
 	// Permission-wise the write is the user's...
 	if created.AuthorType != "member" || created.AuthorID != testUserID {
 		t.Fatalf("comment was not authored by the calling user: %+v", created)
@@ -371,12 +300,8 @@ func TestPluginActionCannotReachAnotherWorkspacesIssue(t *testing.T) {
 	// plugin inherits the user's reach and nothing more, so this is the same
 	// answer the ordinary issue endpoint gives.
 	otherWorkspaceIssue := createIssueInForeignWorkspace(t)
-	recorder := httptest.NewRecorder()
-	testHandler.GetPluginIssue(recorder, pluginActionRequest(http.MethodGet, "/issues", installationID, nil,
-		map[string]string{"issue_ref": otherWorkspaceIssue}))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("cross-workspace read status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.GetPluginIssue, pluginActionRequest(http.MethodGet, "/issues", installationID, nil,
+		map[string]string{"issue_ref": otherWorkspaceIssue})).Want(http.StatusNotFound)
 }
 
 // createIssueInForeignWorkspace seeds a workspace the test user is NOT a member

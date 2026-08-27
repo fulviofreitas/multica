@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -136,16 +135,7 @@ func seedSquadForBriefing(t *testing.T, leaderID string, name, instructions stri
 	ctx := context.Background()
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id, instructions)
-		VALUES ($1, $2, '', $3, $4, $5)
-		RETURNING id
-	`, testWorkspaceID, name, leaderID, testUserID, instructions).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": name, "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID, "instructions": instructions})
 
 	uuid := util.MustParseUUID(squadID)
 	squad, err := testHandler.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -389,21 +379,16 @@ func TestBuildSquadLeaderBriefing_MentionsRoundTrip(t *testing.T) {
 // returns the agent block of the response. Fails the test on non-200.
 func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-squad-briefing")
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 	var resp struct {
 		Task *struct {
 			Agent *TaskAgentData `json:"agent"`
 		} `json:"task"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.Task == nil || resp.Task.Agent == nil {
 		t.Fatalf("expected task.agent in response, got: %s", w.Body.String())
 	}
@@ -415,17 +400,7 @@ func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
 func queueSquadIssueTaskFor(t *testing.T, squadID, agentID, runtimeID string, issueNumber int) (issueID, taskID string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO issue (
-workspace_id, title, status, priority, creator_id, creator_type,
-assignee_type, assignee_id, number, position
-) VALUES ($1, 'Squad briefing claim test', 'todo', 'medium', $2, 'member',
-'squad', $3, $4, 0)
-RETURNING id
-`, testWorkspaceID, testUserID, squadID, issueNumber).Scan(&issueID); err != nil {
-		t.Fatalf("create squad-assigned issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'Squad briefing claim test'"), "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'medium'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "assignee_type": testutil.Raw("'squad'"), "assignee_id": squadID, "number": issueNumber, "position": testutil.Raw("0")})
 
 	if err := testPool.QueryRow(ctx, `
 INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, is_leader_task, squad_id)

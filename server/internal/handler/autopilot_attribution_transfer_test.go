@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // These tests drive the REAL autopilot update handlers to prove the substantive /
@@ -65,24 +66,18 @@ func triggerPublisherMember(t *testing.T, triggerID string) string {
 
 func patchAutopilot(t *testing.T, apID string, body map[string]any) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, body)
 	req = withURLParam(req, "id", apID)
-	testHandler.UpdateAutopilot(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAutopilot, req).Want(http.StatusOK)
 }
 
 func patchTrigger(t *testing.T, apID, triggerID string, body map[string]any) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("PATCH", "/api/autopilots/"+apID+"/triggers/"+triggerID, body)
 	req = withURLParams(req, "id", apID, "triggerId", triggerID)
-	testHandler.UpdateAutopilotTrigger(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAutopilotTrigger: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAutopilotTrigger, req).Want(http.StatusOK)
 }
 
 // TestUpdateAutopilot_PromptEditTransfersAllTriggers: the autopilot description IS the

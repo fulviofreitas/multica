@@ -19,6 +19,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 const invitationTestEmail = "invitation-test@multica.ai"
@@ -178,22 +179,14 @@ func TestCreateInvitation_BlocksWhilePending(t *testing.T) {
 		Role:  "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.CreateInvitation(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("first invite: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusCreated)
 
 	req2 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/members", CreateMemberRequest{
 		Email: invitationTestEmail,
 		Role:  "member",
 	})
 	req2 = withURLParam(req2, "id", testWorkspaceID)
-	w2 := httptest.NewRecorder()
-	testHandler.CreateInvitation(w2, req2)
-	if w2.Code != http.StatusConflict {
-		t.Fatalf("second invite: expected 409 while still pending, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateInvitation, req2).Want(http.StatusConflict)
 	for name, calls := range map[string]int{
 		"actor checks": len(actor.checkKeys), "workspace checks": len(workspace.checkKeys), "recipient checks": len(recipient.checkKeys),
 		"actor allows": len(actor.allowKeys), "workspace allows": len(workspace.allowKeys), "recipient allows": len(recipient.allowKeys),
@@ -222,21 +215,12 @@ func TestCreateInvitation_BlocksWhenPurchasedCapacityIsFull(t *testing.T) {
 		Email: "capacity-full-invite@multica.ai", Role: "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusConflict)
 	var body struct {
 		Code string `json:"code"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Code != "seat_capacity_full" {
-		t.Fatalf("code = %q, want seat_capacity_full", body.Code)
-	}
+	rec.JSON(&body)
+	testutil.Equal(t, body.Code, "seat_capacity_full", "HTTP status")
 	if capacity.reserveCalls != 1 {
 		t.Fatalf("reserve calls = %d, want 1", capacity.reserveCalls)
 	}
@@ -285,21 +269,12 @@ func TestCreateInvitation_BlocksOvercommittedCapacityWithoutOfferingSingleSeatSe
 		Email: "capacity-overcommitted-invite@multica.ai", Role: "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusConflict)
 	var body struct {
 		Code string `json:"code"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Code != "seat_capacity_overcommitted" {
-		t.Fatalf("code = %q, want seat_capacity_overcommitted", body.Code)
-	}
+	rec.JSON(&body)
+	testutil.Equal(t, body.Code, "seat_capacity_overcommitted", "HTTP status")
 	if capacity.reserveCalls != 1 {
 		t.Fatalf("reserve calls = %d, want 1", capacity.reserveCalls)
 	}
@@ -334,24 +309,15 @@ func TestCreateInvitation_MapsCloudCapacityRateLimitWithoutConsumingInvitationBu
 		Email: "capacity-rate-limited@multica.ai", Role: "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusTooManyRequests)
 	if rec.Header().Get("Retry-After") != "3" || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("unexpected retry/cache headers: %v", rec.Header())
 	}
 	var body struct {
 		Code string `json:"code"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Code != "seat_capacity_rate_limited" {
-		t.Fatalf("code = %q, want seat_capacity_rate_limited", body.Code)
-	}
+	rec.JSON(&body)
+	testutil.Equal(t, body.Code, "seat_capacity_rate_limited", "HTTP status")
 	if capacity.reserveCalls != 1 || capacity.releaseCalls != 0 {
 		t.Fatalf("capacity calls reserve=%d release=%d, want 1/0", capacity.reserveCalls, capacity.releaseCalls)
 	}
@@ -386,12 +352,7 @@ func TestCreateInvitation_CompensatesCapacityWhenCommitRollsBack(t *testing.T) {
 		Email: email, Role: "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusInternalServerError)
 	if capacity.reserveCalls != 1 || capacity.releaseCalls != 1 {
 		t.Fatalf("reserve calls = %d, release calls = %d; want one each", capacity.reserveCalls, capacity.releaseCalls)
 	}
@@ -431,16 +392,10 @@ func TestCreateInvitation_AllowsAfterExpiry(t *testing.T) {
 		Role:  "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.CreateInvitation(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("re-invite after expiry: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusCreated)
 
 	var resp InvitationResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.ID == "" || resp.ID == staleID {
 		t.Fatalf("expected a new invitation row, got id=%q (stale=%q)", resp.ID, staleID)
 	}
@@ -485,12 +440,7 @@ func TestCreateInvitation_RateLimitChecksEveryGateBeforeCapacityReservation(t *t
 		Role:  "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusTooManyRequests)
 	if got := rec.Header().Get("Retry-After"); got != "86400" {
 		t.Errorf("Retry-After = %q, want 86400", got)
 	}
@@ -502,9 +452,7 @@ func TestCreateInvitation_RateLimitChecksEveryGateBeforeCapacityReservation(t *t
 		Code              string `json:"code"`
 		RetryAfterSeconds int64  `json:"retry_after_seconds"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	rec.JSON(&body)
 	if body.Error != "too many invitation requests" || body.Code != "invitation_rate_limited" || body.RetryAfterSeconds != 86400 {
 		t.Errorf("unexpected body: %+v", body)
 	}
@@ -573,19 +521,12 @@ func TestCreateInvitation_RateLimiterFailureReturnsServiceUnavailable(t *testing
 		Role:  "member",
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	rec := httptest.NewRecorder()
-	testHandler.CreateInvitation(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateInvitation, req).Want(http.StatusServiceUnavailable)
 	if rec.Header().Get("Retry-After") != "5" || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("unexpected retry/cache headers: %v", rec.Header())
 	}
 	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	rec.JSON(&body)
 	if body["code"] != "invitation_rate_limiter_unavailable" {
 		t.Errorf("code = %q, want invitation_rate_limiter_unavailable", body["code"])
 	}

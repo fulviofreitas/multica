@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -25,13 +26,7 @@ func TestMergeCommentIntoPendingTask_FailClosedKeepsOriginalSnapshot(t *testing.
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, creator_type, creator_id, assignee_type, assignee_id, priority)
-		VALUES ($1, 'merge fail-closed', 'member', $2, 'agent', $3, 'medium') RETURNING id`,
-		testWorkspaceID, testUserID, agentID).Scan(&issueID); err != nil {
-		t.Fatalf("seed issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'merge fail-closed'"), "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID, "priority": testutil.Raw("'medium'")})
 
 	// cidA: the precise member comment the queued task is attributed to.
 	var cidA string

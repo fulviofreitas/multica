@@ -10,27 +10,20 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestListTelegramInstallationsNotConfiguredReturnsEmpty(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/telegram/installations", nil)
-	w := httptest.NewRecorder()
-
-	h.ListTelegramInstallations(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, h.ListTelegramInstallations, req).Want(http.StatusOK)
 	var resp struct {
 		Installations    []any `json:"installations"`
 		Configured       bool  `json:"configured"`
 		InstallSupported bool  `json:"install_supported"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Configured || resp.InstallSupported || len(resp.Installations) != 0 {
 		t.Fatalf("unexpected unconfigured response: %+v", resp)
 	}
@@ -74,9 +67,7 @@ func TestTelegramMutationHandlersRejectUnconfiguredDeployment(t *testing.T) {
 
 			tt.run(h, w, req)
 
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusServiceUnavailable, "HTTP status")
 		})
 	}
 }

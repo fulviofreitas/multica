@@ -3,10 +3,10 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -49,13 +49,7 @@ func newAutopilotDelegationFixture(t *testing.T, targetAgentID, autopilotCreator
 	// A member-created autopilot; assignee is the target agent (any valid agent
 	// satisfies the assignee reference).
 	var autopilotID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO autopilot (workspace_id, title, assignee_id, execution_mode, created_by_type, created_by_id)
-		VALUES ($1, 'MUL-4857 delegation', $2, 'create_issue', 'member', $3) RETURNING id
-	`, testWorkspaceID, targetAgentID, autopilotCreatorUserID).Scan(&autopilotID); err != nil {
-		t.Fatalf("create autopilot: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID) })
+	autopilotID = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'MUL-4857 delegation'"), "assignee_id": targetAgentID, "execution_mode": testutil.Raw("'create_issue'"), "created_by_type": testutil.Raw("'member'"), "created_by_id": autopilotCreatorUserID})
 
 	// Next per-workspace issue number (default 0 would trip uq_issue_workspace_number).
 	var number int
@@ -151,13 +145,7 @@ func setCommentSourceTask(t *testing.T, fx *autopilotDelegationFixture, sourceTa
 func seedTaskOnIssue(t *testing.T, agentID, issueID, runtimeID string) string {
 	t.Helper()
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
-		VALUES ($1, $2, $3, 'running', 0) RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-		t.Fatalf("seed task on issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("0")})
 	return taskID
 }
 
@@ -294,17 +282,14 @@ func TestCreateComment_AutopilotLeaderMentionEnqueuesPrivateWorker(t *testing.T)
 
 	// The leader posts the mention comment in its agent identity. resolveActor
 	// trusts the header pair because fx.LeaderTaskID belongs to the leader agent.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "[@Worker](mention://agent/" + workerID + ") please handle",
 	})
 	r.Header.Set("X-Agent-ID", fx.LeaderAgentID)
 	r.Header.Set("X-Task-ID", fx.LeaderTaskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("leader mention CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	var workerTasks int
 	if err := testPool.QueryRow(context.Background(), `
@@ -372,13 +357,7 @@ func seedBareIssue(t *testing.T, creatorAgentID string) string {
 func seedCompletedTaskOnIssueBefore(t *testing.T, agentID, issueID, runtimeID string) string {
 	t.Helper()
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, created_at)
-		VALUES ($1, $2, $3, 'completed', 0, now() - interval '1 hour') RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-		t.Fatalf("seed completed task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'completed'"), "priority": testutil.Raw("0"), "created_at": testutil.Raw("now() - interval '1 hour'")})
 	return taskID
 }
 
@@ -472,17 +451,14 @@ func TestUpdateComment_AutopilotAuthorityReStampedToEditingTask(t *testing.T) {
 	workerID, ownerID, _ := privateAgentTestFixture(t)
 
 	editAddingMention := func(t *testing.T, editTaskID, commentID, issueID string, fx autopilotDelegationFixture) {
-		w := httptest.NewRecorder()
+
 		r := newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 			"content": "[@Worker](mention://agent/" + workerID + ") please take this",
 		})
 		r.Header.Set("X-Agent-ID", fx.LeaderAgentID)
 		r.Header.Set("X-Task-ID", editTaskID)
 		r = withURLParam(r, "commentId", commentID)
-		testHandler.UpdateComment(w, r)
-		if w.Code != http.StatusOK {
-			t.Fatalf("UpdateComment: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateComment, r).Want(http.StatusOK)
 	}
 	countQueued := func(t *testing.T, issueID string) int {
 		var n int
@@ -555,22 +531,10 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 	}
 
 	var autopilotID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO autopilot (workspace_id, title, assignee_id, execution_mode, created_by_type, created_by_id)
-		VALUES ($1, 'MUL-4857 squad', $2, 'create_issue', 'member', $3) RETURNING id
-	`, testWorkspaceID, leaderID, ownerID).Scan(&autopilotID); err != nil {
-		t.Fatalf("create autopilot: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID) })
+	autopilotID = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'MUL-4857 squad'"), "assignee_id": leaderID, "execution_mode": testutil.Raw("'create_issue'"), "created_by_type": testutil.Raw("'member'"), "created_by_id": ownerID})
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'MUL-4857 Squad', '', $2, $3) RETURNING id
-	`, testWorkspaceID, leaderID, ownerID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'MUL-4857 Squad'"), "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": ownerID})
 
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
@@ -589,17 +553,14 @@ func TestCreateComment_AutopilotWorkerResultWakesSquadLeader(t *testing.T) {
 	workerTaskID := seedTaskOnIssue(t, workerID, issueID, runtimeID)
 
 	// The worker posts a PLAIN result comment (no @mention) via HTTP.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "done — pushed the change",
 	})
 	r.Header.Set("X-Agent-ID", workerID)
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("worker result CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	var leaderTasks int
 	if err := testPool.QueryRow(ctx, `
@@ -658,15 +619,12 @@ func TestUpdateComment_AdminEditOfAgentCommentClearsStaleLineage(t *testing.T) {
 	}
 
 	// The admin edits the leader's comment to add the private @Worker mention.
-	w := httptest.NewRecorder()
+
 	r := newRequestAs(adminID, http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content": "[@Worker](mention://agent/" + workerID + ") please take this",
 	})
 	r = withURLParam(r, "commentId", commentID)
-	testHandler.UpdateComment(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("admin UpdateComment: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateComment, r).Want(http.StatusOK)
 
 	// Immediate save is judged on the admin's member identity, which holds no invoke
 	// right over the private worker — nothing is enqueued.

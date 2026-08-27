@@ -4,8 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // claimAgentMcpConfigForTest runs one claim for the given runtime and returns
@@ -13,20 +14,14 @@ import (
 func claimAgentMcpConfigForTest(t *testing.T, runtimeID string) json.RawMessage {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil, testWorkspaceID, "ws-mcp-daemon")
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
 	var claimResp struct {
 		Task *AgentTaskResponse `json:"task"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &claimResp); err != nil {
-		t.Fatalf("decode claim: %v", err)
-	}
+	w.JSON(&claimResp)
 	if claimResp.Task == nil || claimResp.Task.Agent == nil {
 		t.Fatalf("missing task agent in claim response: %s", w.Body.String())
 	}
@@ -56,15 +51,7 @@ func setupWorkspaceMcpClaimFixture(t *testing.T, ctx context.Context, name, agen
 		t.Fatalf("setup: set agent mcp_config: %v", err)
 	}
 
-	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
-		VALUES ($1, $2, $3, 'queued', 0)
-		RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-		t.Fatalf("setup: create task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("0")})
 
 	return runtimeID
 }

@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -221,19 +220,7 @@ func TestUnbindAgentsAndDeleteRuntime_KeepsAutopilotConfig(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Unbind Autopilot Agent")
 
 	var autopilotID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO autopilot (
-			workspace_id, title, description, assignee_type, assignee_id,
-			created_by_type, created_by_id, status, execution_mode
-		)
-		VALUES ($1, 'unbind autopilot', 'do the thing', 'agent', $2, 'member', $3, 'active', 'run_only')
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&autopilotID); err != nil {
-		t.Fatalf("insert autopilot: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
-	})
+	autopilotID = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'unbind autopilot'"), "description": testutil.Raw("'do the thing'"), "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID, "created_by_type": testutil.Raw("'member'"), "created_by_id": testUserID, "status": testutil.Raw("'active'"), "execution_mode": testutil.Raw("'run_only'")})
 
 	unbindRuntime(t, ctx, runtimeID, agentID)
 
@@ -362,22 +349,16 @@ func TestUnbindAgentsAndDeleteRuntime_LegacyRouteBehavesTheSame(t *testing.T) {
 	runtimeID := createCascadeFixtureRuntime(t, ctx, "Legacy Route Runtime")
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Legacy Route Agent")
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/archive-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{agentID}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("legacy route: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusOK)
 
 	var body struct {
 		AgentsUnbound  int `json:"agents_unbound"`
 		AgentsArchived int `json:"agents_archived"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&body)
 	if body.AgentsUnbound != 1 || body.AgentsArchived != 1 {
 		t.Fatalf("counts = unbound %d / archived-mirror %d, want 1/1", body.AgentsUnbound, body.AgentsArchived)
 	}
@@ -435,14 +416,11 @@ func TestAgentResponse_RuntimeBoundSignal(t *testing.T) {
 // runtime does not go away.
 func unbindRuntime(t *testing.T, ctx context.Context, runtimeID string, activeAgentIDs ...string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": activeAgentIDs})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UnbindAgentsAndDeleteRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusOK)
 	var rtRows int
 	if err := testPool.QueryRow(ctx,
 		`SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {

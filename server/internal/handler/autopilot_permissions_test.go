@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // createPlainMember adds a fresh member-role user to the test workspace and
@@ -48,7 +50,7 @@ func createAutopilotAs(t *testing.T, userID, title string) string {
 		"assignee_id":    agentID,
 		"execution_mode": "create_issue",
 	}
-	w := httptest.NewRecorder()
+
 	path := "/api/autopilots?workspace_id=" + testWorkspaceID
 	var r *http.Request
 	if userID == "" {
@@ -56,14 +58,9 @@ func createAutopilotAs(t *testing.T, userID, title string) string {
 	} else {
 		r = newRequestAs(userID, "POST", path, body)
 	}
-	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateAutopilot, r).Want(http.StatusCreated)
 	var ap AutopilotResponse
-	if err := json.NewDecoder(w.Body).Decode(&ap); err != nil {
-		t.Fatalf("decode autopilot: %v", err)
-	}
+	w.Decode(&ap)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM autopilot_run WHERE autopilot_id = $1`, ap.ID)
 		testPool.Exec(context.Background(), `DELETE FROM autopilot_trigger WHERE autopilot_id = $1`, ap.ID)
@@ -77,7 +74,7 @@ func createAutopilotAs(t *testing.T, userID, title string) string {
 // given caller (empty caller = workspace owner), asserting the expected status.
 func grantAutopilotAccess(t *testing.T, caller, apID, targetUserID string, wantStatus int) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	path := "/api/autopilots/" + apID + "/collaborators?workspace_id=" + testWorkspaceID
 	body := map[string]any{"user_id": targetUserID}
 	var r *http.Request
@@ -87,17 +84,14 @@ func grantAutopilotAccess(t *testing.T, caller, apID, targetUserID string, wantS
 		r = newRequestAs(caller, "POST", path, body)
 	}
 	r = withURLParam(r, "id", apID)
-	testHandler.AddAutopilotCollaborator(w, r)
-	if w.Code != wantStatus {
-		t.Fatalf("AddAutopilotCollaborator: expected %d, got %d: %s", wantStatus, w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.AddAutopilotCollaborator, r).Want(wantStatus)
 }
 
 // autopilotCanWrite fetches the detail as the given caller and returns the
 // can_write flag the server stamped for them.
 func autopilotCanWrite(t *testing.T, caller, apID string) bool {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	path := "/api/autopilots/" + apID + "?workspace_id=" + testWorkspaceID
 	var r *http.Request
 	if caller == "" {
@@ -106,16 +100,11 @@ func autopilotCanWrite(t *testing.T, caller, apID string) bool {
 		r = newRequestAs(caller, "GET", path, nil)
 	}
 	r = withURLParam(r, "id", apID)
-	testHandler.GetAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAutopilot, r).Want(http.StatusOK)
 	var got struct {
 		Autopilot AutopilotResponse `json:"autopilot"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode autopilot: %v", err)
-	}
+	w.Decode(&got)
 	if got.Autopilot.CanWrite == nil {
 		t.Fatalf("expected can_write to be set on detail response")
 	}
@@ -126,7 +115,7 @@ func autopilotCanWrite(t *testing.T, caller, apID string) bool {
 // the can_manage_access flag (narrower than can_write — collaborators lack it).
 func autopilotCanManageAccess(t *testing.T, caller, apID string) bool {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	path := "/api/autopilots/" + apID + "?workspace_id=" + testWorkspaceID
 	var r *http.Request
 	if caller == "" {
@@ -135,16 +124,11 @@ func autopilotCanManageAccess(t *testing.T, caller, apID string) bool {
 		r = newRequestAs(caller, "GET", path, nil)
 	}
 	r = withURLParam(r, "id", apID)
-	testHandler.GetAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAutopilot, r).Want(http.StatusOK)
 	var got struct {
 		Autopilot AutopilotResponse `json:"autopilot"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode autopilot: %v", err)
-	}
+	w.Decode(&got)
 	if got.Autopilot.CanManageAccess == nil {
 		t.Fatalf("expected can_manage_access to be set on detail response")
 	}
@@ -163,10 +147,10 @@ func TestAutopilotCollaborator_GrantedMemberCanWrite(t *testing.T) {
 	member := createPlainMember(t, "ap-collab-grantee@multica.test")
 
 	updateAs := func(caller string) int {
-		w := httptest.NewRecorder()
+
 		r := newRequestAs(caller, "PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, map[string]any{"title": "edited by " + caller})
 		r = withURLParam(r, "id", apID)
-		testHandler.UpdateAutopilot(w, r)
+		w := testutil.Call(t, testHandler.UpdateAutopilot, r)
 		return w.Code
 	}
 
@@ -190,13 +174,10 @@ func TestAutopilotCollaborator_GrantedMemberCanWrite(t *testing.T) {
 	}
 
 	// Revoke.
-	w := httptest.NewRecorder()
+
 	r := newRequest("DELETE", "/api/autopilots/"+apID+"/collaborators/"+member+"?workspace_id="+testWorkspaceID, nil)
 	r = withURLParams(r, "id", apID, "userId", member)
-	testHandler.RemoveAutopilotCollaborator(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("RemoveAutopilotCollaborator: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.RemoveAutopilotCollaborator, r).Want(http.StatusOK)
 
 	// After revoke: blocked again.
 	if code := updateAs(member); code != http.StatusForbidden {
@@ -245,9 +226,7 @@ func TestAutopilotCollaborator_CannotManageAccessList(t *testing.T) {
 	r := newRequestAs(carol, "PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, map[string]any{"title": "carol edit"})
 	r = withURLParam(r, "id", apID)
 	testHandler.UpdateAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("collaborator update: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// ...but cannot grant access to a new member.
 	grantAutopilotAccess(t, carol, apID, bob, http.StatusForbidden)
@@ -257,9 +236,7 @@ func TestAutopilotCollaborator_CannotManageAccessList(t *testing.T) {
 	r = newRequestAs(carol, "DELETE", "/api/autopilots/"+apID+"/collaborators/"+dave+"?workspace_id="+testWorkspaceID, nil)
 	r = withURLParams(r, "id", apID, "userId", dave)
 	testHandler.RemoveAutopilotCollaborator(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("collaborator revoke peer: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// can_manage_access: false for the collaborator, true for the owner.
 	if autopilotCanManageAccess(t, carol, apID) {
@@ -286,27 +263,21 @@ func TestAutopilotWrite_PlainMemberCannotMutateOthers(t *testing.T) {
 	r := newRequestAs(member, "PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, map[string]any{"title": "hijacked"})
 	r = withURLParam(r, "id", apID)
 	testHandler.UpdateAutopilot(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateAutopilot by stranger: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Trigger.
 	w = httptest.NewRecorder()
 	r = newRequestAs(member, "POST", "/api/autopilots/"+apID+"/trigger?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", apID)
 	testHandler.TriggerAutopilot(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("TriggerAutopilot by stranger: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Delete.
 	w = httptest.NewRecorder()
 	r = newRequestAs(member, "DELETE", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", apID)
 	testHandler.DeleteAutopilot(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("DeleteAutopilot by stranger: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestAutopilotWrite_CreatorCanMutateOwn verifies that the member who created
@@ -319,13 +290,9 @@ func TestAutopilotWrite_CreatorCanMutateOwn(t *testing.T) {
 	member := createPlainMember(t, "ap-perm-creator@multica.test")
 	apID := createAutopilotAs(t, member, "ap-perm-member-created")
 
-	w := httptest.NewRecorder()
 	r := newRequestAs(member, "PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, map[string]any{"title": "creator edit"})
 	r = withURLParam(r, "id", apID)
-	testHandler.UpdateAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAutopilot by creator: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAutopilot, r).Want(http.StatusOK)
 }
 
 // TestAutopilotWrite_AdminCanMutateMembersAutopilot verifies that a workspace
@@ -339,13 +306,10 @@ func TestAutopilotWrite_AdminCanMutateMembersAutopilot(t *testing.T) {
 	apID := createAutopilotAs(t, member, "ap-perm-admin-target")
 
 	// testUserID is the workspace owner.
-	w := httptest.NewRecorder()
+
 	r := newRequest("PATCH", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, map[string]any{"title": "admin edit"})
 	r = withURLParam(r, "id", apID)
-	testHandler.UpdateAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAutopilot by owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAutopilot, r).Want(http.StatusOK)
 }
 
 // TestAutopilotWrite_WebhookSecretRedactedForNonWriter verifies that the
@@ -365,9 +329,7 @@ func TestAutopilotWrite_WebhookSecretRedactedForNonWriter(t *testing.T) {
 	r := newRequest("POST", "/api/autopilots/"+apID+"/triggers?workspace_id="+testWorkspaceID, map[string]any{"kind": "webhook"})
 	r = withURLParam(r, "id", apID)
 	testHandler.CreateAutopilotTrigger(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilotTrigger: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	type getResp struct {
 		Triggers []AutopilotTriggerResponse `json:"triggers"`
@@ -377,9 +339,7 @@ func TestAutopilotWrite_WebhookSecretRedactedForNonWriter(t *testing.T) {
 	w = httptest.NewRecorder()
 	r = withURLParam(newRequest("GET", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, nil), "id", apID)
 	testHandler.GetAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAutopilot as owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var ownerView getResp
 	if err := json.NewDecoder(w.Body).Decode(&ownerView); err != nil {
 		t.Fatalf("decode owner view: %v", err)
@@ -398,9 +358,7 @@ func TestAutopilotWrite_WebhookSecretRedactedForNonWriter(t *testing.T) {
 	w = httptest.NewRecorder()
 	r = withURLParam(newRequestAs(stranger, "GET", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, nil), "id", apID)
 	testHandler.GetAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAutopilot as stranger: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var strangerView getResp
 	if err := json.NewDecoder(w.Body).Decode(&strangerView); err != nil {
 		t.Fatalf("decode stranger view: %v", err)

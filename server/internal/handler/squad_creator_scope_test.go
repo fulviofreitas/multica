@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // squadScopeReq builds a request as the given user (empty = workspace owner)
@@ -34,19 +35,17 @@ func squadScopeReq(userID, method, path string, body any, params map[string]stri
 // returns the decoded response. Registers cleanup for the squad + its members.
 func createSquadAs(t *testing.T, userID, name, leaderID string) SquadResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	r := squadScopeReq(userID, "POST", "/api/squads", map[string]any{
 		"name":      name,
 		"leader_id": leaderID,
 	}, nil)
-	testHandler.CreateSquad(w, r)
+	w := testutil.Call(t, testHandler.CreateSquad, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("CreateSquad(%s): expected 201, got %d: %s", name, w.Code, w.Body.String())
 	}
 	var resp SquadResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode squad: %v", err)
-	}
+	w.Decode(&resp)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM squad_member WHERE squad_id = $1`, resp.ID)
 		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, resp.ID)
@@ -87,9 +86,7 @@ func TestManageSquad_CreatorCanManageOwn(t *testing.T) {
 	testHandler.UpdateSquad(w, squadScopeReq(memberID, "PATCH", "/api/squads", map[string]any{
 		"name": "Renamed By Creator",
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateSquad as creator: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Add a public agent worker.
 	w = httptest.NewRecorder()
@@ -97,17 +94,13 @@ func TestManageSquad_CreatorCanManageOwn(t *testing.T) {
 		"member_type": "agent",
 		"member_id":   worker,
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("AddSquadMember as creator: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Archive.
 	w = httptest.NewRecorder()
 	testHandler.DeleteSquad(w, squadScopeReq(memberID, "DELETE", "/api/squads", nil,
 		map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteSquad as creator: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 }
 
 // TestManageSquad_StrangerMemberForbidden verifies a plain member who did not
@@ -127,26 +120,20 @@ func TestManageSquad_StrangerMemberForbidden(t *testing.T) {
 	testHandler.UpdateSquad(w, squadScopeReq(strangerID, "PATCH", "/api/squads", map[string]any{
 		"name": "Hijacked",
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateSquad as stranger: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Stranger member: archive denied.
 	w = httptest.NewRecorder()
 	testHandler.DeleteSquad(w, squadScopeReq(strangerID, "DELETE", "/api/squads", nil,
 		map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("DeleteSquad as stranger: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Workspace owner (testUserID): update allowed — admin management unchanged.
 	w = httptest.NewRecorder()
 	testHandler.UpdateSquad(w, squadScopeReq("", "PATCH", "/api/squads", map[string]any{
 		"name": "Renamed By Admin",
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateSquad as workspace owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 // TestAddSquadMember_CreatorAgentAccessGate verifies the comment-#2 rule: a
@@ -169,9 +156,7 @@ func TestAddSquadMember_CreatorAgentAccessGate(t *testing.T) {
 		"member_type": "agent",
 		"member_id":   publicWorkerID,
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("AddSquadMember public agent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Creator adds a private agent they cannot invoke — denied.
 	w = httptest.NewRecorder()
@@ -179,9 +164,7 @@ func TestAddSquadMember_CreatorAgentAccessGate(t *testing.T) {
 		"member_type": "agent",
 		"member_id":   privateAgentID,
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("AddSquadMember private agent as creator: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Workspace owner adds the same private agent — allowed (admin unchanged).
 	w = httptest.NewRecorder()
@@ -189,9 +172,7 @@ func TestAddSquadMember_CreatorAgentAccessGate(t *testing.T) {
 		"member_type": "agent",
 		"member_id":   privateAgentID,
 	}, map[string]string{"id": squad.ID}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("AddSquadMember private agent as owner: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 }
 
 // TestCreateSquad_CreatorPrivateLeaderForbidden verifies a non-admin cannot
@@ -202,12 +183,11 @@ func TestCreateSquad_CreatorPrivateLeaderForbidden(t *testing.T) {
 	}
 	privateAgentID, _, memberID := privateAgentTestFixture(t)
 
-	w := httptest.NewRecorder()
 	r := squadScopeReq(memberID, "POST", "/api/squads", map[string]any{
 		"name":      "Private Leader Squad",
 		"leader_id": privateAgentID,
 	}, nil)
-	testHandler.CreateSquad(w, r)
+	w := testutil.Call(t, testHandler.CreateSquad, r)
 	if w.Code != http.StatusForbidden {
 		// Nothing should have been created; if it slipped through, clean up.
 		if w.Code == http.StatusCreated {

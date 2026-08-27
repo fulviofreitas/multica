@@ -2,13 +2,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func vcsHandlerRequest(method, path string, body any, connectionID string) *http.Request {
@@ -34,19 +34,13 @@ func TestListVCSConnectionsHonorsDeploymentSwitch(t *testing.T) {
 	} {
 		t.Helper()
 		req := vcsHandlerRequest(http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/vcs/connections", nil, "")
-		w := httptest.NewRecorder()
-		testHandler.ListVCSConnections(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListVCSConnections: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListVCSConnections, req).Want(http.StatusOK)
 		var resp struct {
 			Connections []VCSConnectionResponse `json:"connections"`
 			Available   bool                    `json:"available"`
 			Configured  bool                    `json:"configured"`
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode ListVCSConnections: %v", err)
-		}
+		w.JSON(&resp)
 		return resp
 	}
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // childrenBatchFixture creates two parents with a couple of children each,
@@ -26,7 +27,7 @@ func newChildrenBatchFixture(t *testing.T) childrenBatchFixture {
 	t.Helper()
 
 	mkIssue := func(title, status, parentID string) IssueResponse {
-		w := httptest.NewRecorder()
+
 		body := map[string]any{
 			"title":  title + " " + time.Now().Format(time.RFC3339Nano),
 			"status": status,
@@ -35,7 +36,7 @@ func newChildrenBatchFixture(t *testing.T) childrenBatchFixture {
 			body["parent_issue_id"] = parentID
 		}
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body)
-		testHandler.CreateIssue(w, req)
+		w := testutil.Call(t, testHandler.CreateIssue, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("create %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
 		}
@@ -85,9 +86,7 @@ func TestListChildrenByParents_ReturnsChildrenForBothParentsInOneCall(t *testing
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids="+fx.parentA.ID+","+fx.parentB.ID, nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	got := decodeIssueBatch(t, w)
 	if len(got) != 3 {
@@ -113,9 +112,7 @@ func TestListChildrenByParents_EmptyParentIdsReturnsEmptyList(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := decodeIssueBatch(t, w); len(got) != 0 {
 		t.Fatalf("expected 0 children, got %d", len(got))
 	}
@@ -129,22 +126,17 @@ func TestListChildrenByParents_UnknownParentYieldsNoChildren(t *testing.T) {
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids=00000000-0000-0000-0000-000000000000", nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := decodeIssueBatch(t, w); len(got) != 0 {
 		t.Fatalf("expected 0 children, got %d", len(got))
 	}
 }
 
 func TestListChildrenByParents_RejectsMalformedID(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids=not-a-uuid", nil)
-	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
+	testutil.Call(t, testHandler.ListChildrenByParents, req).Want(http.StatusBadRequest)
 }
 
 func TestListChildrenByParents_RejectsTooManyParents(t *testing.T) {
@@ -155,13 +147,10 @@ func TestListChildrenByParents_RejectsTooManyParents(t *testing.T) {
 	for i := range ids {
 		ids[i] = "00000000-0000-0000-0000-000000000000"
 	}
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids="+strings.Join(ids, ","), nil)
-	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", w.Code)
-	}
+	testutil.Call(t, testHandler.ListChildrenByParents, req).Want(http.StatusBadRequest)
 }
 
 // TestListChildrenByParents_IgnoresForeignWorkspaceParents pins the
@@ -208,9 +197,7 @@ func TestListChildrenByParents_IgnoresForeignWorkspaceParents(t *testing.T) {
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids="+foreignParentID, nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	got := decodeIssueBatch(t, w)
 	if len(got) != 0 {
 		t.Fatalf("expected 0 children (foreign workspace isolation), got %d (first child id=%s)",
@@ -223,7 +210,7 @@ func TestListChildrenByParents_IgnoresForeignWorkspaceParents(t *testing.T) {
 // across repeated runs against the shared test database.
 func createChildIssue(t *testing.T, title, status, parentID string) IssueResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	body := map[string]any{
 		"title":  title + " " + time.Now().Format(time.RFC3339Nano),
 		"status": status,
@@ -232,7 +219,7 @@ func createChildIssue(t *testing.T, title, status, parentID string) IssueRespons
 		body["parent_issue_id"] = parentID
 	}
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body)
-	testHandler.CreateIssue(w, req)
+	w := testutil.Call(t, testHandler.CreateIssue, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
 	}
@@ -313,9 +300,7 @@ func TestListChildIssues_OrdersByNumberAsc(t *testing.T) {
 		"id", parent.ID,
 	)
 	testHandler.ListChildIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	assertNumberAscending(t, decodeIssueBatch(t, w), children)
 }
@@ -330,9 +315,7 @@ func TestListChildrenByParents_OrdersByNumberAscWithinParent(t *testing.T) {
 	req := newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids="+parent.ID, nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	assertNumberAscending(t, decodeIssueBatch(t, w), children)
 }
@@ -384,9 +367,7 @@ func TestListChildIssues_IncludesLabels(t *testing.T) {
 		"id", fx.parentA.ID,
 	)
 	testHandler.ListChildIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListChildIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	assertChildLabels(t, decodeIssueBatch(t, w))
 
 	// Batched listing.
@@ -394,8 +375,6 @@ func TestListChildIssues_IncludesLabels(t *testing.T) {
 	req = newRequest("GET", "/api/issues/children?workspace_id="+testWorkspaceID+
 		"&parent_ids="+fx.parentA.ID, nil)
 	testHandler.ListChildrenByParents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListChildrenByParents: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	assertChildLabels(t, decodeIssueBatch(t, w))
 }

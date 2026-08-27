@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestLabelCRUD exercises label create/list/get/update/delete.
@@ -20,9 +21,7 @@ func TestLabelCRUD(t *testing.T) {
 		"color": "#ef4444",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created LabelResponse
 	json.NewDecoder(w.Body).Decode(&created)
 	if created.Name != "bug" || created.Color != "#ef4444" {
@@ -31,10 +30,10 @@ func TestLabelCRUD(t *testing.T) {
 	labelID := created.ID
 
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+labelID, nil)
 		req = withURLParam(req, "id", labelID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 
 	// Duplicate name → 409
@@ -44,9 +43,7 @@ func TestLabelCRUD(t *testing.T) {
 		"color": "#000000",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("Duplicate CreateLabel: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusConflict, "HTTP status")
 
 	// Invalid color → 400
 	w = httptest.NewRecorder()
@@ -55,17 +52,13 @@ func TestLabelCRUD(t *testing.T) {
 		"color": "nope",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("Invalid color: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// List
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/labels", nil)
 	testHandler.ListLabels(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListLabels: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var listResp struct {
 		Labels []LabelResponse `json:"labels"`
 		Total  int             `json:"total"`
@@ -80,9 +73,7 @@ func TestLabelCRUD(t *testing.T) {
 	req = newRequest("GET", "/api/labels/"+labelID, nil)
 	req = withURLParam(req, "id", labelID)
 	testHandler.GetLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetLabel: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Update
 	w = httptest.NewRecorder()
@@ -92,9 +83,7 @@ func TestLabelCRUD(t *testing.T) {
 	})
 	req = withURLParam(req, "id", labelID)
 	testHandler.UpdateLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateLabel: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var updated LabelResponse
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.Name != "Bug (P0)" || updated.Color != "#b91c1c" {
@@ -112,9 +101,7 @@ func TestIssueLabelAttachDetach(t *testing.T) {
 		"priority": "medium",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	issueID := issue.ID
@@ -131,10 +118,10 @@ func TestIssueLabelAttachDetach(t *testing.T) {
 	labelID := label.ID
 
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+labelID, nil)
 		req = withURLParam(req, "id", labelID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 
 	// Attach
@@ -144,9 +131,7 @@ func TestIssueLabelAttachDetach(t *testing.T) {
 	})
 	req = withURLParam(req, "id", issueID)
 	testHandler.AttachLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("AttachLabel: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Attach again (idempotent — ON CONFLICT DO NOTHING)
 	w = httptest.NewRecorder()
@@ -155,18 +140,14 @@ func TestIssueLabelAttachDetach(t *testing.T) {
 	})
 	req = withURLParam(req, "id", issueID)
 	testHandler.AttachLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("AttachLabel (second): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// List labels for issue
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/issues/"+issueID+"/labels", nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.ListLabelsForIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListLabelsForIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var issueLabels struct {
 		Labels []LabelResponse `json:"labels"`
 	}
@@ -183,9 +164,7 @@ func TestIssueLabelAttachDetach(t *testing.T) {
 	req = newRequest("DELETE", "/api/issues/"+issueID+"/labels/"+labelID, nil)
 	req = withURLParams(req, "id", issueID, "labelId", labelID)
 	testHandler.DetachLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DetachLabel: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Confirm detached
 	w = httptest.NewRecorder()
@@ -206,9 +185,7 @@ func TestIssueLabelRejectsNonIssueScope(t *testing.T) {
 		"priority": "medium",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var issue IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&issue); err != nil {
 		t.Fatalf("decode issue: %v", err)
@@ -221,18 +198,16 @@ func TestIssueLabelRejectsNonIssueScope(t *testing.T) {
 		"color":         "#3b82f6",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var label LabelResponse
 	if err := json.NewDecoder(w.Body).Decode(&label); err != nil {
 		t.Fatalf("decode label: %v", err)
 	}
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+label.ID, nil)
 		req = withURLParam(req, "id", label.ID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 
 	w = httptest.NewRecorder()
@@ -241,17 +216,13 @@ func TestIssueLabelRejectsNonIssueScope(t *testing.T) {
 	})
 	req = withURLParam(req, "id", issue.ID)
 	testHandler.AttachLabel(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("AttachLabel with agent label: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	w = httptest.NewRecorder()
 	req = newRequest("DELETE", "/api/issues/"+issue.ID+"/labels/"+label.ID, nil)
 	req = withURLParams(req, "id", issue.ID, "labelId", label.ID)
 	testHandler.DetachLabel(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("DetachLabel with agent label: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // TestLabelNotFoundAcrossWorkspaces ensures GET with a foreign workspace
@@ -263,18 +234,16 @@ func TestLabelNotFoundAcrossWorkspaces(t *testing.T) {
 		"color": "#a855f7",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var label LabelResponse
 	json.NewDecoder(w.Body).Decode(&label)
 	labelID := label.ID
 
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+labelID, nil)
 		req = withURLParam(req, "id", labelID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 
 	// GET with a different workspace ID → 404
@@ -283,9 +252,7 @@ func TestLabelNotFoundAcrossWorkspaces(t *testing.T) {
 	req.Header.Set("X-Workspace-ID", "00000000-0000-0000-0000-000000000000")
 	req = withURLParam(req, "id", labelID)
 	testHandler.GetLabel(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("GetLabel cross-workspace: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // TestUpdateLabelCrossWorkspace — PUT with a foreign workspace header must not
@@ -299,18 +266,16 @@ func TestUpdateLabelCrossWorkspace(t *testing.T) {
 		"color": "#10b981",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel: expected 201, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var label LabelResponse
 	json.NewDecoder(w.Body).Decode(&label)
 	labelID := label.ID
 
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+labelID, nil)
 		req = withURLParam(req, "id", labelID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 
 	// PUT with a foreign workspace ID → 404
@@ -319,18 +284,14 @@ func TestUpdateLabelCrossWorkspace(t *testing.T) {
 	req.Header.Set("X-Workspace-ID", "00000000-0000-0000-0000-000000000000")
 	req = withURLParam(req, "id", labelID)
 	testHandler.UpdateLabel(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("UpdateLabel cross-workspace: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	// Sanity: the label wasn't renamed.
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/labels/"+labelID, nil)
 	req = withURLParam(req, "id", labelID)
 	testHandler.GetLabel(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetLabel after failed cross-workspace PUT: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var after LabelResponse
 	json.NewDecoder(w.Body).Decode(&after)
 	if after.Name != "cross-ws-update-test" {
@@ -351,9 +312,7 @@ func TestAttachLabelCrossWorkspaceLabel(t *testing.T) {
 		"priority": "medium",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 
@@ -379,9 +338,7 @@ func TestAttachLabelCrossWorkspaceLabel(t *testing.T) {
 	})
 	req = withURLParam(req, "id", issue.ID)
 	testHandler.AttachLabel(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("AttachLabel cross-workspace label: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	// Confirm nothing was attached.
 	w = httptest.NewRecorder()
@@ -406,9 +363,7 @@ func TestLabelNameTooLong(t *testing.T) {
 		"color": "#123456",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("CreateLabel too-long name: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Exactly 32 chars is fine.
 	okName := strings.Repeat("b", 32)
@@ -418,16 +373,14 @@ func TestLabelNameTooLong(t *testing.T) {
 		"color": "#123456",
 	})
 	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel 32-char name: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created LabelResponse
 	json.NewDecoder(w.Body).Decode(&created)
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+created.ID, nil)
 		req = withURLParam(req, "id", created.ID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 }
 
@@ -466,23 +419,18 @@ func TestLabelNameRejectsControlCharacters(t *testing.T) {
 			w := httptest.NewRecorder()
 			req := newRequest("POST", "/api/labels", tc.body)
 			tc.call(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 		})
 	}
 }
 
 func TestLabelNameAllowsEmoji(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/labels", map[string]any{
 		"name":  "🐛 bug",
 		"color": "#123456",
 	})
-	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateLabel emoji name: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateLabel, req).Want(http.StatusCreated)
 
 	var created LabelResponse
 	json.NewDecoder(w.Body).Decode(&created)
@@ -490,39 +438,37 @@ func TestLabelNameAllowsEmoji(t *testing.T) {
 		t.Fatalf("CreateLabel emoji name: got %q", created.Name)
 	}
 	t.Cleanup(func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("DELETE", "/api/labels/"+created.ID, nil)
 		req = withURLParam(req, "id", created.ID)
-		testHandler.DeleteLabel(w, req)
+		testutil.Call(t, testHandler.DeleteLabel, req)
 	})
 }
 
 func TestLabelResourceTypesHaveIndependentNamespaces(t *testing.T) {
 	name := "shared-scope-label-" + uuid.NewString()[:8]
 	for _, resourceType := range []string{"issue", "agent", "skill"} {
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/labels", map[string]any{
 			"resource_type": resourceType,
 			"name":          name,
 			"description":   resourceType + " description",
 			"color":         "#3b82f6",
 		})
-		testHandler.CreateLabel(w, req)
+		w := testutil.Call(t, testHandler.CreateLabel, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateLabel resource_type=%s: expected 201, got %d: %s", resourceType, w.Code, w.Body.String())
 		}
 		var created LabelResponse
-		if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-			t.Fatalf("decode created label: %v", err)
-		}
+		w.Decode(&created)
 		if created.ResourceType != resourceType || created.Description != resourceType+" description" {
 			t.Fatalf("unexpected scoped label: %+v", created)
 		}
 		t.Cleanup(func() {
-			w := httptest.NewRecorder()
+
 			req := newRequest("DELETE", "/api/labels/"+created.ID, nil)
 			req = withURLParam(req, "id", created.ID)
-			testHandler.DeleteLabel(w, req)
+			testutil.Call(t, testHandler.DeleteLabel, req)
 		})
 	}
 }
@@ -533,8 +479,7 @@ func TestDeleteResourceLabelCleansAssignments(t *testing.T) {
 
 	create := func(resourceType string) LabelResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.CreateLabel(w, newRequest("POST", "/api/labels", map[string]any{
+		w := testutil.Call(t, testHandler.CreateLabel, newRequest("POST", "/api/labels", map[string]any{
 			"resource_type": resourceType,
 			"name":          resourceType + "-cleanup-" + uuid.NewString()[:8],
 			"color":         "#3b82f6",
@@ -565,12 +510,9 @@ func TestDeleteResourceLabelCleansAssignments(t *testing.T) {
 	}
 
 	for _, labelID := range []string{agentLabel.ID, skillLabel.ID} {
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest("DELETE", "/api/labels/"+labelID, nil), "id", labelID)
-		testHandler.DeleteLabel(w, req)
-		if w.Code != http.StatusNoContent {
-			t.Fatalf("delete resource label: expected 204, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.DeleteLabel, req).Want(http.StatusNoContent)
 	}
 
 	for _, check := range []struct {
@@ -591,16 +533,13 @@ func TestDeleteResourceLabelCleansAssignments(t *testing.T) {
 }
 
 func TestLabelRejectsUnknownResourceType(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/labels", map[string]any{
 		"resource_type": "project",
 		"name":          "invalid-scope",
 		"color":         "#3b82f6",
 	})
-	testHandler.CreateLabel(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateLabel, req).Want(http.StatusBadRequest)
 }
 
 // TestColorCaseNormalization — input `#ABCDEF` must be stored as `#abcdef`
@@ -618,13 +557,13 @@ func TestColorCaseNormalization(t *testing.T) {
 		{"lower", "#123abc", "#123abc"},
 	}
 	for _, tc := range cases {
-		w := httptest.NewRecorder()
+
 		name := "color-norm-" + tc.nameSuffix // unique & case-independent
 		req := newRequest("POST", "/api/labels", map[string]any{
 			"name":  name,
 			"color": tc.input,
 		})
-		testHandler.CreateLabel(w, req)
+		w := testutil.Call(t, testHandler.CreateLabel, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateLabel %q: expected 201, got %d: %s", tc.input, w.Code, w.Body.String())
 		}
@@ -634,10 +573,10 @@ func TestColorCaseNormalization(t *testing.T) {
 			t.Errorf("color normalization %q: got %q, want %q", tc.input, got.Color, tc.want)
 		}
 		t.Cleanup(func() {
-			w := httptest.NewRecorder()
+
 			req := newRequest("DELETE", "/api/labels/"+got.ID, nil)
 			req = withURLParam(req, "id", got.ID)
-			testHandler.DeleteLabel(w, req)
+			testutil.Call(t, testHandler.DeleteLabel, req)
 		})
 	}
 }

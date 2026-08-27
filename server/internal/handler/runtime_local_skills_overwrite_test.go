@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // createImportTargetSkill inserts a skill (owned by ownerID) plus the given
@@ -112,54 +112,38 @@ func reportBundleBody(name, description, content string, files map[string]string
 func initiateLocalSkillImport(t *testing.T, runtimeID string, body map[string]any) string {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := withURLParams(
 		newRequestAsUser(testUserID, http.MethodPost, "/api/runtimes/"+runtimeID+"/local-skills/import", body),
 		"runtimeId", runtimeID,
 	)
-	testHandler.InitiateImportLocalSkill(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("InitiateImportLocalSkill: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.InitiateImportLocalSkill, req).Want(http.StatusOK)
 	var importReq RuntimeLocalSkillImportRequest
-	if err := json.NewDecoder(w.Body).Decode(&importReq); err != nil {
-		t.Fatalf("decode import request: %v", err)
-	}
+	w.Decode(&importReq)
 	return importReq.ID
 }
 
 func reportLocalSkillImport(t *testing.T, runtimeID, requestID string, body map[string]any) {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := withURLParams(
 		newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/local-skills/import/"+requestID+"/result", body, testWorkspaceID, "overwrite-test-daemon"),
 		"runtimeId", runtimeID,
 		"requestId", requestID,
 	)
-	testHandler.ReportLocalSkillImportResult(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ReportLocalSkillImportResult: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ReportLocalSkillImportResult, req).Want(http.StatusOK)
 }
 
 func pollLocalSkillImport(t *testing.T, runtimeID, requestID string) RuntimeLocalSkillImportRequest {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := withURLParams(
 		newRequestAsUser(testUserID, http.MethodGet, "/api/runtimes/"+runtimeID+"/local-skills/import/"+requestID, nil),
 		"runtimeId", runtimeID,
 		"requestId", requestID,
 	)
-	testHandler.GetLocalSkillImportRequest(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetLocalSkillImportRequest: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetLocalSkillImportRequest, req).Want(http.StatusOK)
 	var got RuntimeLocalSkillImportRequest
-	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
-		t.Fatalf("decode poll response: %v", err)
-	}
+	w.Decode(&got)
 	return got
 }
 

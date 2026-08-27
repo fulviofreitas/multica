@@ -2,10 +2,8 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -154,22 +153,14 @@ func TestCreateShareLink_RequiresOwnerAdmin(t *testing.T) {
 	// Owner succeeds.
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member"})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("owner create: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, r.ServeHTTP, req).Want(http.StatusCreated)
 
 	// Plain member is denied.
 	memberID := createTestUserAndMember(t, "member")
 	req2 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member"})
 	req2.Header.Set("X-User-ID", memberID)
 	req2 = withURLParam(req2, "id", testWorkspaceID)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusForbidden {
-		t.Fatalf("member create: expected 403, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, r.ServeHTTP, req2).Want(http.StatusForbidden)
 }
 
 func TestListShareLinks_RequiresOwnerAdmin(t *testing.T) {
@@ -185,22 +176,14 @@ func TestListShareLinks_RequiresOwnerAdmin(t *testing.T) {
 	// Owner can list.
 	req := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/share-links", nil)
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("owner list: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, r.ServeHTTP, req).Want(http.StatusOK)
 
 	// Plain member denied.
 	memberID := createTestUserAndMember(t, "member")
 	req2 := newRequest("GET", "/api/workspaces/"+testWorkspaceID+"/share-links", nil)
 	req2.Header.Set("X-User-ID", memberID)
 	req2 = withURLParam(req2, "id", testWorkspaceID)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusForbidden {
-		t.Fatalf("member list: expected 403, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, r.ServeHTTP, req2).Want(http.StatusForbidden)
 }
 
 func TestCreateShareLink_InvalidatesOldLink(t *testing.T) {
@@ -210,11 +193,7 @@ func TestCreateShareLink_InvalidatesOldLink(t *testing.T) {
 
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member"})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.CreateShareLink(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req).Want(http.StatusCreated)
 
 	var active bool
 	if err := testPool.QueryRow(context.Background(),
@@ -233,21 +212,13 @@ func TestCreateShareLink_RejectsInvalidInput(t *testing.T) {
 	neg := -1
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", ExpiresIn: &neg})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.CreateShareLink(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("negative expires_in: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req).Want(http.StatusBadRequest)
 
 	// Zero max_uses is rejected.
 	zero := 0
 	req2 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", MaxUses: &zero})
 	req2 = withURLParam(req2, "id", testWorkspaceID)
-	w2 := httptest.NewRecorder()
-	testHandler.CreateShareLink(w2, req2)
-	if w2.Code != http.StatusBadRequest {
-		t.Fatalf("zero max_uses: expected 400, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req2).Want(http.StatusBadRequest)
 }
 
 func TestCreateShareLink_RejectsOverflowingInput(t *testing.T) {
@@ -257,32 +228,20 @@ func TestCreateShareLink_RejectsOverflowingInput(t *testing.T) {
 	overMax := 2147483648 // MaxInt32 + 1
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", MaxUses: &overMax})
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.CreateShareLink(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("max_uses over MaxInt32: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req).Want(http.StatusBadRequest)
 
 	// expires_in above the duration-safe bound overflows time.Duration * time.Hour.
 	overExp := int(expiresInMaxHours) + 1
 	req2 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", ExpiresIn: &overExp})
 	req2 = withURLParam(req2, "id", testWorkspaceID)
-	w2 := httptest.NewRecorder()
-	testHandler.CreateShareLink(w2, req2)
-	if w2.Code != http.StatusBadRequest {
-		t.Fatalf("expires_in over duration-safe bound: expected 400, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req2).Want(http.StatusBadRequest)
 
 	// Boundary: expires_in == expiresInMaxHours must be accepted, and the
 	// stored expires_at must be strictly in the future (not wrapped negative).
 	maxExp := int(expiresInMaxHours)
 	req3 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", ExpiresIn: &maxExp})
 	req3 = withURLParam(req3, "id", testWorkspaceID)
-	w3 := httptest.NewRecorder()
-	testHandler.CreateShareLink(w3, req3)
-	if w3.Code != http.StatusCreated {
-		t.Fatalf("expires_in = duration-safe max: expected 201, got %d: %s", w3.Code, w3.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req3).Want(http.StatusCreated)
 	var expiresAt pgtype.Timestamptz
 	if err := testPool.QueryRow(context.Background(),
 		`SELECT expires_at FROM workspace_share_link WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`,
@@ -302,11 +261,7 @@ func TestCreateShareLink_RejectsOverflowingInput(t *testing.T) {
 	maxUse := 2147483647
 	req4 := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member", MaxUses: &maxUse})
 	req4 = withURLParam(req4, "id", testWorkspaceID)
-	w4 := httptest.NewRecorder()
-	testHandler.CreateShareLink(w4, req4)
-	if w4.Code != http.StatusCreated {
-		t.Fatalf("max_uses = MaxInt32: expected 201, got %d: %s", w4.Code, w4.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateShareLink, req4).Want(http.StatusCreated)
 }
 
 func TestJoinShareLink_ExpiredAndRevoked(t *testing.T) {
@@ -318,11 +273,7 @@ func TestJoinShareLink_ExpiredAndRevoked(t *testing.T) {
 
 	req := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: expired.Code})
 	req.Header.Set("X-User-ID", userID)
-	w := httptest.NewRecorder()
-	testHandler.JoinByShareLink(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expired join: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinByShareLink, req).Want(http.StatusNotFound)
 
 	// Deactivate the expired link so the workspace has room for a new active one.
 	if _, err := testPool.Exec(context.Background(),
@@ -338,11 +289,7 @@ func TestJoinShareLink_ExpiredAndRevoked(t *testing.T) {
 	}
 	req2 := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: revoked.Code})
 	req2.Header.Set("X-User-ID", userID)
-	w2 := httptest.NewRecorder()
-	testHandler.JoinByShareLink(w2, req2)
-	if w2.Code != http.StatusNotFound {
-		t.Fatalf("revoked join: expected 404, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinByShareLink, req2).Want(http.StatusNotFound)
 }
 
 func TestJoinShareLink_ConcurrentLastUse(t *testing.T) {
@@ -361,8 +308,7 @@ func TestJoinShareLink_ConcurrentLastUse(t *testing.T) {
 			userID := createTestUserAndMember(t, "")
 			req := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: link.Code})
 			req.Header.Set("X-User-ID", userID)
-			w := httptest.NewRecorder()
-			testHandler.JoinByShareLink(w, req)
+			w := testutil.Call(t, testHandler.JoinByShareLink, req)
 			results <- w.Code
 		}()
 	}
@@ -395,20 +341,12 @@ func TestJoinShareLink_DuplicateJoinDoesNotConsumeUse(t *testing.T) {
 	// First join succeeds.
 	req := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: link.Code})
 	req.Header.Set("X-User-ID", userID)
-	w := httptest.NewRecorder()
-	testHandler.JoinByShareLink(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("first join: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinByShareLink, req).Want(http.StatusOK)
 
 	// Duplicate join is rejected and must NOT consume another use.
 	req2 := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: link.Code})
 	req2.Header.Set("X-User-ID", userID)
-	w2 := httptest.NewRecorder()
-	testHandler.JoinByShareLink(w2, req2)
-	if w2.Code != http.StatusConflict {
-		t.Fatalf("duplicate join: expected 409, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinByShareLink, req2).Want(http.StatusConflict)
 
 	var useCount int32
 	if err := testPool.QueryRow(context.Background(),
@@ -450,11 +388,7 @@ func TestJoinShareLink_ReactivatesDeadLetterWithSameCapacityToken(t *testing.T) 
 
 	req := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: link.Code})
 	req.Header.Set("X-User-ID", userID)
-	w := httptest.NewRecorder()
-	testHandler.JoinByShareLink(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("join: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinByShareLink, req).Want(http.StatusOK)
 	tokens := stub.tokens()
 	if len(tokens) != 1 || tokens[0] != originalToken {
 		t.Fatalf("claim tokens=%v, want original %s", tokens, originalToken)
@@ -486,8 +420,7 @@ func TestJoinShareLink_ConcurrentSameUserUsesOneCapacityOperation(t *testing.T) 
 			<-start
 			req := newRequest("POST", "/api/share-links/join", JoinByShareLinkRequest{Code: link.Code})
 			req.Header.Set("X-User-ID", userID)
-			w := httptest.NewRecorder()
-			testHandler.JoinByShareLink(w, req)
+			w := testutil.Call(t, testHandler.JoinByShareLink, req)
 			statuses <- w.Code
 		}()
 	}
@@ -529,16 +462,9 @@ func TestGetShareLinkInfo_PublicResponseSlim(t *testing.T) {
 
 	req := newRequest("GET", "/api/share-links/"+link.Code, nil)
 	req = withURLParam(req, "code", link.Code)
-	w := httptest.NewRecorder()
-	testHandler.GetShareLinkInfo(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("public preview: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetShareLinkInfo, req).Want(http.StatusOK)
 	var raw map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("parse preview: %v", err)
-	}
+	w.JSON(&raw)
 	if _, ok := raw["creator_email"]; ok {
 		t.Fatal("public preview must not expose the inviter's email")
 	}
@@ -585,8 +511,7 @@ func TestShareLink_CrossWorkspaceDenied(t *testing.T) {
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member"})
 	req.Header.Set("X-User-ID", otherUser)
 	req = withURLParam(req, "id", testWorkspaceID)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	w := testutil.Call(t, r.ServeHTTP, req)
 	if w.Code != http.StatusForbidden && w.Code != http.StatusNotFound {
 		t.Fatalf("cross-workspace create: expected 403 or 404, got %d: %s", w.Code, w.Body.String())
 	}
@@ -608,8 +533,7 @@ func TestCreateShareLink_ConcurrentCreatesSingleActive(t *testing.T) {
 			defer wg.Done()
 			req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/share-links", CreateShareLinkRequest{Role: "member"})
 			req = withURLParam(req, "id", testWorkspaceID)
-			w := httptest.NewRecorder()
-			testHandler.CreateShareLink(w, req)
+			w := testutil.Call(t, testHandler.CreateShareLink, req)
 			results <- w.Code
 		}()
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -32,14 +33,7 @@ func TestDeleteChatSession_BroadcastsTaskCancelled(t *testing.T) {
 	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
 
 	var sessionID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
-		VALUES ($1, $2, $3, 'delete cancels its tasks', 'active')
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&sessionID); err != nil {
-		t.Fatalf("setup: create chat session: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, sessionID) })
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": testutil.Raw("'delete cancels its tasks'"), "status": testutil.Raw("'active'")})
 
 	var taskID string
 	if err := testPool.QueryRow(ctx, `
@@ -64,11 +58,7 @@ func TestDeleteChatSession_BroadcastsTaskCancelled(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.DeleteChatSession(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteChatSession: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteChatSession, req).Want(http.StatusNoContent)
 
 	mu.Lock()
 	defer mu.Unlock()

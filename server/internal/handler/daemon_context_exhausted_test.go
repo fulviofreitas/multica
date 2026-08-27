@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -44,28 +44,14 @@ func TestCompleteTask_ContextExhaustionFromOlderDaemonIsRecordedAsFailed(t *test
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
-		VALUES ($1, 'gh-6402 context exhaustion fixture', 'in_progress', 'none', $2, 'member', 6402, 0)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("setup: create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'gh-6402 context exhaustion fixture'"), "status": testutil.Raw("'in_progress'"), "priority": testutil.Raw("'none'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": testutil.Raw("6402"), "position": testutil.Raw("0")})
 
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
-		VALUES ($1, $2, $3, 'running', 0, now())
-		RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-		t.Fatalf("setup: create task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("0"), "started_at": testutil.Raw("now()")})
 
 	// Exactly what an older daemon posts: a successful completion whose output
 	// is the provider's notice, carrying the saturated session id.
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{
 			"output": "Prompt is too long · the request is ~274931 tokens (limit 200000) but this conversation is only ~1597 tokens — " +
@@ -79,10 +65,7 @@ func TestCompleteTask_ContextExhaustionFromOlderDaemonIsRecordedAsFailed(t *test
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	var status, failureReason string
 	if err := testPool.QueryRow(ctx, `
@@ -169,26 +152,11 @@ func TestCompleteTask_RealAnswerStillCompletes(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var issueID string
-			if err := testPool.QueryRow(ctx, `
-				INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
-				VALUES ($1, 'gh-6402 control fixture', 'in_progress', 'none', $2, 'member', $3, 0)
-				RETURNING id
-			`, testWorkspaceID, testUserID, tc.number).Scan(&issueID); err != nil {
-				t.Fatalf("setup: create issue: %v", err)
-			}
-			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+			issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'gh-6402 control fixture'"), "status": testutil.Raw("'in_progress'"), "priority": testutil.Raw("'none'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": tc.number, "position": testutil.Raw("0")})
 
 			var taskID string
-			if err := testPool.QueryRow(ctx, `
-				INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at)
-				VALUES ($1, $2, $3, 'running', 0, now())
-				RETURNING id
-			`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
-				t.Fatalf("setup: create task: %v", err)
-			}
-			t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+			taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("0"), "started_at": testutil.Raw("now()")})
 
-			w := httptest.NewRecorder()
 			req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 				map[string]any{"output": tc.output, "session_id": "sess-healthy"},
 				testWorkspaceID, "legit-daemon")
@@ -196,10 +164,7 @@ func TestCompleteTask_RealAnswerStillCompletes(t *testing.T) {
 			rctx.URLParams.Add("taskId", taskID)
 			req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-			testHandler.CompleteTask(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 			var status string
 			if err := testPool.QueryRow(ctx, `

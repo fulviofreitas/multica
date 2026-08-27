@@ -22,15 +22,9 @@ func TestGetConfigReportsCdnSignedMode(t *testing.T) {
 	fetch := func() AppConfig {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-		w := httptest.NewRecorder()
-		testHandler.GetConfig(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 		var cfg AppConfig
-		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-			t.Fatalf("decode config: %v", err)
-		}
+		w.JSON(&cfg)
 		return cfg
 	}
 
@@ -65,17 +59,10 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	t.Setenv("MULTICA_APP_URL", "https://app.example.com/")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 
 	if cfg.CdnDomain != "cdn.example.com" {
 		t.Fatalf("cdn_domain: want cdn.example.com, got %q", cfg.CdnDomain)
@@ -129,15 +116,9 @@ func TestGetConfigHonorsVCSIntegrationSwitch(t *testing.T) {
 	fetch := func() map[string]json.RawMessage {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-		w := httptest.NewRecorder()
-		testHandler.GetConfig(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 		var cfg map[string]json.RawMessage
-		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-			t.Fatalf("decode config: %v", err)
-		}
+		w.JSON(&cfg)
 		return cfg
 	}
 
@@ -162,17 +143,10 @@ func TestGetConfigUsesAppURLForSameOriginDaemonSetup(t *testing.T) {
 	t.Setenv("MULTICA_APP_URL", "https://multica.internal.example/")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if cfg.DaemonServerURL != "https://multica.internal.example" {
 		t.Fatalf("daemon_server_url: want same-origin URL, got %q", cfg.DaemonServerURL)
 	}
@@ -188,17 +162,10 @@ func TestGetConfigUsesFrontendOriginForSameOriginDaemonSetup(t *testing.T) {
 	t.Setenv("FRONTEND_ORIGIN", "https://multica.internal.example/")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if cfg.DaemonServerURL != "https://multica.internal.example" {
 		t.Fatalf("daemon_server_url: want same-origin URL, got %q", cfg.DaemonServerURL)
 	}
@@ -213,17 +180,10 @@ func TestGetConfigOmitsOfficialCloudDaemonSetup(t *testing.T) {
 	t.Setenv("FRONTEND_ORIGIN", "https://multica.ai")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if cfg.DaemonServerURL != "" {
 		t.Fatalf("daemon_server_url: want omitted for cloud, got %q", cfg.DaemonServerURL)
 	}
@@ -247,17 +207,10 @@ func TestGetConfigOmitsCloudDaemonSetupWithoutPublicURL(t *testing.T) {
 	t.Setenv("FRONTEND_ORIGIN", "https://multica.ai")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if cfg.DaemonServerURL != "" {
 		t.Fatalf("daemon_server_url: want omitted for official cloud, got %q", cfg.DaemonServerURL)
 	}
@@ -274,17 +227,10 @@ func TestGetConfigOmitsCloudDaemonSetupForConfiguredAppURL(t *testing.T) {
 	t.Setenv("FRONTEND_ORIGIN", "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if cfg.DaemonServerURL != "" {
 		t.Fatalf("daemon_server_url: want omitted for official cloud, got %q", cfg.DaemonServerURL)
 	}
@@ -327,17 +273,10 @@ func TestGetConfigExposesWorkspaceCreationDisabled(t *testing.T) {
 	t.Setenv("DISABLE_WORKSPACE_CREATION", "true")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if !cfg.WorkspaceCreationDisabled {
 		t.Fatalf("workspace_creation_disabled: want true with env on, got false (body=%s)", w.Body.String())
 	}
@@ -359,9 +298,7 @@ func TestGetConfigExposesServerVersion(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
 	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var cfg AppConfig
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode config: %v", err)
@@ -422,9 +359,7 @@ func TestGetConfigExposesFrontendFeatureFlags(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
 	w := httptest.NewRecorder()
 	h.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig default flags: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var cfg AppConfig
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode default config: %v", err)
@@ -460,9 +395,7 @@ func TestGetConfigExposesFrontendFeatureFlags(t *testing.T) {
 	withComposioMCPAppsFlag(t, h, true)
 	w = httptest.NewRecorder()
 	h.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig enabled flags: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
 		t.Fatalf("decode enabled config: %v", err)
 	}
@@ -476,15 +409,9 @@ func TestGetConfigExposesEnabledPluginsV1Flag(t *testing.T) {
 	withPluginsV1Flag(t, h, true)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-	h.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig enabled plugins_v1: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, h.GetConfig, req).Want(http.StatusOK)
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode enabled config: %v", err)
-	}
+	w.JSON(&cfg)
 	if !cfg.FeatureFlags["plugins_v1"] {
 		t.Fatal("plugins_v1: want true with flag enabled, got false")
 	}
@@ -498,24 +425,16 @@ func TestGetConfigExposesEnabledPluginsV1Flag(t *testing.T) {
 // flag, all of which would disable worktree mode for the users who can run it.
 func TestGetConfigDeclaresLocalWorktreeSupport(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if !cfg.LocalWorktreeSupported {
 		t.Fatal("this build runs the worktree save gate but does not advertise it; clients will hide the mode")
 	}
 	// Serialised as a real key, not omitted when false-by-accident: the client
 	// distinguishes "absent" (old server) from an explicit answer.
 	var raw map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode raw config: %v", err)
-	}
+	w.JSON(&raw)
 	if _, ok := raw["local_worktree_supported"]; !ok {
 		t.Fatal("local_worktree_supported missing from the JSON body")
 	}
@@ -527,22 +446,14 @@ func TestGetConfigDeclaresLocalWorktreeSupport(t *testing.T) {
 // update writes that contain it.
 func TestGetConfigDeclaresAgentConversationStartersSupport(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetConfig, req).Want(http.StatusOK)
 	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
+	w.JSON(&cfg)
 	if !cfg.AgentConversationStartersSupported {
 		t.Fatal("this build persists conversation_starters but does not advertise the contract")
 	}
 	var raw map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode raw config: %v", err)
-	}
+	w.JSON(&raw)
 	if _, ok := raw["agent_conversation_starters_supported"]; !ok {
 		t.Fatal("agent_conversation_starters_supported missing from the JSON body")
 	}

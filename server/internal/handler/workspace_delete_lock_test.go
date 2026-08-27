@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // setWorkspaceDeleteLockTimeoutForTest is a package-private hook used only by
@@ -70,16 +72,7 @@ func TestDeleteWorkspace_FailsFastWhenRollupLockHeld(t *testing.T) {
 	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
 
 	var wsID string
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO workspace (name, slug, description)
-VALUES ($1, $2, $3)
-RETURNING id
-`, "Handler Test Delete Lock", slug, "DeleteWorkspace lock timeout test").Scan(&wsID); err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, wsID)
-	})
+	wsID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Handler Test Delete Lock", "slug": slug, "description": "DeleteWorkspace lock timeout test"})
 
 	if _, err := testPool.Exec(ctx, `
 INSERT INTO member (workspace_id, user_id, role)
@@ -108,9 +101,7 @@ VALUES ($1, $2, 'owner')
 		t.Fatal("DeleteWorkspace blocked on advisory lock 4246 instead of timing out — this is the hang users see as 'delete workspace does nothing' (MUL-5983)")
 	}
 
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 while advisory lock 4246 is held, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusServiceUnavailable, "HTTP status")
 
 	var exists bool
 	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, wsID).Scan(&exists); err != nil {
@@ -140,16 +131,7 @@ func TestDeleteWorkspace_SucceedsWhenRollupLockIsFree(t *testing.T) {
 	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
 
 	var wsID string
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO workspace (name, slug, description)
-VALUES ($1, $2, $3)
-RETURNING id
-`, "Handler Test Delete Lock Free", slug, "DeleteWorkspace lock timeout test").Scan(&wsID); err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, wsID)
-	})
+	wsID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Handler Test Delete Lock Free", "slug": slug, "description": "DeleteWorkspace lock timeout test"})
 
 	if _, err := testPool.Exec(ctx, `
 INSERT INTO member (workspace_id, user_id, role)
@@ -158,14 +140,9 @@ VALUES ($1, $2, 'owner')
 		t.Fatalf("create owner member: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+wsID, nil)
 	req = withURLParam(req, "id", wsID)
-	testHandler.DeleteWorkspace(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204 from an uncontended delete, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
 
 	var exists bool
 	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, wsID).Scan(&exists); err != nil {

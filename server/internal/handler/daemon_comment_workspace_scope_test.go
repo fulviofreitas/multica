@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -17,14 +16,7 @@ import (
 func insertCommentForScopeTest(t *testing.T, ctx context.Context, issueID, workspaceID, content string) string {
 	t.Helper()
 	var id string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
-		VALUES ($1, $2, 'member', $3, $4, 'comment')
-		RETURNING id
-	`, issueID, workspaceID, testUserID, content).Scan(&id); err != nil {
-		t.Fatalf("insert comment: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM comment WHERE id = $1`, id) })
+	id = dbfx.Insert(t, "comment", testutil.Cols{"issue_id": issueID, "workspace_id": workspaceID, "author_type": testutil.Raw("'member'"), "author_id": testUserID, "content": content, "type": testutil.Raw("'comment'")})
 	return id
 }
 
@@ -57,14 +49,11 @@ func enqueueIssueTaskWithTrigger(t *testing.T, ctx context.Context, agentID, iss
 // when absent — omitempty on the wire) plus the raw response body.
 func claimTriggerFieldsForTest(t *testing.T, runtimeID string) (taskID, triggerContent, triggerSummary, raw string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "comment-workspace-scope")
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 	var resp struct {
 		Task *struct {
 			ID                    string `json:"id"`
@@ -72,9 +61,7 @@ func claimTriggerFieldsForTest(t *testing.T, runtimeID string) (taskID, triggerC
 			TriggerSummary        string `json:"trigger_summary"`
 		} `json:"task"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode claim response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Task == nil {
 		return "", "", "", w.Body.String()
 	}

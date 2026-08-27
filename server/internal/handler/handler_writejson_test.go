@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestWriteMeasuredJSONByteIdenticalToWriteJSON locks the load-bearing assumption
@@ -79,9 +81,7 @@ func TestWriteMeasuredJSONByteIdenticalToWriteJSON(t *testing.T) {
 			if n != len(encBody) {
 				t.Fatalf("reported payload bytes %d != writeJSON body length %d", n, len(encBody))
 			}
-			if recEnc.Code != recMeasured.Code {
-				t.Fatalf("status code differs: writeJSON=%d writeMeasuredJSON=%d", recEnc.Code, recMeasured.Code)
-			}
+			testutil.Equal(t, recEnc.Code, recMeasured.Code, "HTTP status")
 			if got, want := recMeasured.Header().Get("Content-Type"), recEnc.Header().Get("Content-Type"); got != want {
 				t.Fatalf("Content-Type differs: writeMeasuredJSON=%q writeJSON=%q", got, want)
 			}

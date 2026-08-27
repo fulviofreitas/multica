@@ -4,12 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // buildTestZip packs the given path->content map into an in-memory zip and
@@ -244,16 +245,9 @@ func TestImportSkill_ArchiveUploadCreatesSkill(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM skill WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, name)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.ImportSkill(w, newSkillArchiveImportRequest(testUserID, archive, name+".skill", "fail"))
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ImportSkill, newSkillArchiveImportRequest(testUserID, archive, name+".skill", "fail")).Want(http.StatusCreated)
 	var body SkillImportResult
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&body)
 	if body.Status != "created" || body.Skill == nil {
 		t.Fatalf("body = %#v", body)
 	}
@@ -282,16 +276,9 @@ func TestImportSkill_ArchiveUploadConflictSkip(t *testing.T) {
 		skillName + "/SKILL.md": skillMdWithName(skillName, "From archive"),
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.ImportSkill(w, newSkillArchiveImportRequest(testUserID, archive, skillName+".skill", "skip"))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ImportSkill, newSkillArchiveImportRequest(testUserID, archive, skillName+".skill", "skip")).Want(http.StatusOK)
 	var body SkillImportResult
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&body)
 	if body.Status != "skipped" {
 		t.Fatalf("status = %q, want skipped", body.Status)
 	}
@@ -304,9 +291,5 @@ func TestImportSkill_ArchiveUploadRejectsNonZip(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test DB not configured")
 	}
-	w := httptest.NewRecorder()
-	testHandler.ImportSkill(w, newSkillArchiveImportRequest(testUserID, []byte("not a zip at all"), "bad.skill", "fail"))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ImportSkill, newSkillArchiveImportRequest(testUserID, []byte("not a zip at all"), "bad.skill", "fail")).Want(http.StatusBadRequest)
 }

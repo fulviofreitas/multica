@@ -321,15 +321,9 @@ func TestGitHubConnectRepositoryReturnTarget(t *testing.T) {
 		nil,
 	)
 	req = withURLParam(req, "id", wsID)
-	rec := httptest.NewRecorder()
-	(&Handler{}).GitHubConnect(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GitHubConnect: got %d (%s)", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, (&Handler{}).GitHubConnect, req).Want(http.StatusOK)
 	var body GitHubConnectResponse
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode connect response: %v", err)
-	}
+	rec.Decode(&body)
 	installURL, err := url.Parse(body.URL)
 	if err != nil {
 		t.Fatalf("parse install URL: %v", err)
@@ -345,11 +339,7 @@ func TestGitHubConnectRepositoryReturnTarget(t *testing.T) {
 		nil,
 	)
 	badReq = withURLParam(badReq, "id", wsID)
-	badRec := httptest.NewRecorder()
-	(&Handler{}).GitHubConnect(badRec, badReq)
-	if badRec.Code != http.StatusBadRequest {
-		t.Fatalf("invalid return target: got %d, want 400", badRec.Code)
-	}
+	testutil.Call(t, (&Handler{}).GitHubConnect, badReq).Want(http.StatusBadRequest)
 }
 
 func TestGitHubSetupCallbackRepositoryReturnTarget(t *testing.T) {
@@ -366,11 +356,7 @@ func TestGitHubSetupCallbackRepositoryReturnTarget(t *testing.T) {
 		"/api/github/setup?installation_id=not-a-number&state="+url.QueryEscape(state),
 		nil,
 	)
-	rec := httptest.NewRecorder()
-	(&Handler{}).GitHubSetupCallback(rec, req)
-	if rec.Code != http.StatusFound {
-		t.Fatalf("GitHubSetupCallback: got %d, want 302", rec.Code)
-	}
+	rec := testutil.Call(t, (&Handler{}).GitHubSetupCallback, req).Want(http.StatusFound)
 	if got := rec.Header().Get("Location"); got != "https://app.multica.test/settings?tab=repositories&github_error=bad_installation_id" {
 		t.Fatalf("redirect = %q, want repository settings error", got)
 	}
@@ -458,7 +444,7 @@ func TestWebhook_MergedPR_AdvancesLinkedIssueToDone(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req2.Header.Set("X-GitHub-Event", "pull_request")
 	req2.Header.Set("X-Hub-Signature-256", sig)
-	w = testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
 
 	// Verify PR row + link + issue status.
 	pr, err := testHandler.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
@@ -546,7 +532,7 @@ func TestWebhook_MergedPR_PreservesCancelled(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
 	req2.Header.Set("X-GitHub-Event", "pull_request")
 	req2.Header.Set("X-Hub-Signature-256", sig)
-	w = testutil.Call(t, testHandler.HandleGitHubWebhook, req2)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2)
 
 	updated, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
 	if err != nil {
@@ -1741,8 +1727,7 @@ func TestListGitHubInstallations_RoleGating(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/github/installations", nil)
 		req = withURLParam(req, "id", testWorkspaceID)
 		req = req.WithContext(middleware.SetMemberContext(req.Context(), testWorkspaceID, db.Member{Role: role}))
-		w := httptest.NewRecorder()
-		testHandler.ListGitHubInstallations(w, req)
+		w := testutil.Call(t, testHandler.ListGitHubInstallations, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("ListGitHubInstallations(%s): %d %s", role, w.Code, w.Body.String())
 		}
@@ -1910,8 +1895,7 @@ INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, $3)
 		if userID != "" {
 			req.Header.Set("X-User-ID", userID)
 		}
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+		rec := testutil.Call(t, router.ServeHTTP, req)
 		return rec.Code
 	}
 
@@ -2097,7 +2081,7 @@ func TestWebhook_MergedPR_ChildWithParent_NotifiesParent(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
 	req2.Header.Set("X-GitHub-Event", "pull_request")
 	req2.Header.Set("X-Hub-Signature-256", sig)
-	w = testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
+	testutil.Call(t, testHandler.HandleGitHubWebhook, req2).Want(http.StatusAccepted)
 
 	// Child must now be done (sanity check — the existing path).
 	updatedChild, err := testHandler.Queries.GetIssue(ctx, parseUUID(child.ID))
@@ -2361,16 +2345,13 @@ func TestListGitHubInstallationRepositoriesRejectsCrossWorkspaceRow(t *testing.T
 		"/api/workspaces/"+otherWorkspaceID+"/github/installations/"+uuidToString(row.ID)+"/repositories",
 		nil,
 	)
-	rec := httptest.NewRecorder()
+
 	router := chi.NewRouter()
 	router.Get(
 		"/api/workspaces/{id}/github/installations/{installationId}/repositories",
 		testHandler.ListGitHubInstallationRepositories,
 	)
-	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("cross-workspace row: got %d (%s), want 404", rec.Code, rec.Body.String())
-	}
+	testutil.Call(t, router.ServeHTTP, req).Want(http.StatusNotFound)
 }
 
 // TestFetchInstallationAccount_AuthenticatedPopulatesRow simulates the
@@ -2651,14 +2632,10 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 	mac.Write(body)
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
-	rec := httptest.NewRecorder()
 	hookReq := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(body))
 	hookReq.Header.Set("X-GitHub-Event", "installation")
 	hookReq.Header.Set("X-Hub-Signature-256", sig)
-	testHandler.HandleGitHubWebhook(rec, hookReq)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("webhook: expected 202, got %d (%s)", rec.Code, rec.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleGitHubWebhook, hookReq).Want(http.StatusAccepted)
 
 	var pendingLogin string
 	dbfx.QueryRow(t,
@@ -2677,11 +2654,7 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		fmt.Sprintf("/api/github/setup?installation_id=%d&state=%s", installationID, state),
 		nil,
 	)
-	setupRec := httptest.NewRecorder()
-	testHandler.GitHubSetupCallback(setupRec, setupReq)
-	if setupRec.Code != http.StatusFound {
-		t.Fatalf("setup callback: expected 302, got %d (%s)", setupRec.Code, setupRec.Body.String())
-	}
+	setupRec := testutil.Call(t, testHandler.GitHubSetupCallback, setupReq).Want(http.StatusFound)
 	if loc := setupRec.Header().Get("Location"); !strings.Contains(loc, "github_connected=1") {
 		t.Fatalf("setup callback redirect = %q, want github_connected=1", loc)
 	}
@@ -2728,14 +2701,10 @@ func TestWebhook_PullRequest_FansOutToBoundWorkspaces(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 
 	// Workspace B is the shared test workspace (prefix HAN) and owns the issue.
-	w := httptest.NewRecorder()
-	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "fan-out PR test",
 		"status": "in_progress",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var created IssueResponse
 	json.NewDecoder(w.Body).Decode(&created)
 
@@ -2826,14 +2795,10 @@ func TestWebhook_PullRequest_AmbiguousCloseAcrossWorkspaces(t *testing.T) {
 
 	// Workspace B is the shared test workspace and owns the issue the PR is
 	// really for.
-	w := httptest.NewRecorder()
-	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "ambiguous close test",
 		"status": "in_progress",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var issueB IssueResponse
 	json.NewDecoder(w.Body).Decode(&issueB)
 
@@ -2995,14 +2960,10 @@ func TestWebhook_PullRequest_UniqueResolverAmongBindingsStillAutoCompletes(t *te
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 	setWorkspaceIssuePrefixForTest(t, "UNQ")
 
-	w := httptest.NewRecorder()
-	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "unique resolver test",
 		"status": "in_progress",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var issueB IssueResponse
 	json.NewDecoder(w.Body).Decode(&issueB)
 
@@ -3055,14 +3016,10 @@ func TestWebhook_PullRequest_UnreadableWorkspaceWithholdsCloseIntent(t *testing.
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
 	setWorkspaceIssuePrefixForTest(t, "UNR")
 
-	w := httptest.NewRecorder()
-	testHandler.CreateIssue(w, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "unreadable workspace test",
 		"status": "in_progress",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var issueB IssueResponse
 	json.NewDecoder(w.Body).Decode(&issueB)
 

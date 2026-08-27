@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
@@ -30,14 +31,7 @@ type batchClaimResponse struct {
 func seedQueuedIssueTask(t *testing.T, ctx context.Context, agentID, runtimeID, issueID string) string {
 	t.Helper()
 	var id string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
-		VALUES ($1, $2, $3, 'queued', 0)
-		RETURNING id
-	`, agentID, runtimeID, issueID).Scan(&id); err != nil {
-		t.Fatalf("seed queued task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, id) })
+	id = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("0")})
 	return id
 }
 
@@ -73,9 +67,7 @@ func TestClaimTasksByRuntime_RoutesAcrossRuntimesAndMintsTokens(t *testing.T) {
 	seedQueuedIssueTask(t, ctx, a2, rt2, i2)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rt1, rt2}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -134,9 +126,7 @@ func TestClaimTasksByRuntime_IncludesActiveSiblingRun(t *testing.T) {
 	seedQueuedIssueTask(t, ctx, agentID, runtimeID, queuedSiblingIssueID)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{runtimeID}, 1)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -168,10 +158,7 @@ func TestClaimTasksByRuntime_SkipsCrossWorkspaceRuntime(t *testing.T) {
 		t.Fatalf("foreign user: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, foreignUser) })
-	if err := testPool.QueryRow(ctx, `INSERT INTO workspace (name, slug, description, issue_prefix) VALUES ('Foreign WS','batch-foreign-ws','x','FGN') RETURNING id`).Scan(&foreignWS); err != nil {
-		t.Fatalf("foreign workspace: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, foreignWS) })
+	foreignWS = dbfx.Insert(t, "workspace", testutil.Cols{"name": testutil.Raw("'Foreign WS'"), "slug": testutil.Raw("'batch-foreign-ws'"), "description": testutil.Raw("'x'"), "issue_prefix": testutil.Raw("'FGN'")})
 	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1,$2,'owner')`, foreignWS, foreignUser); err != nil {
 		t.Fatalf("foreign member: %v", err)
 	}
@@ -198,9 +185,7 @@ func TestClaimTasksByRuntime_SkipsCrossWorkspaceRuntime(t *testing.T) {
 
 	// Daemon token scoped to the (unrelated) handler-test workspace.
 	w := postBatchClaim(t, testWorkspaceID, []string{foreignRT}, 5)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -228,21 +213,13 @@ func TestClaimTasksByRuntime_CancelsTaskWhenRuntimeOwnerMissing(t *testing.T) {
 	ctx := context.Background()
 
 	var rtNull string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
-		VALUES ($1, NULL, 'Ownerless RT', 'cloud', 'handler_test_runtime', 'online', 'x', '{}'::jsonb, now(), 'private', NULL)
-		RETURNING id`, testWorkspaceID).Scan(&rtNull); err != nil {
-		t.Fatalf("ownerless runtime: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_runtime WHERE id = $1`, rtNull) })
+	rtNull = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("NULL"), "name": testutil.Raw("'Ownerless RT'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'handler_test_runtime'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'x'"), "metadata": testutil.Raw("'{}'::jsonb"), "last_seen_at": testutil.Raw("now()"), "visibility": testutil.Raw("'private'"), "owner_id": testutil.Raw("NULL")})
 
 	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, rtNull, "Ownerless agent")
 	taskID := seedQueuedIssueTask(t, ctx, agentID, rtNull, issueID)
 
 	w := postBatchClaim(t, testWorkspaceID, []string{rtNull}, 1)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp batchClaimResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)

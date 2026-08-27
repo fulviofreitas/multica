@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // claimContinuityGapProbe decodes just the continuity-gap fields off a claim
@@ -20,17 +20,12 @@ type claimContinuityGapProbe struct {
 
 func claimOneTaskForRuntime(t *testing.T, runtimeID, daemonID string) claimContinuityGapProbe {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, daemonID)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 	var probe claimContinuityGapProbe
-	if err := json.NewDecoder(w.Body).Decode(&probe); err != nil {
-		t.Fatalf("decode claim response: %v", err)
-	}
+	w.Decode(&probe)
 	if probe.Task == nil {
 		t.Fatal("expected a claimed task in the response")
 	}
@@ -53,14 +48,7 @@ func TestClaimTaskByRuntime_ChatRolloutMissingDisclosesGap(t *testing.T) {
 
 	// Chat session that still carries a good resume pointer from an earlier turn.
 	var sessionID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status, runtime_id, session_id, work_dir)
-		VALUES ($1, $2, $3, 'gap chat', 'active', $4, 'OLD-GOOD-CHAT-SESSION', '/tmp/chat')
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID, runtimeID).Scan(&sessionID); err != nil {
-		t.Fatalf("create chat session: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID) })
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": testutil.Raw("'gap chat'"), "status": testutil.Raw("'active'"), "runtime_id": runtimeID, "session_id": testutil.Raw("'OLD-GOOD-CHAT-SESSION'"), "work_dir": testutil.Raw("'/tmp/chat'")})
 
 	// Most recent terminal turn on this session withheld its Codex session.
 	if _, err := testPool.Exec(ctx, `
@@ -76,14 +64,7 @@ func TestClaimTaskByRuntime_ChatRolloutMissingDisclosesGap(t *testing.T) {
 		t.Fatalf("insert chat message: %v", err)
 	}
 
-	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, 'queued', 1000, $3) RETURNING id
-	`, agentID, runtimeID, sessionID).Scan(&taskID); err != nil {
-		t.Fatalf("create chat follow-up task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("1000"), "chat_session_id": sessionID})
 
 	probe := claimOneTaskForRuntime(t, runtimeID, "chat-gap-claim-test")
 	if !probe.Task.PriorSessionResumeUnavailable {
@@ -130,14 +111,8 @@ func TestClaimTaskByRuntime_RerunSourceRolloutMissingDisclosesGap(t *testing.T) 
 
 	// A manual rerun of that source task, queued to claim (rerun carries
 	// force_fresh_session=true; the disclosure must still fire from the source).
-	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, rerun_of_task_id, force_fresh_session)
-		VALUES ($1, $2, $3, 'queued', 1000, $4, TRUE) RETURNING id
-	`, agentID, runtimeID, issueID, srcID).Scan(&taskID); err != nil {
-		t.Fatalf("create rerun task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "issue_id": issueID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("1000"), "rerun_of_task_id": srcID, "force_fresh_session": testutil.Raw("TRUE")})
 
 	probe := claimOneTaskForRuntime(t, runtimeID, "rerun-gap-claim-test")
 	if !probe.Task.PriorSessionResumeUnavailable {

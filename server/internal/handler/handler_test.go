@@ -341,9 +341,7 @@ func TestIssueCRUD(t *testing.T) {
 		"priority": "medium",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	var created IssueResponse
 	json.NewDecoder(w.Body).Decode(&created)
@@ -360,9 +358,7 @@ func TestIssueCRUD(t *testing.T) {
 	req = newRequest("GET", "/api/issues/"+issueID, nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.GetIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var fetched IssueResponse
 	json.NewDecoder(w.Body).Decode(&fetched)
@@ -378,9 +374,7 @@ func TestIssueCRUD(t *testing.T) {
 	})
 	req = withURLParam(req, "id", issueID)
 	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var updated IssueResponse
 	json.NewDecoder(w.Body).Decode(&updated)
@@ -398,9 +392,7 @@ func TestIssueCRUD(t *testing.T) {
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/issues?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var listResp map[string]any
 	json.NewDecoder(w.Body).Decode(&listResp)
@@ -414,18 +406,14 @@ func TestIssueCRUD(t *testing.T) {
 	req = newRequest("DELETE", "/api/issues/"+issueID, nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.DeleteIssue(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteIssue: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 
 	// Verify deleted
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/issues/"+issueID, nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.GetIssue(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("GetIssue after delete: expected 404, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // TestDeleteIssueByIdentifier guards against #1661 — DELETE /api/issues/{id}
@@ -464,7 +452,7 @@ func TestDeleteIssueByIdentifier(t *testing.T) {
 	// Delete using the human-readable identifier (e.g. "HAN-1") rather than the UUID.
 	req = newRequest("DELETE", "/api/issues/"+created.Identifier, nil)
 	req = withURLParam(req, "id", created.Identifier)
-	w = testutil.Call(t, testHandler.DeleteIssue, req).Want(http.StatusNoContent)
+	testutil.Call(t, testHandler.DeleteIssue, req).Want(http.StatusNoContent)
 
 	// Verify the row is actually gone — the silent-data-loss bug would have
 	// returned 204 here too, but the row would still exist.
@@ -546,9 +534,7 @@ func TestDeleteIssueRejectsInvalidUUID(t *testing.T) {
 	if w.Code == http.StatusNoContent {
 		t.Fatalf("DeleteIssue with invalid id: must not return 204; got %d", w.Code)
 	}
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("DeleteIssue with invalid id: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // TestCreateIssueDefaultStatusIsTodo verifies that issues created without an
@@ -844,9 +830,7 @@ func TestCreateIssueRejectsActiveDuplicate(t *testing.T) {
 		Issue IssueResponse `json:"issue"`
 	}
 	w.JSON(&conflict)
-	if conflict.Code != "active_duplicate_issue" {
-		t.Fatalf("code = %q, want active_duplicate_issue", conflict.Code)
-	}
+	testutil.Equal(t, conflict.Code, "active_duplicate_issue", "HTTP status")
 	if conflict.Issue.ID != issueID || conflict.Issue.Status != "in_progress" {
 		t.Fatalf("conflict issue = %#v, want original %s in_progress", conflict.Issue, issueID)
 	}
@@ -1271,7 +1255,7 @@ func TestAutopilotDispatchUsesCurrentProjectBinding(t *testing.T) {
 		"project_id": projectBID,
 	})
 	req = withURLParam(req, "id", autopilotID)
-	w = testutil.Call(t, testHandler.UpdateAutopilot, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateAutopilot, req).Want(http.StatusOK)
 
 	run, err := testHandler.AutopilotService.DispatchAutopilot(ctx, ap, pgtype.UUID{}, "manual", nil)
 	if err != nil {
@@ -1470,7 +1454,7 @@ func TestUpdateIssueRejectsMalformedAssigneeID(t *testing.T) {
 		"assignee_id": "not-a-uuid",
 	})
 	req = withURLParam(req, "id", created.ID)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusBadRequest)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusBadRequest)
 }
 
 // TestUpdateIssueRejectsNonexistentMemberAssignee verifies the same gap is
@@ -1493,7 +1477,7 @@ func TestUpdateIssueRejectsNonexistentMemberAssignee(t *testing.T) {
 		"assignee_id":   "00000000-0000-0000-0000-000000000000",
 	})
 	req = withURLParam(req, "id", created.ID)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusBadRequest)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusBadRequest)
 }
 
 // TestUpdateIssueAllowsExplicitUnassign verifies that sending null for both
@@ -1561,7 +1545,7 @@ func TestCommentCRUD(t *testing.T) {
 	// Cleanup
 	req = newRequest("DELETE", "/api/issues/"+issueID, nil)
 	req = withURLParam(req, "id", issueID)
-	w = testutil.Call(t, testHandler.DeleteIssue, req)
+	testutil.Call(t, testHandler.DeleteIssue, req)
 }
 
 func TestCommentWritePathsPreserveIssueIdentifiers(t *testing.T) {
@@ -1635,11 +1619,11 @@ func TestCreateCommentRejectsMalformedParentID(t *testing.T) {
 		"parent_id": "not-a-uuid",
 	})
 	req = withURLParam(req, "id", issue.ID)
-	w = testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusBadRequest)
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusBadRequest)
 
 	req = newRequest("DELETE", "/api/issues/"+issue.ID, nil)
 	req = withURLParam(req, "id", issue.ID)
-	w = testutil.Call(t, testHandler.DeleteIssue, req)
+	testutil.Call(t, testHandler.DeleteIssue, req)
 }
 
 func TestGetChatSessionRejectsMalformedSessionID(t *testing.T) {
@@ -1776,8 +1760,7 @@ func TestRequestBodyUUIDFieldsRejectMalformed(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			tt.handle(w, tt.req)
+			w := testutil.Call(t, tt.handle, tt.req)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("%s: expected 400 for malformed body UUID, got %d: %s", tt.name, w.Code, w.Body.String())
 			}
@@ -2058,7 +2041,7 @@ func TestWorkspaceCRUD(t *testing.T) {
 	wsID := workspaces[0].ID
 	req := newRequest("GET", "/api/workspaces/"+wsID, nil)
 	req = withURLParam(req, "id", wsID)
-	w = testutil.Call(t, testHandler.GetWorkspace, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.GetWorkspace, req).Want(http.StatusOK)
 }
 
 func TestCreateWorkspaceUsesRequestedSlug(t *testing.T) {
@@ -2112,16 +2095,13 @@ func TestCreateWorkspaceInvalidSlugReturnsBadRequest(t *testing.T) {
 }
 
 func TestSendCode(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	body := map[string]string{"email": "sendcode-test@multica.ai"}
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(body)
 	req := httptest.NewRequest("POST", "/auth/send-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
-	testHandler.SendCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SendCode: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.SendCode, req).Want(http.StatusOK)
 
 	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp)
@@ -2144,7 +2124,6 @@ func TestSendCodeDbError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	w := httptest.NewRecorder()
 	body := map[string]string{"email": "dberror-test@multica.ai"}
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(body)
@@ -2152,13 +2131,11 @@ func TestSendCodeDbError(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(ctx)
 
-	testHandler.SendCode(w, req)
+	w := testutil.Call(t, testHandler.SendCode, req)
 
 	// If the DB query respects the cancelled context, it should return an error.
 	// pgx usually returns context.Canceled which is not what isNotFound checks for.
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("SendCode (db error): expected 500, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusInternalServerError, "HTTP status")
 
 	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp)
@@ -2181,9 +2158,7 @@ func TestSendCodeRateLimit(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/send-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.SendCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SendCode (first): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Second request within 60s should be rate limited
 	w = httptest.NewRecorder()
@@ -2192,9 +2167,7 @@ func TestSendCodeRateLimit(t *testing.T) {
 	req = httptest.NewRequest("POST", "/auth/send-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.SendCode(w, req)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("SendCode (second): expected 429, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusTooManyRequests, "HTTP status")
 }
 
 func TestVerifyCode(t *testing.T) {
@@ -2222,9 +2195,7 @@ func TestVerifyCode(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/send-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.SendCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SendCode: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Read code from DB
 	dbCode, err := testHandler.Queries.GetLatestVerificationCode(ctx, email)
@@ -2239,9 +2210,7 @@ func TestVerifyCode(t *testing.T) {
 	req = httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("VerifyCode: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var resp LoginResponse
 	json.NewDecoder(w.Body).Decode(&resp)
@@ -2278,15 +2247,11 @@ func TestVerifyCodeRejectsDevCodeUnlessExplicitlyConfigured(t *testing.T) {
 
 	createVerificationCodeForTest(t, email, "123456")
 
-	w := httptest.NewRecorder()
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(map[string]string{"email": email, "code": "888888"})
 	req := httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
-	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("VerifyCode (disabled dev code): expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.VerifyCode, req).Want(http.StatusBadRequest)
 }
 
 func TestVerifyCodeAcceptsConfiguredDevCodeOutsideProduction(t *testing.T) {
@@ -2303,15 +2268,11 @@ func TestVerifyCodeAcceptsConfiguredDevCodeOutsideProduction(t *testing.T) {
 
 	createVerificationCodeForTest(t, email, "123456")
 
-	w := httptest.NewRecorder()
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(map[string]string{"email": email, "code": "888888"})
 	req := httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
-	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("VerifyCode (enabled dev code): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.VerifyCode, req).Want(http.StatusOK)
 }
 
 func TestVerifyCodeRejectsConfiguredDevCodeInProduction(t *testing.T) {
@@ -2327,15 +2288,11 @@ func TestVerifyCodeRejectsConfiguredDevCodeInProduction(t *testing.T) {
 
 	createVerificationCodeForTest(t, email, "123456")
 
-	w := httptest.NewRecorder()
 	var buf bytes.Buffer
 	json.NewEncoder(&buf).Encode(map[string]string{"email": email, "code": "888888"})
 	req := httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
-	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("VerifyCode (production dev code): expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.VerifyCode, req).Want(http.StatusBadRequest)
 }
 
 func TestVerifyCodeWrongCode(t *testing.T) {
@@ -2363,9 +2320,7 @@ func TestVerifyCodeWrongCode(t *testing.T) {
 	req = httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("VerifyCode (wrong code): expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 func TestVerifyCodeBruteForceProtection(t *testing.T) {
@@ -2385,9 +2340,7 @@ func TestVerifyCodeBruteForceProtection(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/send-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.SendCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SendCode: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Read actual code so we can try it after lockout
 	dbCode, err := testHandler.Queries.GetLatestVerificationCode(ctx, email)
@@ -2415,9 +2368,7 @@ func TestVerifyCodeBruteForceProtection(t *testing.T) {
 	req = httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("after lockout: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 func TestVerifyCodeNewUserHasNoWorkspace(t *testing.T) {
@@ -2450,9 +2401,7 @@ func TestVerifyCodeNewUserHasNoWorkspace(t *testing.T) {
 	req = httptest.NewRequest("POST", "/auth/verify-code", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	testHandler.VerifyCode(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("VerifyCode: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	user, err := testHandler.Queries.GetUserByEmail(ctx, email)
 	if err != nil {
@@ -2659,7 +2608,7 @@ func TestBacklogToTodoTriggersAgent(t *testing.T) {
 		"status": "todo",
 	})
 	req = withURLParam(req, "id", created.ID)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	// Verify exactly one task was enqueued (from the status transition, not creation).
 	var taskCount int
@@ -2720,7 +2669,7 @@ func TestBacklogToTodoByAgentTriggersDifferentAssignee(t *testing.T) {
 	req = withURLParam(req, "id", created.ID)
 	req.Header.Set("X-Agent-ID", parentAgent)
 	req.Header.Set("X-Task-ID", parentTask)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	var childTasks int
 	dbfx.QueryRow(t,
@@ -2772,7 +2721,7 @@ func TestBacklogToTodoByAgentSameIssueDoesNotSelfTrigger(t *testing.T) {
 	req = withURLParam(req, "id", created.ID)
 	req.Header.Set("X-Agent-ID", selfAgent)
 	req.Header.Set("X-Task-ID", selfTask)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	var tasks int
 	dbfx.QueryRow(t,
@@ -2835,7 +2784,7 @@ func TestBacklogToTodoByAgentSameAgentDifferentIssue(t *testing.T) {
 	req = withURLParam(req, "id", step2.ID)
 	req.Header.Set("X-Agent-ID", agentID)
 	req.Header.Set("X-Task-ID", step1Task)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	var step2Tasks int
 	dbfx.QueryRow(t,
@@ -3026,7 +2975,7 @@ func TestBatchBacklogToTodoByAgentTriggersAssignee(t *testing.T) {
 	})
 	req.Header.Set("X-Agent-ID", parentAgent)
 	req.Header.Set("X-Task-ID", parentTask)
-	w = testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 
 	var childTasks int
 	dbfx.QueryRow(t,
@@ -3076,7 +3025,7 @@ func TestBacklogToTodoByAgentTriggersSquadLeader(t *testing.T) {
 	req = withURLParam(req, "id", created.ID)
 	req.Header.Set("X-Agent-ID", driverAgent)
 	req.Header.Set("X-Task-ID", driverTask)
-	w = testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	var leaderTasks int
 	dbfx.QueryRow(t,
@@ -3123,9 +3072,7 @@ func TestRootMentionOwnerRoutesMemberReplyButNotAgentReply(t *testing.T) {
 		"status": "todo",
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	issueID := issue.ID
@@ -3174,9 +3121,7 @@ func TestRootMentionOwnerRoutesMemberReplyButNotAgentReply(t *testing.T) {
 	// 1. Member posts top-level comment mentioning Agent B.
 	mentionB := fmt.Sprintf("[@Agent B](mention://agent/%s) please review", agentB)
 	w = postComment(issueID, map[string]any{"content": mentionB}, nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("member mention comment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var parentComment CommentResponse
 	json.NewDecoder(w.Body).Decode(&parentComment)
 	if countTasks(agentB) != 1 {
@@ -3198,9 +3143,7 @@ func TestRootMentionOwnerRoutesMemberReplyButNotAgentReply(t *testing.T) {
 		"content":   "No reply needed — just an acknowledgment.",
 		"parent_id": parentComment.ID,
 	}, map[string]string{"X-Agent-ID": agentA, "X-Task-ID": agentATask})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("agent A reply: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	if countTasks(agentB) != 0 {
 		t.Fatalf("expected 0 tasks for Agent B after agent reply (no parent inheritance), got %d", countTasks(agentB))
 	}
@@ -3214,9 +3157,7 @@ func TestRootMentionOwnerRoutesMemberReplyButNotAgentReply(t *testing.T) {
 		"content":   "Thanks for the review.",
 		"parent_id": parentComment.ID,
 	}, nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("member reply: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	if countTasks(agentB) != 1 {
 		t.Fatalf("expected 1 task for Agent B after member reply (root owner), got %d", countTasks(agentB))
 	}
@@ -3298,7 +3239,7 @@ func TestMemberReplyToAgentRootDoesNotInheritParentMentions(t *testing.T) {
 		"parent_id": rootComment.ID,
 	})
 	r = withURLParam(r, "id", issueID)
-	w = testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	if got := countTasks(reviewerAgent); got != 0 {
 		t.Fatalf("expected 0 tasks for Reviewer after plain member reply (no inheritance from agent root), got %d", got)
 	}
@@ -3514,7 +3455,7 @@ func TestAgentExplicitMentionStillTriggers(t *testing.T) {
 	r = withURLParam(r, "id", issueID)
 	r.Header.Set("X-Agent-ID", agentA)
 	r.Header.Set("X-Task-ID", agentATask)
-	w = testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	if got := countTasks(agentB); got != 1 {
 		t.Fatalf("expected 1 task for Agent B after explicit mention by Agent A, got %d", got)
 	}
@@ -3537,17 +3478,10 @@ func TestCreateSkillSkipsSkillMdFile(t *testing.T) {
 			{Path: "helper.go", Content: "package main"},
 		},
 	})
-	rec := httptest.NewRecorder()
-	testHandler.CreateSkill(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateSkill, req).Want(http.StatusCreated)
 
 	var resp SkillWithFilesResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
-	}
+	rec.JSON(&resp)
 
 	// Should only have README.md and helper.go, not SKILL.md
 	if len(resp.Files) != 2 {
@@ -3598,16 +3532,10 @@ func TestUpdateSkillSkipsSkillMdFile(t *testing.T) {
 			{Path: "README.md", Content: "readme"},
 		},
 	})
-	rec := httptest.NewRecorder()
-	testHandler.CreateSkill(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create skill: expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateSkill, req).Want(http.StatusCreated)
 
 	var createResp SkillWithFilesResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
-		t.Fatalf("unmarshal create response: %v", err)
-	}
+	rec.JSON(&createResp)
 
 	// Update with SKILL.md in files
 	updateReq := newRequest(http.MethodPut, "/api/skills/"+createResp.ID, UpdateSkillRequest{
@@ -3620,17 +3548,10 @@ func TestUpdateSkillSkipsSkillMdFile(t *testing.T) {
 		},
 	})
 	updateReq = withURLParam(updateReq, "id", createResp.ID)
-	updateRec := httptest.NewRecorder()
-	testHandler.UpdateSkill(updateRec, updateReq)
-
-	if updateRec.Code != http.StatusOK {
-		t.Fatalf("update skill: expected 200, got %d: %s", updateRec.Code, updateRec.Body.String())
-	}
+	updateRec := testutil.Call(t, testHandler.UpdateSkill, updateReq).Want(http.StatusOK)
 
 	var updateResp SkillWithFilesResponse
-	if err := json.Unmarshal(updateRec.Body.Bytes(), &updateResp); err != nil {
-		t.Fatalf("unmarshal update response: %v", err)
-	}
+	updateRec.JSON(&updateResp)
 
 	if len(updateResp.Files) != 2 {
 		t.Fatalf("expected 2 files after update, got %d", len(updateResp.Files))
@@ -3681,16 +3602,10 @@ func TestUpsertSkillFileRejectsSkillMd(t *testing.T) {
 		Name:    "test-skill-upsert-reject-skillmd",
 		Content: "# SKILL.md content",
 	})
-	rec := httptest.NewRecorder()
-	testHandler.CreateSkill(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create skill: expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.CreateSkill, req).Want(http.StatusCreated)
 
 	var createResp SkillWithFilesResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &createResp); err != nil {
-		t.Fatalf("unmarshal create response: %v", err)
-	}
+	rec.JSON(&createResp)
 
 	// Try to upsert SKILL.md
 	upsertReq := newRequest(http.MethodPut, "/api/skills/"+createResp.ID+"/files", CreateSkillFileRequest{
@@ -3698,12 +3613,7 @@ func TestUpsertSkillFileRejectsSkillMd(t *testing.T) {
 		Content: "should be rejected",
 	})
 	upsertReq = withURLParam(upsertReq, "id", createResp.ID)
-	upsertRec := httptest.NewRecorder()
-	testHandler.UpsertSkillFile(upsertRec, upsertReq)
-
-	if upsertRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", upsertRec.Code, upsertRec.Body.String())
-	}
+	upsertRec := testutil.Call(t, testHandler.UpsertSkillFile, upsertReq).Want(http.StatusBadRequest)
 	if !strings.Contains(upsertRec.Body.String(), "SKILL.md is reserved") {
 		t.Fatalf("expected error message about reserved SKILL.md, got: %s", upsertRec.Body.String())
 	}

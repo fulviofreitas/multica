@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015 pins the
@@ -73,17 +74,14 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 
 	// W posts a result comment in its agent identity (X-Agent-ID + X-Task-ID,
 	// the pair required by resolveActor to trust the agent header).
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "done — pushed the change, PR is up",
 	})
 	r.Header.Set("X-Agent-ID", fx.OtherID)
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// A new leader-role task is enqueued for L so the leader coordinates
 	// next steps.
@@ -147,17 +145,14 @@ func TestCreateComment_WorkerAgentCommentDoesNotWakeLeader_WhenLeaderTaskPending
 	}
 
 	// W posts a result comment.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "done",
 	})
 	r.Header.Set("X-Agent-ID", fx.OtherID)
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// Expected: still exactly 1 queued leader task (the pre-seeded one) —
 	// no double enqueue.
@@ -231,16 +226,7 @@ func TestCreateComment_WorkerAgentCommentWakesPrivateSquadLeader_MUL4015(t *test
 
 	// Squad with the private leader.
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'MUL-4015 Private Squad', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create private squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'MUL-4015 Private Squad'"), "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	// Issue assigned to the squad, created by M (testUserID). CreatorType=member
 	// keeps the assign-time originator resolution to M.
@@ -286,9 +272,7 @@ func TestCreateComment_WorkerAgentCommentWakesPrivateSquadLeader_MUL4015(t *test
 	r.Header.Set("X-Task-ID", leaderTaskID)
 	r = withURLParam(r, "id", issueID)
 	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("leader mention CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	var workerTaskID string
 	if err := testPool.QueryRow(ctx, `
@@ -341,9 +325,7 @@ func TestCreateComment_WorkerAgentCommentWakesPrivateSquadLeader_MUL4015(t *test
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", issueID)
 	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("worker done CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	var leaderTasksQueued int
 	if err := testPool.QueryRow(ctx, `

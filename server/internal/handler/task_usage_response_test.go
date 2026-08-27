@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestListTasksByIssueHydratesUsage guards the per-run token figure on the
@@ -27,14 +27,7 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "UsageListAgent", []byte("[]"))
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
-		VALUES ($1, 'usage-list-issue', 'todo', 'medium', $2, 'member', 92778, 0)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'usage-list-issue'"), "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'medium'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": testutil.Raw("92778"), "position": testutil.Raw("0")})
 
 	newTask := func(status string) string {
 		var id string
@@ -65,16 +58,10 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 
 	req := newRequest("GET", "/api/issues/"+issueID+"/task-runs", nil)
 	req = withURLParam(req, "id", issueID)
-	w := httptest.NewRecorder()
-	testHandler.ListTasksByIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListTasksByIssue, req).Want(http.StatusOK)
 
 	var resp []AgentTaskResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode task list: %v", err)
-	}
+	w.JSON(&resp)
 
 	byID := make(map[string]AgentTaskResponse, len(resp))
 	for _, task := range resp {
@@ -130,9 +117,7 @@ func TestListTasksByIssueHydratesUsage(t *testing.T) {
 	// omitempty must keep the key off the wire entirely, so the client sees
 	// `undefined` rather than an empty array it might read as "hydrated, zero".
 	var raw []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode raw task list: %v", err)
-	}
+	w.JSON(&raw)
 	for _, task := range raw {
 		if task["id"] != unpricedTask {
 			continue

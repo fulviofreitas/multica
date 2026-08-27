@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // A plugin's skill resource becomes an ordinary workspace skill, and uninstall
@@ -57,17 +58,11 @@ func installSkillPlugin(t *testing.T, root, manifest string) string {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 	var installed struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
-		t.Fatalf("decode installation: %v", err)
-	}
+	recorder.JSON(&installed)
 	return installed.ID
 }
 
@@ -117,13 +112,9 @@ func TestPluginSkillInstallsAndIsRemovedOnUninstall(t *testing.T) {
 		t.Fatal("description should come from the frontmatter")
 	}
 
-	uninstall := httptest.NewRecorder()
-	testHandler.UninstallPlugin(uninstall, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, map[string]string{
+	testutil.Call(t, testHandler.UninstallPlugin, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if uninstall.Code != http.StatusNoContent {
-		t.Fatalf("uninstall: status=%d body=%s", uninstall.Code, uninstall.Body.String())
-	}
+	})).Want(http.StatusNoContent)
 	if remaining := skillNamesForInstallation(t, installationID); len(remaining) != 0 {
 		t.Fatalf("uninstall left skills behind: %v", remaining)
 	}
@@ -170,15 +161,7 @@ func TestPluginSkillWillNotOverwriteAHumanAuthoredSkill(t *testing.T) {
 	cleanupPluginInstallations(t)
 
 	var existingID string
-	if err := testPool.QueryRow(context.Background(),
-		`INSERT INTO skill (workspace_id, name, description, content) VALUES ($1, 'pr-review', 'mine', 'written by a person') RETURNING id`,
-		testWorkspaceID,
-	).Scan(&existingID); err != nil {
-		t.Fatalf("seed human skill: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM skill WHERE id = $1`, existingID)
-	})
+	existingID = dbfx.Insert(t, "skill", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'pr-review'"), "description": testutil.Raw("'mine'"), "content": testutil.Raw("'written by a person'")})
 
 	root := t.TempDir()
 	writePluginSkillFile(t, root, "pr-review", prReviewSkill)
@@ -187,8 +170,7 @@ func TestPluginSkillWillNotOverwriteAHumanAuthoredSkill(t *testing.T) {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
 	if recorder.Code == http.StatusCreated {
 		t.Fatal("a plugin claiming an existing skill name must not install")
 	}

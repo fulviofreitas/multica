@@ -3,8 +3,9 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // insertRunningIssueTask inserts an in-flight (running) task for the given agent
@@ -28,14 +29,7 @@ func insertRunningIssueTask(t *testing.T, agentID, issueID string) string {
 func insertAgentAssignedIssue(t *testing.T, agentID string, number int, title string) string {
 	t.Helper()
 	var issueID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position, assignee_type, assignee_id)
-		VALUES ($1, $2, 'todo', 'medium', $3, 'member', $4, 0, 'agent', $5)
-		RETURNING id
-	`, testWorkspaceID, title, testUserID, number, agentID).Scan(&issueID); err != nil {
-		t.Fatalf("insert issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": title, "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'medium'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": number, "position": testutil.Raw("0"), "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID})
 	return issueID
 }
 
@@ -57,16 +51,13 @@ func TestUpdateIssueReassignDoesNotCancelActiveTasks(t *testing.T) {
 
 	// Reassign from ownerAgent to a member — a genuine assignee change that
 	// does not itself enqueue a new agent run.
-	w := httptest.NewRecorder()
+
 	req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{
 		"assignee_type": "member",
 		"assignee_id":   testUserID,
 	})
 	req = withURLParam(req, "id", issueID)
-	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue reassign: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	if got := taskStatus(t, ownerTask); got != "running" {
 		t.Fatalf("previous assignee's own task must survive reassignment, got status %q", got)
@@ -91,7 +82,6 @@ func TestBatchUpdateIssueReassignDoesNotCancelActiveTasks(t *testing.T) {
 	ownerTask := insertRunningIssueTask(t, ownerAgent, issueID)
 	mentionTask := insertRunningIssueTask(t, mentionAgent, issueID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
 		"issue_ids": []string{issueID},
 		"updates": map[string]any{
@@ -99,10 +89,7 @@ func TestBatchUpdateIssueReassignDoesNotCancelActiveTasks(t *testing.T) {
 			"assignee_id":   testUserID,
 		},
 	})
-	testHandler.BatchUpdateIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("BatchUpdateIssues reassign: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 
 	if got := taskStatus(t, ownerTask); got != "running" {
 		t.Fatalf("previous assignee's own task must survive batch reassignment, got status %q", got)
@@ -142,16 +129,13 @@ func TestUpdateIssueReassignToAgentKeepsOldTaskAndEnqueuesNew(t *testing.T) {
 	ownerTask := insertRunningIssueTask(t, ownerAgent, issueID)
 
 	// Reassign from ownerAgent to newAgent — an agent→agent ownership handoff.
-	w := httptest.NewRecorder()
+
 	req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{
 		"assignee_type": "agent",
 		"assignee_id":   newAgent,
 	})
 	req = withURLParam(req, "id", issueID)
-	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue reassign: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	if got := taskStatus(t, ownerTask); got != "running" {
 		t.Fatalf("previous agent's own task must survive agent→agent reassignment, got status %q", got)

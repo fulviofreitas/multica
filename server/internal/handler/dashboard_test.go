@@ -245,11 +245,7 @@ func TestDashboardEndpoints(t *testing.T) {
 
 	// daily — workspace-wide
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=1&"+dashboardFixtureTZParam, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("daily ws: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetDashboardUsageDaily, newRequest("GET", "/api/dashboard/usage/daily?days=1&"+dashboardFixtureTZParam, nil)).Want(http.StatusOK)
 		var rows []dailyRow
 		_ = json.NewDecoder(w.Body).Decode(&rows)
 		var total int64
@@ -265,11 +261,7 @@ func TestDashboardEndpoints(t *testing.T) {
 
 	// daily — project-scoped
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("daily project: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetDashboardUsageDaily, newRequest("GET", "/api/dashboard/usage/daily?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil)).Want(http.StatusOK)
 		var rows []dailyRow
 		_ = json.NewDecoder(w.Body).Decode(&rows)
 		var total int64
@@ -291,11 +283,7 @@ func TestDashboardEndpoints(t *testing.T) {
 
 	// by-agent — project-scoped
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageByAgent(w, newRequest("GET", "/api/dashboard/usage/by-agent?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("by-agent project: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetDashboardUsageByAgent, newRequest("GET", "/api/dashboard/usage/by-agent?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil)).Want(http.StatusOK)
 		var rows []byAgentRow
 		_ = json.NewDecoder(w.Body).Decode(&rows)
 		found := false
@@ -311,11 +299,7 @@ func TestDashboardEndpoints(t *testing.T) {
 
 	// agent-runtime — project-scoped
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardAgentRunTime(w, newRequest("GET", "/api/dashboard/agent-runtime?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("agent-runtime: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetDashboardAgentRunTime, newRequest("GET", "/api/dashboard/agent-runtime?days=1&"+dashboardFixtureTZParam+"&project_id="+projectID, nil)).Want(http.StatusOK)
 		var rows []runtimeRow
 		_ = json.NewDecoder(w.Body).Decode(&rows)
 		var seconds int64
@@ -336,8 +320,7 @@ func TestDashboardEndpoints(t *testing.T) {
 
 	// agent-runtime — invalid project_id rejected
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardAgentRunTime(w, newRequest("GET", "/api/dashboard/agent-runtime?project_id=not-a-uuid", nil))
+		w := testutil.Call(t, testHandler.GetDashboardAgentRunTime, newRequest("GET", "/api/dashboard/agent-runtime?project_id=not-a-uuid", nil))
 		if w.Code != http.StatusBadRequest {
 			t.Errorf("agent-runtime: expected 400 for invalid uuid, got %d", w.Code)
 		}
@@ -346,11 +329,7 @@ func TestDashboardEndpoints(t *testing.T) {
 	// Workspace-wide by-agent through the same rollup, just to confirm
 	// the no-project-filter shape matches up.
 	{
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageByAgent(w, newRequest("GET", "/api/dashboard/usage/by-agent?days=1&"+dashboardFixtureTZParam, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("by-agent ws: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetDashboardUsageByAgent, newRequest("GET", "/api/dashboard/usage/by-agent?days=1&"+dashboardFixtureTZParam, nil)).Want(http.StatusOK)
 		var aRows []byAgentRow
 		_ = json.NewDecoder(w.Body).Decode(&aRows)
 		var aTotal int64
@@ -413,8 +392,7 @@ func TestDashboardUsageDailyBucketsByViewerTimezone(t *testing.T) {
 	}
 
 	readDate := func(tz string) string {
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=10&tz="+tz, nil))
+		w := testutil.Call(t, testHandler.GetDashboardUsageDaily, newRequest("GET", "/api/dashboard/usage/daily?days=10&tz="+tz, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("tz=%s: expected 200, got %d: %s", tz, w.Code, w.Body.String())
 		}
@@ -493,8 +471,7 @@ func TestDashboardRunTimeDailyBucketsByViewerTimezone(t *testing.T) {
 	}
 
 	readRow := func(tz string) (string, int64, int32) {
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardRunTimeDaily(w, newRequest("GET", "/api/dashboard/runtime/daily?days=10&tz="+tz, nil))
+		w := testutil.Call(t, testHandler.GetDashboardRunTimeDaily, newRequest("GET", "/api/dashboard/runtime/daily?days=10&tz="+tz, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("tz=%s: expected 200, got %d: %s", tz, w.Code, w.Body.String())
 		}
@@ -598,20 +575,14 @@ func TestDashboardRunTimeCountsCancelledRuns(t *testing.T) {
 // one agent from GetDashboardAgentRunTime. Zeroes when the agent has no row.
 func readAgentRunTime(t *testing.T, agentID string) (int64, int32, int32) {
 	t.Helper()
-	w := httptest.NewRecorder()
-	testHandler.GetDashboardAgentRunTime(w, newRequest("GET", "/api/dashboard/agent-runtime?days=10&tz=UTC", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetDashboardAgentRunTime, newRequest("GET", "/api/dashboard/agent-runtime?days=10&tz=UTC", nil)).Want(http.StatusOK)
 	var rows []struct {
 		AgentID        string `json:"agent_id"`
 		TotalSeconds   int64  `json:"total_seconds"`
 		TaskCount      int32  `json:"task_count"`
 		CancelledCount int32  `json:"cancelled_count"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode agent run time: %v", err)
-	}
+	w.Decode(&rows)
 	for _, r := range rows {
 		if r.AgentID == agentID {
 			return r.TotalSeconds, r.TaskCount, r.CancelledCount
@@ -1326,8 +1297,7 @@ func TestDashboardUsageDailyCrossMidnightFullPipeline(t *testing.T) {
 	}
 
 	readDate := func(tz string) string {
-		w := httptest.NewRecorder()
-		testHandler.GetDashboardUsageDaily(w, newRequest("GET", "/api/dashboard/usage/daily?days=10&tz="+tz, nil))
+		w := testutil.Call(t, testHandler.GetDashboardUsageDaily, newRequest("GET", "/api/dashboard/usage/daily?days=10&tz="+tz, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("tz=%s: expected 200, got %d: %s", tz, w.Code, w.Body.String())
 		}
@@ -1521,9 +1491,7 @@ func TestDashboardFailuresCountNeverStartedTasks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
 			tc.call(w)
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 			var rows []failureRow
 			if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
 				t.Fatalf("decode: %v", err)
@@ -1613,9 +1581,7 @@ func TestDashboardFailuresByAgentUsesExactWindow(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.GetDashboardFailuresByAgent(w, newRequest("GET", "/api/dashboard/failures/by-agent?days=1&tz=UTC", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("by-agent: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := countTimeouts(w.Body.Bytes()); got != 0 {
 		t.Errorf("days=1 must not reach yesterday's failure, but by-agent counted %d", got)
 	}
@@ -1624,9 +1590,7 @@ func TestDashboardFailuresByAgentUsesExactWindow(t *testing.T) {
 	// proving the window was closed, not that the fixture is unreachable.
 	w = httptest.NewRecorder()
 	testHandler.GetDashboardFailuresByAgent(w, newRequest("GET", "/api/dashboard/failures/by-agent?days=2&tz=UTC", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("by-agent days=2: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := countTimeouts(w.Body.Bytes()); got < 1 {
 		t.Errorf("days=2 must include yesterday's failure, got %d", got)
 	}
@@ -1837,11 +1801,7 @@ func dashboardRunTimeSeconds(t *testing.T, at time.Time, loc *time.Location, que
 		"created_at":   started,
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.GetDashboardAgentRunTime(w, newRequest("GET", "/api/dashboard/agent-runtime?"+query, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("agent-runtime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetDashboardAgentRunTime, newRequest("GET", "/api/dashboard/agent-runtime?"+query, nil)).Want(http.StatusOK)
 	var rows []struct {
 		AgentID      string `json:"agent_id"`
 		TotalSeconds int64  `json:"total_seconds"`

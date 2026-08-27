@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 const workspaceMcpTestSecret = "sk-live-workspace-should-never-be-echoed"
@@ -42,8 +44,7 @@ func listWorkspaceMcpServersForTest(t *testing.T, mutate func(*http.Request)) (i
 	if mutate != nil {
 		mutate(req)
 	}
-	w := httptest.NewRecorder()
-	testHandler.ListWorkspaceMcpServers(w, req)
+	w := testutil.Call(t, testHandler.ListWorkspaceMcpServers, req)
 
 	var resp []WorkspaceMcpServerResponse
 	raw := w.Body.String()
@@ -103,8 +104,7 @@ func createWorkspaceMcpServerViaAPI(t *testing.T, body any, mutate func(*http.Re
 	if mutate != nil {
 		mutate(req)
 	}
-	w := httptest.NewRecorder()
-	testHandler.CreateWorkspaceMcpServer(w, req)
+	w := testutil.Call(t, testHandler.CreateWorkspaceMcpServer, req)
 
 	var resp WorkspaceMcpServerResponse
 	raw := w.Body.String()
@@ -221,11 +221,7 @@ func TestUpdateWorkspaceMcpServer_RenameKeepsBindings(t *testing.T) {
 	req := newRequest(http.MethodPut, "/api/workspaces/"+testWorkspaceID+"/mcp-servers/"+serverID,
 		map[string]any{"name": "linear-v2"})
 	req = withURLParams(req, "id", testWorkspaceID, "serverId", serverID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateWorkspaceMcpServer(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateWorkspaceMcpServer, req).Want(http.StatusOK)
 
 	servers := listAgentMcpServersForTest(t, agentID)
 	if len(servers) != 1 || servers[0].Name != "linear-v2" {
@@ -245,11 +241,7 @@ func TestDeleteWorkspaceMcpServer_SweepsBindings(t *testing.T) {
 
 	req := newRequest(http.MethodDelete, "/api/workspaces/"+testWorkspaceID+"/mcp-servers/"+serverID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "serverId", serverID)
-	w := httptest.NewRecorder()
-	testHandler.DeleteWorkspaceMcpServer(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspaceMcpServer, req).Want(http.StatusNoContent)
 
 	var bindings int
 	if err := testPool.QueryRow(context.Background(),
@@ -266,15 +258,9 @@ func listAgentMcpServersForTest(t *testing.T, agentID string) []WorkspaceMcpServ
 
 	req := newRequest(http.MethodGet, "/api/agents/"+agentID+"/mcp-servers", nil)
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.ListAgentMcpServers(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgentMcpServers: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListAgentMcpServers, req).Want(http.StatusOK)
 	var resp []WorkspaceMcpServerResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	return resp
 }
 
@@ -284,15 +270,9 @@ func addAgentMcpServerForTest(t *testing.T, agentID, serverID string) []Workspac
 	req := newRequest(http.MethodPost, "/api/agents/"+agentID+"/mcp-servers",
 		map[string]any{"server_id": serverID})
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.AddAgentMcpServer(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("AddAgentMcpServer: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.AddAgentMcpServer, req).Want(http.StatusOK)
 	var resp []WorkspaceMcpServerResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	return resp
 }
 
@@ -323,9 +303,7 @@ func TestAgentMcpServerBinding_AddToggleRemove(t *testing.T) {
 	req = withURLParams(req, "id", agentID, "serverId", serverID)
 	w := httptest.NewRecorder()
 	testHandler.SetAgentMcpServerEnabled(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SetAgentMcpServerEnabled: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	servers = listAgentMcpServersForTest(t, agentID)
 	if len(servers) != 1 || servers[0].Enabled == nil || *servers[0].Enabled {
 		t.Fatalf("expected the binding to survive as disabled, got %+v", servers)
@@ -336,9 +314,7 @@ func TestAgentMcpServerBinding_AddToggleRemove(t *testing.T) {
 	req = withURLParams(req, "id", agentID, "serverId", serverID)
 	w = httptest.NewRecorder()
 	testHandler.RemoveAgentMcpServer(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("RemoveAgentMcpServer: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if servers = listAgentMcpServersForTest(t, agentID); len(servers) != 0 {
 		t.Fatalf("expected no bindings after removal, got %+v", servers)
 	}
@@ -357,36 +333,16 @@ func TestAddAgentMcpServer_RejectsServerFromAnotherWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
+
 	var otherWorkspaceID, otherServerID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ('Other WS', 'ws-mcp-other', '', 'OTH')
-		RETURNING id
-	`).Scan(&otherWorkspaceID); err != nil {
-		t.Fatalf("create other workspace: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID) })
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace_mcp_server (workspace_id, name, config)
-		VALUES ($1, 'foreign', '{"url":"https://foreign.example"}')
-		RETURNING id
-	`, otherWorkspaceID).Scan(&otherServerID); err != nil {
-		t.Fatalf("create foreign server: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace_mcp_server WHERE id = $1`, otherServerID)
-	})
+	otherWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": testutil.Raw("'Other WS'"), "slug": testutil.Raw("'ws-mcp-other'"), "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'OTH'")})
+	otherServerID = dbfx.Insert(t, "workspace_mcp_server", testutil.Cols{"workspace_id": otherWorkspaceID, "name": testutil.Raw("'foreign'"), "config": testutil.Raw("'{\"url\":\"https://foreign.example\"}'")})
 
 	agentID := createHandlerTestAgent(t, "ws-mcp-tenant-agent", nil)
 	req := newRequest(http.MethodPost, "/api/agents/"+agentID+"/mcp-servers",
 		map[string]any{"server_id": otherServerID})
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.AddAgentMcpServer(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for a server from another workspace, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.AddAgentMcpServer, req).Want(http.StatusNotFound)
 }
 
 // The agent's binding list is secret-free too, and an agent actor may not
@@ -415,7 +371,5 @@ func TestAgentMcpServerBinding_ResponseIsSecretFreeAndAgentActorsCannotWrite(t *
 	req.Header.Set("X-Task-ID", taskID)
 	w = httptest.NewRecorder()
 	testHandler.AddAgentMcpServer(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for an agent actor, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }

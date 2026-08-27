@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -41,18 +42,12 @@ func TestCreateAgentBuilderSessionCreatesIsolatedHiddenBuilder(t *testing.T) {
 	})
 
 	create := func(model string) CreateAgentBuilderSessionResponse {
-		w := httptest.NewRecorder()
-		testHandler.CreateAgentBuilderSession(w, newRequest(http.MethodPost, "/api/agent-builder/sessions", map[string]any{
+		w := testutil.Call(t, testHandler.CreateAgentBuilderSession, newRequest(http.MethodPost, "/api/agent-builder/sessions", map[string]any{
 			"runtime_id": testRuntimeID,
 			"model":      model,
-		}))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateAgentBuilderSession: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		})).Want(http.StatusCreated)
 		var response CreateAgentBuilderSessionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.JSON(&response)
 		if response.SessionID == "" || response.BuilderAgentID == "" {
 			t.Fatalf("missing builder identifiers: %+v", response)
 		}
@@ -92,9 +87,7 @@ func TestCreateAgentBuilderSessionCreatesIsolatedHiddenBuilder(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.ListAgents(w, newRequest(http.MethodGet, "/api/agents", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgents: %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var listed []AgentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil {
 		t.Fatalf("decode agent list: %v", err)
@@ -110,9 +103,7 @@ func TestCreateAgentBuilderSessionCreatesIsolatedHiddenBuilder(t *testing.T) {
 	w = httptest.NewRecorder()
 	req := withURLParams(newRequest(http.MethodGet, "/api/agents/"+first.BuilderAgentID, nil), "id", first.BuilderAgentID)
 	testHandler.GetAgent(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("GetAgent(system): expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	// Deleting the private Builder chat also removes its session-scoped hidden
 	// Agent, so completed/cancelled flows do not accumulate infrastructure rows.
@@ -120,9 +111,7 @@ func TestCreateAgentBuilderSessionCreatesIsolatedHiddenBuilder(t *testing.T) {
 	req = withURLParams(newRequest(http.MethodDelete, "/api/chat/sessions/"+first.SessionID, nil), "sessionId", first.SessionID)
 	req = withChatTestWorkspaceCtx(t, req)
 	testHandler.DeleteChatSession(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteChatSession(builder): expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 	var remaining int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM agent WHERE id = $1`, first.BuilderAgentID).Scan(&remaining); err != nil {
 		t.Fatalf("count deleted builder: %v", err)
@@ -150,19 +139,13 @@ func TestCreateAgentAttachesSkillsWithoutCreatingAWelcomeChat(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM skill WHERE id = $1`, skillID)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", map[string]any{
+	w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", map[string]any{
 		"name":       "Atomic Skill Agent",
 		"runtime_id": testRuntimeID,
 		"skill_ids":  []string{skillID},
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAgent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var response AgentResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&response)
 	if len(response.Skills) != 1 || response.Skills[0].ID != skillID {
 		t.Fatalf("create response did not include attached skill: %+v", response.Skills)
 	}
@@ -188,18 +171,12 @@ func newBuilderSession(t *testing.T) CreateAgentBuilderSessionResponse {
 		`, testWorkspaceID)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.CreateAgentBuilderSession(w, newRequest(http.MethodPost, "/api/agent-builder/sessions", map[string]any{
+	w := testutil.Call(t, testHandler.CreateAgentBuilderSession, newRequest(http.MethodPost, "/api/agent-builder/sessions", map[string]any{
 		"runtime_id": testRuntimeID,
 		"model":      "model-pinned-to-runtime-a",
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAgentBuilderSession: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var session CreateAgentBuilderSessionResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &session); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	w.JSON(&session)
 	return session
 }
 
@@ -245,9 +222,7 @@ func TestSwitchAgentBuilderRuntimeRebindsCarrier(t *testing.T) {
 	target := newTestRuntime(t, "Builder Switch Target", "online")
 
 	w := switchBuilderRuntime(t, session.SessionID, target)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SwitchAgentBuilderRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var response SwitchAgentBuilderRuntimeResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode switch response: %v", err)
@@ -305,19 +280,11 @@ func TestSwitchAgentBuilderRuntimeRejectsWhileReplyPending(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
+
 	session := newBuilderSession(t)
 	target := newTestRuntime(t, "Builder Switch Pending Target", "online")
 
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO agent_task_queue (agent_id, chat_session_id, status, priority, context, runtime_id)
-		VALUES ($1, $2, 'running', 2, '{}'::jsonb, $3)
-	`, session.BuilderAgentID, session.SessionID, testRuntimeID); err != nil {
-		t.Fatalf("insert pending task: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE chat_session_id = $1`, session.SessionID)
-	})
+	dbfx.InsertNoID(t, "agent_task_queue", testutil.Cols{"agent_id": session.BuilderAgentID, "chat_session_id": session.SessionID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("2"), "context": testutil.Raw("'{}'::jsonb"), "runtime_id": testRuntimeID}, "chat_session_id = $1", session.SessionID)
 
 	if w := switchBuilderRuntime(t, session.SessionID, target); w.Code != http.StatusConflict {
 		t.Fatalf("pending reply: expected 409, got %d: %s", w.Code, w.Body.String())
@@ -371,15 +338,9 @@ func TestSwitchAgentBuilderRuntimeRejectsNonBuilderSession(t *testing.T) {
 
 func listBuilderSessions(t *testing.T) ListAgentBuilderSessionsResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
-	testHandler.ListAgentBuilderSessions(w, newRequest(http.MethodGet, "/api/agent-builder/sessions", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListAgentBuilderSessions: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListAgentBuilderSessions, newRequest(http.MethodGet, "/api/agent-builder/sessions", nil)).Want(http.StatusOK)
 	var response ListAgentBuilderSessionsResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
+	w.JSON(&response)
 	return response
 }
 
@@ -550,7 +511,6 @@ func TestDeleteChatSessionPrunesTheBuilderDraft(t *testing.T) {
 	session := newBuilderSession(t)
 	saveBuilderDraft(t, session.SessionID, map[string]any{"name": "Doomed"})
 
-	w := httptest.NewRecorder()
 	req := withURLParams(
 		newRequest(http.MethodDelete, "/api/chat/sessions/"+session.SessionID, nil),
 		"sessionId", session.SessionID,
@@ -558,10 +518,7 @@ func TestDeleteChatSessionPrunesTheBuilderDraft(t *testing.T) {
 	// DeleteChatSession reads the workspace off the context the middleware
 	// normally fills, not the header.
 	req = withChatTestWorkspaceCtx(t, req)
-	testHandler.DeleteChatSession(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteChatSession: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteChatSession, req).Want(http.StatusNoContent)
 
 	var remaining int
 	if err := testPool.QueryRow(ctx, `
@@ -670,9 +627,7 @@ func TestSaveAgentBuilderDraftLosesToAConcurrentDelete(t *testing.T) {
 	runSaveDraftAgainst(t, session.SessionID, w, req,
 		`DELETE FROM chat_session WHERE id = $1`)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("save after the conversation was deleted: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 	if n := countBuilderDrafts(t, session.SessionID); n != 0 {
 		t.Fatalf("orphaned draft rows = %d, want 0", n)
 	}
@@ -692,9 +647,7 @@ func TestSaveAgentBuilderDraftLosesToAConcurrentArchive(t *testing.T) {
 	runSaveDraftAgainst(t, session.SessionID, w, req,
 		`UPDATE chat_session SET status = 'archived' WHERE id = $1`)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("save after the conversation was archived: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 	if n := countBuilderDrafts(t, session.SessionID); n != 0 {
 		t.Fatalf("draft rows on an archived conversation = %d, want 0", n)
 	}
@@ -1105,8 +1058,7 @@ func TestDeleteBuilderSessionLocksAgentBeforeTasks(t *testing.T) {
 	deleteReq = withChatTestWorkspaceCtx(t, deleteReq)
 	deleteCodes := make(chan int, 1)
 	go func() {
-		w := httptest.NewRecorder()
-		testHandler.DeleteChatSession(w, deleteReq)
+		w := testutil.Call(t, testHandler.DeleteChatSession, deleteReq)
 		deleteCodes <- w.Code
 	}()
 
@@ -1176,14 +1128,14 @@ func TestSwitchAgentBuilderRuntimeWaitsForUncommittedSend(t *testing.T) {
 
 	codes := make(chan int, 1)
 	go func() {
-		w := httptest.NewRecorder()
+
 		req := withURLParams(
 			newRequest(http.MethodPatch, "/api/agent-builder/sessions/"+created.SessionID+"/runtime", map[string]any{
 				"runtime_id": target,
 			}),
 			"sessionId", created.SessionID,
 		)
-		testHandler.SwitchAgentBuilderRuntime(w, req)
+		w := testutil.Call(t, testHandler.SwitchAgentBuilderRuntime, req)
 		codes <- w.Code
 	}()
 
@@ -1246,32 +1198,15 @@ func TestSwitchAgentBuilderRuntimeEnforcesRuntimeAndSessionOwnership(t *testing.
 	// The fixture runtime is private to the workspace owner, so start this
 	// member's session on a public one.
 	var publicRuntimeID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (
-			workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, owner_id, visibility, last_seen_at
-		)
-		VALUES ($1, NULL, 'Builder Switch Public', 'cloud', 'builder_switch_public', 'online', 'public', '{}'::jsonb, $2, 'public', now())
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&publicRuntimeID); err != nil {
-		t.Fatalf("create public runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, publicRuntimeID)
-	})
+	publicRuntimeID = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("NULL"), "name": testutil.Raw("'Builder Switch Public'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'builder_switch_public'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'public'"), "metadata": testutil.Raw("'{}'::jsonb"), "owner_id": testUserID, "visibility": testutil.Raw("'public'"), "last_seen_at": testutil.Raw("now()")})
 
 	// That member's own builder session, so the creator gate passes and the
 	// runtime gate is what we are actually testing.
-	createW := httptest.NewRecorder()
-	testHandler.CreateAgentBuilderSession(createW, newRequestAs(plainMemberID, http.MethodPost, "/api/agent-builder/sessions", map[string]any{
+	createW := testutil.Call(t, testHandler.CreateAgentBuilderSession, newRequestAs(plainMemberID, http.MethodPost, "/api/agent-builder/sessions", map[string]any{
 		"runtime_id": publicRuntimeID,
-	}))
-	if createW.Code != http.StatusCreated {
-		t.Fatalf("CreateAgentBuilderSession as plain member: expected 201, got %d: %s", createW.Code, createW.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var created CreateAgentBuilderSessionResponse
-	if err := json.Unmarshal(createW.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create response: %v", err)
-	}
+	createW.JSON(&created)
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `
 			DELETE FROM agent
@@ -1281,29 +1216,14 @@ func TestSwitchAgentBuilderRuntimeEnforcesRuntimeAndSessionOwnership(t *testing.
 
 	// The workspace owner's private runtime is not a legal target for them.
 	var privateRuntimeID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (
-			workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, owner_id, visibility, last_seen_at
-		)
-		VALUES ($1, NULL, 'Builder Switch Private', 'cloud', 'builder_switch_private', 'online', 'private', '{}'::jsonb, $2, 'private', now())
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&privateRuntimeID); err != nil {
-		t.Fatalf("create private runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, privateRuntimeID)
-	})
+	privateRuntimeID = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("NULL"), "name": testutil.Raw("'Builder Switch Private'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'builder_switch_private'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'private'"), "metadata": testutil.Raw("'{}'::jsonb"), "owner_id": testUserID, "visibility": testutil.Raw("'private'"), "last_seen_at": testutil.Raw("now()")})
 
-	forbiddenW := httptest.NewRecorder()
-	testHandler.SwitchAgentBuilderRuntime(forbiddenW, withURLParams(
+	testutil.Call(t, testHandler.SwitchAgentBuilderRuntime, withURLParams(
 		newRequestAs(plainMemberID, http.MethodPatch, "/api/agent-builder/sessions/"+created.SessionID+"/runtime", map[string]any{
 			"runtime_id": privateRuntimeID,
 		}),
 		"sessionId", created.SessionID,
-	))
-	if forbiddenW.Code != http.StatusForbidden {
-		t.Fatalf("someone else's private runtime: expected 403, got %d: %s", forbiddenW.Code, forbiddenW.Body.String())
-	}
+	)).Want(http.StatusForbidden)
 
 	// And a session the caller does not own is not theirs to rebind, whatever
 	// their workspace role — this one is issued by the workspace owner.

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestRequireHumanActor_AllowsHumanRequest pins the happy path: a
@@ -27,12 +28,7 @@ func TestRequireHumanActor_AllowsHumanRequest(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/cloud-billing/balance", nil)
 	// No X-Actor-Source — this is the JWT / mul_ PAT shape.
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
+	testutil.Call(t, mw.ServeHTTP, req).Want(http.StatusOK)
 	if !called {
 		t.Fatal("inner handler must run for non-task-token requests")
 	}
@@ -76,12 +72,7 @@ func TestRequireHumanActor_BlocksMachineCredentials(t *testing.T) {
 			// client-supplied value before stamping their own, so a
 			// non-empty value at this point IS authoritative.
 			req.Header.Set("X-Actor-Source", tc.actorSource)
-			w := httptest.NewRecorder()
-			mw.ServeHTTP(w, req)
-
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403", w.Code)
-			}
+			testutil.Call(t, mw.ServeHTTP, req).Want(http.StatusForbidden)
 		})
 	}
 }
@@ -122,12 +113,7 @@ func TestRequireHumanActor_IgnoresUnknownActorSource(t *testing.T) {
 	// A hypothetical future value the gate doesn't know about.
 	req := httptest.NewRequest(http.MethodGet, "/api/cloud-billing/balance", nil)
 	req.Header.Set("X-Actor-Source", "future_kind")
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 — gate should only block exact 'task_token'", w.Code)
-	}
+	testutil.Call(t, mw.ServeHTTP, req).Want(http.StatusOK)
 	if !called {
 		t.Fatal("inner handler must run for unknown actor sources")
 	}
@@ -152,10 +138,5 @@ func TestRequireHumanActor_AppliedViaChiRouterUse(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/billing/probe", nil)
 	req.Header.Set("X-Actor-Source", "task_token")
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", w.Code)
-	}
+	testutil.Call(t, r.ServeHTTP, req).Want(http.StatusForbidden)
 }

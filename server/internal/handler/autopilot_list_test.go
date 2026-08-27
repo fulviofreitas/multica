@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // insertListTestAutopilot creates a bare autopilot row and registers cleanup.
@@ -13,19 +15,7 @@ import (
 func insertListTestAutopilot(t *testing.T, agentID, title string) string {
 	t.Helper()
 	var id string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO autopilot (
-			workspace_id, title, assignee_type, assignee_id,
-			status, execution_mode, created_by_type, created_by_id
-		)
-		VALUES ($1, $2, 'agent', $3, 'active', 'run_only', 'member', $4)
-		RETURNING id
-	`, testWorkspaceID, title, agentID, testUserID).Scan(&id); err != nil {
-		t.Fatalf("failed to insert test autopilot: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, id)
-	})
+	id = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": title, "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID, "status": testutil.Raw("'active'"), "execution_mode": testutil.Raw("'run_only'"), "created_by_type": testutil.Raw("'member'"), "created_by_id": testUserID})
 	return id
 }
 
@@ -73,18 +63,12 @@ func TestListAutopilots_DerivedFields(t *testing.T) {
 		}
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.ListAutopilots(w, newRequest("GET", "/api/autopilots", nil))
-	if w.Code != 200 {
-		t.Fatalf("ListAutopilots: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListAutopilots, newRequest("GET", "/api/autopilots", nil)).Want(200)
 
 	var body struct {
 		Autopilots []map[string]any `json:"autopilots"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("failed to decode body: %v", err)
-	}
+	w.JSON(&body)
 	rows := make(map[string]map[string]any)
 	for _, row := range body.Autopilots {
 		rows[row["id"].(string)] = row
@@ -130,9 +114,7 @@ func TestListAutopilots_DefaultExcludesArchived(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.ListAutopilots(w, newRequest("GET", "/api/autopilots", nil))
-	if w.Code != 200 {
-		t.Fatalf("ListAutopilots default: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, 200, "HTTP status")
 	var body struct {
 		Autopilots []map[string]any `json:"autopilots"`
 	}
@@ -147,9 +129,7 @@ func TestListAutopilots_DefaultExcludesArchived(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	testHandler.ListAutopilots(w, newRequest("GET", "/api/autopilots?status=archived", nil))
-	if w.Code != 200 {
-		t.Fatalf("ListAutopilots archived: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, 200, "HTTP status")
 	body.Autopilots = nil
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode archived list: %v", err)
@@ -192,9 +172,7 @@ func TestListAutopilots_SubscribersMatchDetail(t *testing.T) {
 	// list
 	w := httptest.NewRecorder()
 	testHandler.ListAutopilots(w, newRequest("GET", "/api/autopilots", nil))
-	if w.Code != 200 {
-		t.Fatalf("ListAutopilots: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, 200, "HTTP status")
 	var listBody struct {
 		Autopilots []map[string]any `json:"autopilots"`
 	}
@@ -210,9 +188,7 @@ func TestListAutopilots_SubscribersMatchDetail(t *testing.T) {
 	w = httptest.NewRecorder()
 	testHandler.GetAutopilot(w, withURLParam(
 		newRequest("GET", "/api/autopilots/"+withSubs+"?workspace_id="+testWorkspaceID, nil), "id", withSubs))
-	if w.Code != 200 {
-		t.Fatalf("GetAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, 200, "HTTP status")
 	var detailBody struct {
 		Autopilot map[string]any `json:"autopilot"`
 	}
@@ -289,23 +265,15 @@ func TestAutopilotSubscriberReadFailureFailsClosed(t *testing.T) {
 	hideAutopilotSubscriberTable(t)
 
 	t.Run("list", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		testHandler.ListAutopilots(w, newRequest("GET", "/api/autopilots", nil))
-		if w.Code != 500 {
-			t.Fatalf("expected 500 when the subscriber read fails, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListAutopilots, newRequest("GET", "/api/autopilots", nil)).Want(500)
 		if strings.Contains(w.Body.String(), `"subscribers":[]`) {
 			t.Errorf("response must not carry an authoritative empty subscriber list: %s", w.Body.String())
 		}
 	})
 
 	t.Run("detail", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		testHandler.GetAutopilot(w, withURLParam(
-			newRequest("GET", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, nil), "id", apID))
-		if w.Code != 500 {
-			t.Fatalf("expected 500 when the subscriber read fails, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetAutopilot, withURLParam(
+			newRequest("GET", "/api/autopilots/"+apID+"?workspace_id="+testWorkspaceID, nil), "id", apID)).Want(500)
 		if strings.Contains(w.Body.String(), `"subscribers":[]`) {
 			t.Errorf("response must not carry an authoritative empty subscriber list: %s", w.Body.String())
 		}

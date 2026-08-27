@@ -2,14 +2,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -18,17 +17,15 @@ import (
 // hits.
 func resolveCommentHTTP(t *testing.T, commentID string) CommentResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/comments/"+commentID+"/resolve", nil)
 	r = withURLParam(r, "commentId", commentID)
-	testHandler.ResolveComment(w, r)
+	w := testutil.Call(t, testHandler.ResolveComment, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("resolve %s: status %d: %s", commentID, w.Code, w.Body.String())
 	}
 	var resp CommentResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode resolve response: %v", err)
-	}
+	w.JSON(&resp)
 	return resp
 }
 
@@ -126,16 +123,7 @@ func newResolveTestFixture(t *testing.T) resolveTestFixture {
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "resolve fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "resolve fixture"})
 
 	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
 	insert := func(parent *string, offset time.Duration, body string) string {

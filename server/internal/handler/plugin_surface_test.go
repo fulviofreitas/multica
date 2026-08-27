@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func pluginSurfaceTokenHandler(t *testing.T) *Handler {
@@ -116,12 +118,7 @@ func TestServePluginSurfaceRejectsConfiguredAppOriginBeforeOpeningToken(t *testi
 
 	request := pluginHandlerRequest(http.MethodGet, "/plugin-surfaces/"+token, nil, map[string]string{"token": token})
 	request.Host = "app.example.test"
-	recorder := httptest.NewRecorder()
-	h.ServePluginSurface(recorder, request)
-
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("shared app/content origin: status=%d, want %d", recorder.Code, http.StatusNotFound)
-	}
+	testutil.Call(t, h.ServePluginSurface, request).Want(http.StatusNotFound)
 }
 
 func TestPluginSurfaceHostExposesOnlySurfaceDocuments(t *testing.T) {
@@ -134,16 +131,14 @@ func TestPluginSurfaceHostExposesOnlySurfaceDocuments(t *testing.T) {
 
 	blocked := httptest.NewRequest(http.MethodGet, "https://plugin-content.example.test/api/config", nil)
 	blocked.Host = "plugin-content.example.test"
-	blockedRecorder := httptest.NewRecorder()
-	boundary.ServeHTTP(blockedRecorder, blocked)
+	blockedRecorder := testutil.Call(t, boundary.ServeHTTP, blocked)
 	if blockedRecorder.Code != http.StatusNotFound || called {
 		t.Fatalf("content host API request: status=%d called=%v", blockedRecorder.Code, called)
 	}
 
 	allowed := httptest.NewRequest(http.MethodGet, "https://plugin-content.example.test/plugin-surfaces/token", nil)
 	allowed.Host = "plugin-content.example.test"
-	allowedRecorder := httptest.NewRecorder()
-	boundary.ServeHTTP(allowedRecorder, allowed)
+	allowedRecorder := testutil.Call(t, boundary.ServeHTTP, allowed)
 	if allowedRecorder.Code != http.StatusNoContent || !called {
 		t.Fatalf("content document request: status=%d called=%v", allowedRecorder.Code, called)
 	}

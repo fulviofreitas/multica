@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -72,10 +71,10 @@ func TestRuntimeHandlersRejectMalformedRuntimeID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest(tt.method, tt.path, nil)
 			req = withURLParam(req, "runtimeId", "not-a-uuid")
-			tt.handle(w, req)
+			w := testutil.Call(t, tt.handle, req)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("%s: expected 400 for malformed runtimeId, got %d: %s", tt.name, w.Code, w.Body.String())
 			}
@@ -111,16 +110,7 @@ func TestGetRuntimeUsage_BucketsByUsageTime(t *testing.T) {
 
 	// Create an issue for the tasks to reference.
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, creator_id, creator_type)
-		VALUES ($1, 'runtime usage test', $2, 'member')
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'runtime usage test'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'")})
 
 	// enqueued yesterday 23:58 UTC, finished today 00:05 UTC — tokens belong to today.
 	now := time.Now().UTC()
@@ -177,18 +167,13 @@ func TestGetRuntimeUsage_BucketsByUsageTime(t *testing.T) {
 
 	// Call the handler with ?days=1 at whatever "now" is. That should include
 	// both today and yesterday in full.
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/runtimes/"+runtimeID+"/usage?days=1", nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.GetRuntimeUsage(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetRuntimeUsage: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetRuntimeUsage, req).Want(http.StatusOK)
 
 	var resp []RuntimeUsageResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 
 	byDate := make(map[string]int64)
 	for _, r := range resp {
@@ -233,14 +218,7 @@ func TestListRuntimeUsageByAgent_MergesMixedCaseProvider(t *testing.T) {
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, creator_id, creator_type)
-		VALUES ($1, 'mixed-case provider test', $2, 'member')
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'mixed-case provider test'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'")})
 
 	now := time.Now().UTC()
 	// Two tasks for the same agent/model under this runtime, reporting the
@@ -464,10 +442,10 @@ func TestRuntimeHeatmapEndpointsUseViewerTZ(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest("GET", c.path, nil)
 			req = withURLParam(req, "runtimeId", runtimeID)
-			c.handle(w, req)
+			w := testutil.Call(t, c.handle, req)
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s: expected 200, got %d: %s", c.name, w.Code, w.Body.String())
 			}

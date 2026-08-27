@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // insertCustomStatus adds one custom status directly, returning its id.
@@ -64,9 +65,7 @@ func TestReorderIssueStatusesWritesIntraCategoryPositionsFromOne(t *testing.T) {
 	second := insertCustomStatus(t, fmt.Sprintf("qa_b_%d", suffix), "in_review", 2, false)
 
 	rec := reorderVia(t, "in_review", []string{second, first})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reorder status = %d: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Equal(t, rec.Code, http.StatusOK, "HTTP status")
 
 	positions := positionsByID(t, first, second)
 	// Positions start at 1: the category's built-in is seeded at 0 and never
@@ -99,9 +98,7 @@ func TestReorderIssueStatusesRejectsArchivedWithoutPartialWrite(t *testing.T) {
 	before := positionsByID(t, first, second, archived)
 
 	rec := reorderVia(t, "in_review", []string{second, archived, first})
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("reorder status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Equal(t, rec.Code, http.StatusConflict, "HTTP status")
 
 	after := positionsByID(t, first, second, archived)
 	for id, position := range before {
@@ -232,9 +229,7 @@ func TestReorderIssueStatusesRejectsAPartialSet(t *testing.T) {
 	before := positionsByID(t, first, second)
 
 	rec := reorderVia(t, "in_review", []string{second})
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("reorder status = %d, want 409: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Equal(t, rec.Code, http.StatusConflict, "HTTP status")
 
 	after := positionsByID(t, first, second)
 	for id, position := range before {

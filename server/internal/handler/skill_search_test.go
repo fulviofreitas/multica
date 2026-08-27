@@ -1,11 +1,12 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestSearchSkillsReturnsNormalizedClawHubCandidates(t *testing.T) {
@@ -65,17 +66,11 @@ func TestSearchSkillsReturnsNormalizedClawHubCandidates(t *testing.T) {
 	clawHubAPIBase = upstream.URL
 	t.Cleanup(func() { clawHubAPIBase = oldBase })
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodGet, "/api/skills/search?q=react", nil)
-	testHandler.SearchSkills(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("SearchSkills: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.SearchSkills, req).Want(http.StatusOK)
 
 	var got []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("SearchSkills: decode response: %v", err)
-	}
+	w.JSON(&got)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 candidates, got %d: %#v", len(got), got)
 	}
@@ -104,12 +99,9 @@ func TestSearchSkillsReturnsNormalizedClawHubCandidates(t *testing.T) {
 }
 
 func TestSearchSkillsEmptyQueryReturns400(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest(http.MethodGet, "/api/skills/search?q=", nil)
-	testHandler.SearchSkills(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("SearchSkills empty query: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.SearchSkills, req).Want(http.StatusBadRequest)
 	if !strings.Contains(w.Body.String(), "query is required") {
 		t.Fatalf("expected query is required error, got %s", w.Body.String())
 	}
@@ -125,16 +117,10 @@ func TestSearchSkillsUpstreamUnavailableReturnsStructuredError(t *testing.T) {
 	clawHubAPIBase = upstream.URL
 	t.Cleanup(func() { clawHubAPIBase = oldBase })
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodGet, "/api/skills/search?q=react", nil)
-	testHandler.SearchSkills(w, req)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("SearchSkills outage: expected 502, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.SearchSkills, req).Want(http.StatusBadGateway)
 	var got map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode error body: %v", err)
-	}
+	w.JSON(&got)
 	if got["code"] != "upstream_unavailable" {
 		t.Fatalf("expected structured upstream_unavailable code, got %#v", got)
 	}

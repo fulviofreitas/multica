@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // An unbound agent is refused by every execution entry point — that part already
@@ -70,23 +70,17 @@ func TestChatSend_UnboundAgentReturnsStructuredConflict(t *testing.T) {
 
 	unbindRuntime(t, ctx, runtimeID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/chat/sessions/"+sessionID+"/messages",
 		map[string]any{"content": "are you still there?"})
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	testHandler.SendChatMessage(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.SendChatMessage, req).Want(http.StatusConflict)
 
 	var body struct {
 		Error      string `json:"error"`
 		ReasonCode string `json:"reason_code"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&body)
 	if body.ReasonCode != string(ReasonAgentRuntimeRequired) {
 		t.Fatalf("reason_code = %q, want agent_runtime_required", body.ReasonCode)
 	}
@@ -105,16 +99,12 @@ func TestCreateAutopilot_UnboundAgentRejected(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Autopilot Create Unbound Agent")
 	unbindRuntime(t, ctx, runtimeID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
 		"title":          "must not start unbound",
 		"assignee_id":    agentID,
 		"execution_mode": "run_only",
 	})
-	testHandler.CreateAutopilot(w, req)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateAutopilot, req).Want(http.StatusUnprocessableEntity)
 
 	var rows int
 	if err := testPool.QueryRow(ctx,
@@ -138,31 +128,14 @@ func TestUpdateAutopilot_UnboundAgentCannotResume(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Autopilot Resume Unbound Agent")
 
 	var autopilotID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO autopilot (
-			workspace_id, title, assignee_type, assignee_id, status,
-			execution_mode, created_by_type, created_by_id
-		)
-		VALUES ($1, 'cannot resume unbound', 'agent', $2, 'active',
-			'run_only', 'member', $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&autopilotID); err != nil {
-		t.Fatalf("insert paused autopilot: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
-	})
+	autopilotID = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'cannot resume unbound'"), "assignee_type": testutil.Raw("'agent'"), "assignee_id": agentID, "status": testutil.Raw("'active'"), "execution_mode": testutil.Raw("'run_only'"), "created_by_type": testutil.Raw("'member'"), "created_by_id": testUserID})
 
 	unbindRuntime(t, ctx, runtimeID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("PATCH", "/api/autopilots/"+autopilotID+"?workspace_id="+testWorkspaceID,
 		map[string]any{"status": "active"})
 	req = withURLParam(req, "id", autopilotID)
-	testHandler.UpdateAutopilot(w, req)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAutopilot, req).Want(http.StatusUnprocessableEntity)
 
 	var status, pauseReason string
 	if err := testPool.QueryRow(ctx,
@@ -180,12 +153,12 @@ func TestUpdateAutopilot_UnboundAgentCannotResume(t *testing.T) {
 // reason_code of its trigger outcome, or "" when the mention was admitted.
 func mentionAgentReasonCode(t *testing.T, issueID, agentID string) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "[@Agent](mention://agent/" + agentID + ") please take a look",
 	})
 	req = withURLParam(req, "id", issueID)
-	testHandler.CreateComment(w, req)
+	w := testutil.Call(t, testHandler.CreateComment, req)
 	if w.Code != http.StatusCreated && w.Code != http.StatusOK {
 		t.Fatalf("CreateComment: expected 200/201, got %d: %s", w.Code, w.Body.String())
 	}
@@ -198,9 +171,7 @@ func mentionAgentReasonCode(t *testing.T, issueID, agentID string) string {
 			ReasonCode string `json:"reason_code"`
 		} `json:"trigger_outcomes"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode comment response: %v", err)
-	}
+	w.Decode(&body)
 	for _, o := range body.TriggerOutcomes {
 		if o.TargetID != agentID {
 			continue

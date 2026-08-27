@@ -3,11 +3,11 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Resource-label junction tables (agent_to_label / skill_to_label) deliberately
@@ -24,16 +24,7 @@ import (
 func insertLabelRow(t *testing.T, ctx context.Context, workspaceID, resourceType string) string {
 	t.Helper()
 	var labelID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue_label (workspace_id, resource_type, name, color)
-		VALUES ($1, $2, $3, '#3b82f6')
-		RETURNING id
-	`, workspaceID, resourceType, resourceType+"-"+uuid.NewString()[:8]).Scan(&labelID); err != nil {
-		t.Fatalf("insert issue_label: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_label WHERE id = $1`, labelID)
-	})
+	labelID = dbfx.Insert(t, "issue_label", testutil.Cols{"workspace_id": workspaceID, "resource_type": resourceType, "name": resourceType + "-" + uuid.NewString()[:8], "color": testutil.Raw("'#3b82f6'")})
 	return labelID
 }
 
@@ -91,13 +82,9 @@ func TestDeleteAgentRuntime_KeepsUnboundAgentLabelAssignments(t *testing.T) {
 	agentID := seedAgentOnRuntime(t, runtimeID, "Label Cleanup Archived Agent", true)
 	seedAgentLabel(t, ctx, testWorkspaceID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if !agentExists(t, agentID) {
 		t.Fatalf("archived agent must survive its runtime as an unbound agent")
@@ -119,14 +106,10 @@ func TestUnbindAgentsAndDeleteRuntime_KeepsAgentLabelAssignments(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Label Cascade Agent")
 	seedAgentLabel(t, ctx, testWorkspaceID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{agentID}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UnbindAgentsAndDeleteRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusOK)
 
 	if n := countAgentLabelAssignments(t, ctx, agentID); n != 1 {
 		t.Fatalf("agent_to_label rows for a surviving agent: got %d, want 1", n)
@@ -149,13 +132,9 @@ func TestDeleteRuntimeProfile_KeepsAgentLabelAssignments(t *testing.T) {
 	}
 	seedAgentLabel(t, ctx, testWorkspaceID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "profileId", profileID)
-	testHandler.DeleteRuntimeProfile(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteRuntimeProfile: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusNoContent)
 
 	if !agentExists(t, agentID) {
 		t.Fatalf("archived agent must survive its runtime profile as an unbound agent")
@@ -184,13 +163,9 @@ func TestDeleteAgentRuntime_CleansSystemAgentLabelAssignments(t *testing.T) {
 	}
 	seedAgentLabel(t, ctx, testWorkspaceID, agentID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if agentExists(t, agentID) {
 		t.Fatalf("system agent should still be hard-deleted with its runtime")
@@ -205,16 +180,7 @@ func seedWorkspaceResourceLabelFixture(t *testing.T, ctx context.Context, slug s
 	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
 
 	var wsID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description)
-		VALUES ($1, $2, $3)
-		RETURNING id
-	`, "Handler Test Delete Labels", slug, "resource-label atomic cleanup test").Scan(&wsID); err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, wsID)
-	})
+	wsID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Handler Test Delete Labels", "slug": slug, "description": "resource-label atomic cleanup test"})
 	if _, err := testPool.Exec(ctx,
 		`INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`,
 		wsID, testUserID); err != nil {
@@ -274,13 +240,9 @@ func TestDeleteWorkspace_CleansResourceLabelAssignments(t *testing.T) {
 	ctx := context.Background()
 	wsID, agentID, skillID := seedWorkspaceResourceLabelFixture(t, ctx, "handler-tests-delete-labels")
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+wsID, nil)
 	req = withURLParam(req, "id", wsID)
-	testHandler.DeleteWorkspace(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteWorkspace: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
 
 	if n := countAgentLabelAssignments(t, ctx, agentID); n != 0 {
 		t.Fatalf("agent_to_label rows survived workspace delete: %d", n)
@@ -315,15 +277,12 @@ func TestDeleteWorkspace_RollsBackResourceLabelCleanup(t *testing.T) {
 		t.Fatalf("lock workspace member: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+wsID, nil)
 	req = withURLParam(req, "id", wsID)
-	testHandler.DeleteWorkspace(w, req)
+	w := testutil.Call(t, testHandler.DeleteWorkspace, req)
 	// A lock the teardown cannot get is transient, so the handler reports it
 	// as a retryable 503 rather than a generic failure.
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("DeleteWorkspace: expected 503, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusServiceUnavailable, "HTTP status")
 	if err := blocker.Rollback(ctx); err != nil {
 		t.Fatalf("release member blocker: %v", err)
 	}

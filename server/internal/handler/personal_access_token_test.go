@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -72,9 +73,7 @@ func TestRenewPAT_ExtendsWhenInsideRenewalWindow(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	resp := decodeRenewResponse(t, w)
 	if !resp.Renewed {
 		t.Fatalf("expected renewed=true, got false (expires_at=%s)", resp.ExpiresAt)
@@ -105,9 +104,7 @@ func TestRenewPAT_NoOpWhenOutsideRenewalWindow(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	resp := decodeRenewResponse(t, w)
 	if resp.Renewed {
 		t.Fatalf("expected renewed=false, got true (expires_at=%s)", resp.ExpiresAt)
@@ -127,14 +124,11 @@ func TestRenewPAT_NoOpWhenOutsideRenewalWindow(t *testing.T) {
 func TestRenewPAT_RejectsExpiredToken(t *testing.T) {
 	raw, _ := insertTestPAT(t, time.Now().Add(-time.Hour))
 
-	w := httptest.NewRecorder()
-	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
+	w := testutil.Call(t, testHandler.RenewCurrentPersonalAccessToken, newRenewRequest(raw))
 	// Expired tokens are filtered by GetPersonalAccessTokenByHash, so the
 	// handler reports 401 — the auth middleware in production would already
 	// have rejected the request, but the handler defends in depth.
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for expired token, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnauthorized, "HTTP status")
 }
 
 func TestRenewPAT_RejectsRevokedToken(t *testing.T) {
@@ -145,11 +139,7 @@ func TestRenewPAT_RejectsRevokedToken(t *testing.T) {
 		t.Fatalf("revoke: %v", err)
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 for revoked token, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.RenewCurrentPersonalAccessToken, newRenewRequest(raw)).Want(http.StatusUnauthorized)
 }
 
 func TestRenewPAT_RejectsNonPATAuthHeader(t *testing.T) {
@@ -168,11 +158,7 @@ func TestRenewPAT_RejectsNonPATAuthHeader(t *testing.T) {
 			if tt.header != "" {
 				req.Header.Set("Authorization", tt.header)
 			}
-			w := httptest.NewRecorder()
-			testHandler.RenewCurrentPersonalAccessToken(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.RenewCurrentPersonalAccessToken, req).Want(http.StatusBadRequest)
 		})
 	}
 }
@@ -184,9 +170,7 @@ func TestRenewPAT_HandlesNullExpiresAt(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	resp := decodeRenewResponse(t, w)
 	if resp.Renewed {
 		t.Fatalf("expected renewed=false for NULL expiry, got true")
@@ -205,9 +189,7 @@ func TestRenewPAT_ConcurrentRenewIsIdempotent(t *testing.T) {
 
 	w1 := httptest.NewRecorder()
 	testHandler.RenewCurrentPersonalAccessToken(w1, newRenewRequest(raw))
-	if w1.Code != http.StatusOK {
-		t.Fatalf("first renew: expected 200, got %d: %s", w1.Code, w1.Body.String())
-	}
+	testutil.Equal(t, w1.Code, http.StatusOK, "HTTP status")
 	resp1 := decodeRenewResponse(t, w1)
 	if !resp1.Renewed {
 		t.Fatal("first renew should have extended the row")
@@ -215,9 +197,7 @@ func TestRenewPAT_ConcurrentRenewIsIdempotent(t *testing.T) {
 
 	w2 := httptest.NewRecorder()
 	testHandler.RenewCurrentPersonalAccessToken(w2, newRenewRequest(raw))
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second renew: expected 200, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Equal(t, w2.Code, http.StatusOK, "HTTP status")
 	resp2 := decodeRenewResponse(t, w2)
 	if resp2.Renewed {
 		t.Fatal("second renew should be a no-op (token now far in the future)")
@@ -276,8 +256,7 @@ func TestRenewPAT_ParallelRenewExtendsExactlyOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			w := httptest.NewRecorder()
-			testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
+			w := testutil.Call(t, testHandler.RenewCurrentPersonalAccessToken, newRenewRequest(raw))
 			var resp RenewPATResponse
 			_ = json.NewDecoder(w.Body).Decode(&resp)
 			results[i] = result{code: w.Code, expiresAt: resp.ExpiresAt, renewed: resp.Renewed}
@@ -358,10 +337,6 @@ func TestRenewPAT_RejectsTokenBelongingToDifferentUser(t *testing.T) {
 		testPool.Exec(ctx, `DELETE FROM personal_access_token WHERE id = $1`, pat.ID)
 	})
 
-	w := httptest.NewRecorder()
 	// newRequest sets X-User-ID = testUserID, but the bearer is otherUser's PAT.
-	testHandler.RenewCurrentPersonalAccessToken(w, newRenewRequest(raw))
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 on user mismatch, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.RenewCurrentPersonalAccessToken, newRenewRequest(raw)).Want(http.StatusUnauthorized)
 }

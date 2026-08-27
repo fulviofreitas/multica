@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateAutopilot_SquadPrivateLeader_PlainMemberBlocked verifies that a
@@ -15,33 +17,19 @@ func TestCreateAutopilot_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Create', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Create'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
-	w := httptest.NewRecorder()
 	r := newRequestAs(memberID, "POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
 		"title":          "should be blocked",
 		"assignee_type":  "squad",
 		"assignee_id":    squadID,
 		"execution_mode": "create_issue",
 	})
-	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateAutopilot, r).Want(http.StatusForbidden)
 }
 
 // TestUpdateAutopilot_SquadPrivateLeader_PlainMemberBlocked verifies that a
@@ -50,7 +38,6 @@ func TestUpdateAutopilot_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, _, memberID := privateAgentTestFixture(t)
 
@@ -58,16 +45,7 @@ func TestUpdateAutopilot_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	publicAgentID := createHandlerTestAgent(t, "ap-private-leader-public", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Update', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Update'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create autopilot as workspace owner assigned to the public agent.
 	w := httptest.NewRecorder()
@@ -77,9 +55,7 @@ func TestUpdateAutopilot_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 		"execution_mode": "create_issue",
 	})
 	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var ap AutopilotResponse
 	if err := json.NewDecoder(w.Body).Decode(&ap); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -97,9 +73,7 @@ func TestUpdateAutopilot_SquadPrivateLeader_PlainMemberBlocked(t *testing.T) {
 	})
 	r = withURLParam(r, "id", ap.ID)
 	testHandler.UpdateAutopilot(w, r)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestCreateAutopilot_SquadPrivateLeader_OwnerAllowed verifies that a
@@ -108,39 +82,24 @@ func TestCreateAutopilot_SquadPrivateLeader_OwnerAllowed(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, ownerID, _ := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Owner', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Owner'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// The AGENT OWNER creates the autopilot — allowed under MUL-3963 (workspace
 	// owner/admin no longer bypasses a private leader's invocation gate).
-	w := httptest.NewRecorder()
+
 	r := newRequestAs(ownerID, "POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
 		"title":          "owner creates private-leader squad ap",
 		"assignee_type":  "squad",
 		"assignee_id":    squadID,
 		"execution_mode": "create_issue",
 	})
-	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateAutopilot, r).Want(http.StatusCreated)
 	var ap AutopilotResponse
-	if err := json.NewDecoder(w.Body).Decode(&ap); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&ap)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, ap.ID)
 	})
@@ -153,21 +112,11 @@ func TestTriggerAutopilot_SquadPrivateLeader_OwnerCanDispatch(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, ownerID, _ := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Dispatch', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Dispatch'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create autopilot as the AGENT OWNER (MUL-3963: only owner/allow-listed
 	// may invoke the private leader; workspace admin no longer bypasses).
@@ -179,9 +128,7 @@ func TestTriggerAutopilot_SquadPrivateLeader_OwnerCanDispatch(t *testing.T) {
 		"execution_mode": "create_issue",
 	})
 	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var ap AutopilotResponse
 	if err := json.NewDecoder(w.Body).Decode(&ap); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -201,9 +148,7 @@ func TestTriggerAutopilot_SquadPrivateLeader_OwnerCanDispatch(t *testing.T) {
 	r = newRequestAs(ownerID, "POST", "/api/autopilots/"+ap.ID+"/trigger?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", ap.ID)
 	testHandler.TriggerAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("TriggerAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var run AutopilotRunResponse
 	if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
 		t.Fatalf("decode run: %v", err)
@@ -225,21 +170,11 @@ func TestTriggerAutopilot_SquadPrivateLeader_NonOwnerClicker_Blocked(t *testing.
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	ctx := context.Background()
 
 	agentID, ownerID, _ := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Clicker Fork', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Clicker Fork'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Owner creates a legitimate autopilot (creator CAN invoke the leader).
 	w := httptest.NewRecorder()
@@ -250,9 +185,7 @@ func TestTriggerAutopilot_SquadPrivateLeader_NonOwnerClicker_Blocked(t *testing.
 		"execution_mode": "create_issue",
 	})
 	testHandler.CreateAutopilot(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAutopilot: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var ap AutopilotResponse
 	if err := json.NewDecoder(w.Body).Decode(&ap); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -270,9 +203,7 @@ func TestTriggerAutopilot_SquadPrivateLeader_NonOwnerClicker_Blocked(t *testing.
 	r = newRequest("POST", "/api/autopilots/"+ap.ID+"/trigger?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", ap.ID)
 	testHandler.TriggerAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("TriggerAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var run AutopilotRunResponse
 	if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
 		t.Fatalf("decode run: %v", err)
@@ -301,16 +232,7 @@ func TestTriggerAutopilot_SquadPrivateLeader_PlainMemberCreator_Blocked(t *testi
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP Private Leader Blocked Dispatch', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP Private Leader Blocked Dispatch'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Directly insert an autopilot with the plain member as creator
 	// (simulating legacy data before the save-time gate).
@@ -330,19 +252,15 @@ func TestTriggerAutopilot_SquadPrivateLeader_PlainMemberCreator_Blocked(t *testi
 
 	// Trigger as workspace owner — the dispatch should fail because the
 	// autopilot's creator (plain member) cannot access the private leader.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/autopilots/"+apID+"/trigger?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", apID)
-	testHandler.TriggerAutopilot(w, r)
+	w := testutil.Call(t, testHandler.TriggerAutopilot, r)
 	// Dispatch returns 200 with status=skipped (or failed) — the run is created
 	// but the dispatch is blocked by the private-leader gate.
-	if w.Code != http.StatusOK {
-		t.Fatalf("TriggerAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var run AutopilotRunResponse
-	if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
-		t.Fatalf("decode run: %v", err)
-	}
+	w.Decode(&run)
 	// The dispatch-time gate should cause a skipped or failed run.
 	if run.Status == "issue_created" || run.Status == "running" {
 		t.Fatalf("run status = %q; want skipped/failed since creator is plain member", run.Status)
@@ -362,16 +280,7 @@ func TestTriggerAutopilot_RunOnly_SquadPrivateLeader_PlainMemberCreator_Blocked(
 	agentID, _, memberID := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'AP RunOnly Private Leader Blocked', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'AP RunOnly Private Leader Blocked'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Legacy autopilot: run_only mode, plain member creator, private-leader squad.
 	var apID string
@@ -388,17 +297,11 @@ func TestTriggerAutopilot_RunOnly_SquadPrivateLeader_PlainMemberCreator_Blocked(
 		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, apID)
 	})
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/autopilots/"+apID+"/trigger?workspace_id="+testWorkspaceID, nil)
 	r = withURLParam(r, "id", apID)
-	testHandler.TriggerAutopilot(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("TriggerAutopilot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.TriggerAutopilot, r).Want(http.StatusOK)
 	var run AutopilotRunResponse
-	if err := json.NewDecoder(w.Body).Decode(&run); err != nil {
-		t.Fatalf("decode run: %v", err)
-	}
+	w.Decode(&run)
 	if run.Status == "running" {
 		t.Fatalf("run status = %q; want skipped/failed since creator is plain member and leader is private", run.Status)
 	}

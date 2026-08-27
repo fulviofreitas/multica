@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestListWorkspaceAgentTaskSnapshot covers the agent presence snapshot endpoint:
@@ -100,17 +101,11 @@ func TestListWorkspaceAgentTaskSnapshot(t *testing.T) {
 		}
 	})
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodGet, "/api/agent-task-snapshot", nil)
-	testHandler.ListWorkspaceAgentTaskSnapshot(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListWorkspaceAgentTaskSnapshot: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListWorkspaceAgentTaskSnapshot, req).Want(http.StatusOK)
 
 	var tasks []AgentTaskResponse
-	if err := json.NewDecoder(w.Body).Decode(&tasks); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&tasks)
 
 	// Per-agent breakdown so leftover tasks from other tests in this package
 	// don't pollute the assertions.
@@ -205,24 +200,7 @@ func TestListWorkspaceWorkingAgents(t *testing.T) {
 	})
 
 	var outsiderAgentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args, mcp_config
-		)
-		VALUES (
-			$1, 'working-agents-outsider', '', 'cloud', '{}'::jsonb,
-			$2, 'workspace', 'private', 1, $3,
-			'', '{}'::jsonb, '[]'::jsonb, '{}'::jsonb
-		)
-		RETURNING id
-	`, testWorkspaceID, testRuntimeID, outsiderUserID).Scan(&outsiderAgentID); err != nil {
-		t.Fatalf("insert outsider agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, outsiderAgentID)
-	})
+	outsiderAgentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'working-agents-outsider'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": testRuntimeID, "visibility": testutil.Raw("'workspace'"), "permission_mode": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": outsiderUserID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb"), "mcp_config": testutil.Raw("'{}'::jsonb")})
 
 	insertedSquadIDs := make([]string, 0, 3)
 	insertSquad := func(name, leaderID string) string {
@@ -503,19 +481,10 @@ func TestListWorkspaceWorkingAgents(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			testHandler.ListWorkspaceWorkingAgents(
-				w,
-				newRequest(http.MethodGet, "/api/working-agents"+tc.query, nil),
-			)
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.ListWorkspaceWorkingAgents, newRequest(http.MethodGet, "/api/working-agents"+tc.query, nil)).Want(http.StatusOK)
 
 			var agents []WorkspaceWorkingAgent
-			if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
+			w.Decode(&agents)
 
 			var working *WorkspaceWorkingAgent
 			for i := range agents {
@@ -568,14 +537,7 @@ func TestListWorkspaceWorkingAgentsRejectsInvalidFilters(t *testing.T) {
 		"/api/working-agents?type=issue&scope=mine&parent=00000000-0000-0000-0000-000000000000",
 	} {
 		t.Run(path, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			testHandler.ListWorkspaceWorkingAgents(
-				w,
-				newRequest(http.MethodGet, path, nil),
-			)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.ListWorkspaceWorkingAgents, newRequest(http.MethodGet, path, nil)).Want(http.StatusBadRequest)
 		})
 	}
 }
@@ -655,18 +617,9 @@ func TestListWorkspaceWorkingAgentsParentScope(t *testing.T) {
 
 	read := func(t *testing.T, query string) map[string]WorkspaceWorkingAgent {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.ListWorkspaceWorkingAgents(
-			w,
-			newRequest(http.MethodGet, "/api/working-agents"+query, nil),
-		)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListWorkspaceWorkingAgents, newRequest(http.MethodGet, "/api/working-agents"+query, nil)).Want(http.StatusOK)
 		var agents []WorkspaceWorkingAgent
-		if err := json.NewDecoder(w.Body).Decode(&agents); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&agents)
 		byID := make(map[string]WorkspaceWorkingAgent, len(agents))
 		for _, agent := range agents {
 			byID[agent.ID] = agent
@@ -747,15 +700,9 @@ func TestCreateAgent_RejectsDuplicateName(t *testing.T) {
 	}
 
 	// First call — creates the agent.
-	w1 := httptest.NewRecorder()
-	testHandler.CreateAgent(w1, newRequest(http.MethodPost, "/api/agents", body))
-	if w1.Code != http.StatusCreated {
-		t.Fatalf("first CreateAgent: expected 201, got %d: %s", w1.Code, w1.Body.String())
-	}
+	w1 := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 	var resp1 map[string]any
-	if err := json.NewDecoder(w1.Body).Decode(&resp1); err != nil {
-		t.Fatalf("decode first response: %v", err)
-	}
+	w1.Decode(&resp1)
 	agentID1, _ := resp1["id"].(string)
 	if agentID1 == "" {
 		t.Fatalf("first CreateAgent: no id in response: %v", resp1)
@@ -764,11 +711,7 @@ func TestCreateAgent_RejectsDuplicateName(t *testing.T) {
 	// Second call — same name must be rejected with 409 Conflict.
 	// The unique constraint prevents silent duplicates; the UI shows a clear error.
 	body["description"] = "updated description"
-	w2 := httptest.NewRecorder()
-	testHandler.CreateAgent(w2, newRequest(http.MethodPost, "/api/agents", body))
-	if w2.Code != http.StatusConflict {
-		t.Fatalf("second CreateAgent with duplicate name: expected 409, got %d: %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusConflict)
 }
 
 // TestUpdateAgent_RejectsRenameToArchivedName is the regression for #5914: the
@@ -786,21 +729,12 @@ func TestUpdateAgent_RejectsRenameToArchivedName(t *testing.T) {
 	const heldName = "rename-collision-archived-name"
 	idA := createHandlerTestAgent(t, heldName, nil)
 	archiveReq := withURLParam(newRequest(http.MethodPost, "/api/agents/"+idA+"/archive", nil), "id", idA)
-	archiveW := httptest.NewRecorder()
-	testHandler.ArchiveAgent(archiveW, archiveReq)
-	if archiveW.Code != http.StatusOK {
-		t.Fatalf("ArchiveAgent: expected 200, got %d: %s", archiveW.Code, archiveW.Body.String())
-	}
+	testutil.Call(t, testHandler.ArchiveAgent, archiveReq).Want(http.StatusOK)
 
 	// Agent B renames itself into the archived agent's name.
 	idB := createHandlerTestAgent(t, "rename-collision-source", nil)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, withURLParam(
-		newRequest(http.MethodPatch, "/api/agents/"+idB, map[string]any{"name": heldName}), "id", idB))
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("rename to archived agent's name: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgent, withURLParam(
+		newRequest(http.MethodPatch, "/api/agents/"+idB, map[string]any{"name": heldName}), "id", idB)).Want(http.StatusConflict)
 	if strings.Contains(w.Body.String(), "agent_workspace_name_unique") {
 		t.Fatalf("409 body leaked the raw constraint name: %s", w.Body.String())
 	}
@@ -844,16 +778,10 @@ func TestCreateAgent_AssignsAvatarDefault(t *testing.T) {
 				body["avatar_url"] = *tt.avatarURL
 			}
 
-			w := httptest.NewRecorder()
-			testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-			if w.Code != http.StatusCreated {
-				t.Fatalf("CreateAgent: expected 201, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 
 			var response AgentResponse
-			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
+			w.Decode(&response)
 			if response.AvatarURL == nil {
 				t.Fatal("CreateAgent: avatar_url is nil")
 			}
@@ -923,12 +851,7 @@ func TestGetAgent_ResponseHasNoCustomEnv(t *testing.T) {
 
 	req := newRequest("GET", "/agents/"+agentID, nil)
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.GetAgent(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAgent, req).Want(http.StatusOK)
 
 	raw := rawJSONResponse(t, w.Body.Bytes())
 	if _, ok := raw["custom_env"]; ok {
@@ -947,9 +870,7 @@ func TestGetAgent_ResponseHasNoCustomEnv(t *testing.T) {
 	// Sanity-check the typed shape too — the struct must not have
 	// rehydrated the masked map.
 	var typed AgentResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &typed); err != nil {
-		t.Fatalf("typed decode failed: %v", err)
-	}
+	w.JSON(&typed)
 	if typed.HasCustomEnv != true {
 		t.Errorf("typed.HasCustomEnv expected true")
 	}
@@ -974,16 +895,10 @@ func TestListAgents_ResponseHasNoCustomEnv(t *testing.T) {
 	}
 
 	req := newRequest("GET", "/agents", nil)
-	w := httptest.NewRecorder()
-	testHandler.ListAgents(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListAgents, req).Want(http.StatusOK)
 
 	var rawAgents []map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &rawAgents); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
+	w.JSON(&rawAgents)
 
 	var found map[string]any
 	for _, a := range rawAgents {
@@ -1023,17 +938,10 @@ func TestGetAgentEnv_OwnerSucceedsAndAudits(t *testing.T) {
 
 	req := newRequest("GET", "/api/agents/"+agentID+"/env", nil)
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.GetAgentEnv(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgentEnv: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAgentEnv, req).Want(http.StatusOK)
 
 	var resp AgentEnvResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.AgentID != agentID {
 		t.Errorf("agent_id mismatch: got %q", resp.AgentID)
 	}
@@ -1100,11 +1008,7 @@ func TestAgentEnv_AgentActorRejected(t *testing.T) {
 			req = withURLParam(req, "id", targetID)
 			req.Header.Set("X-Agent-ID", hostAgentID)
 			req.Header.Set("X-Task-ID", hostTaskID)
-			w := httptest.NewRecorder()
-			tc.fn(w, req)
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("expected 403 from agent actor, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.fn, req).Want(http.StatusForbidden)
 		})
 	}
 }
@@ -1137,11 +1041,7 @@ func TestAgentEnv_TaskTokenActorSource(t *testing.T) {
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Del("X-Agent-ID")
 	req.Header.Del("X-Task-ID")
-	w := httptest.NewRecorder()
-	testHandler.GetAgentEnv(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 when X-Actor-Source=task_token, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetAgentEnv, req).Want(http.StatusForbidden)
 }
 
 // TestUpdateAgentEnv_PreservesSentinelValues verifies the **** guard.
@@ -1172,11 +1072,7 @@ func TestUpdateAgentEnv_PreservesSentinelValues(t *testing.T) {
 	}
 	req := newRequest(http.MethodPut, "/api/agents/"+agentID+"/env", body)
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgentEnv(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgentEnv: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgentEnv, req).Want(http.StatusOK)
 
 	// Refetch from DB so we don't rely on the response body alone.
 	var stored string
@@ -1257,11 +1153,7 @@ func TestUpdateAgent_RejectsCustomEnvInBody(t *testing.T) {
 	}
 	req := newRequest(http.MethodPut, "/api/agents/"+agentID, body)
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("UpdateAgent: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusBadRequest)
 	if !strings.Contains(w.Body.String(), "custom_env") || !strings.Contains(w.Body.String(), "/env") {
 		t.Errorf("error body should mention custom_env and the env endpoint; got %s", w.Body.String())
 	}
@@ -1398,16 +1290,10 @@ func TestUpdateAgent_RedactsMcpConfigForAgentActor(t *testing.T) {
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", caller)
 	req.Header.Set("X-Task-ID", taskID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 
 	var resp AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	// The response contract keeps `mcp_config` always-present so clients
 	// can distinguish "no config" vs "redacted" via the companion flag.
 	// `json.RawMessage` of a JSON null decodes to the literal bytes
@@ -1436,15 +1322,9 @@ func TestUpdateAgent_KeepsMcpConfigForMemberActor(t *testing.T) {
 		"description": "owner-visible mutation",
 	})
 	req = withURLParam(req, "id", target)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 	var resp AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.McpConfig == nil {
 		t.Errorf("UpdateAgent response should keep mcp_config for member actor; got nil")
 	}
@@ -1483,16 +1363,10 @@ func TestUpdateAgent_PreservesSkillsInResponse(t *testing.T) {
 		"description": "metadata-only update",
 	})
 	req = withURLParam(req, "id", agentID)
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgent: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 
 	var resp AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	gotIDs := map[string]bool{}
 	for _, s := range resp.Skills {
 		gotIDs[s.ID] = true
@@ -1522,15 +1396,9 @@ func TestUpdateAgent_PreservesSkillsInResponse(t *testing.T) {
 	// on the very next read.
 	getReq := newRequest(http.MethodGet, "/api/agents/"+agentID, nil)
 	getReq = withURLParam(getReq, "id", agentID)
-	getW := httptest.NewRecorder()
-	testHandler.GetAgent(getW, getReq)
-	if getW.Code != http.StatusOK {
-		t.Fatalf("GetAgent: expected 200, got %d: %s", getW.Code, getW.Body.String())
-	}
+	getW := testutil.Call(t, testHandler.GetAgent, getReq).Want(http.StatusOK)
 	var getResp AgentResponse
-	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
-		t.Fatalf("decode GetAgent: %v", err)
-	}
+	getW.Decode(&getResp)
 	if len(getResp.Skills) != len(resp.Skills) {
 		t.Errorf("GetAgent skill count %d != UpdateAgent skill count %d",
 			len(getResp.Skills), len(resp.Skills))
@@ -1561,30 +1429,18 @@ func TestArchiveRestoreAgent_PreservesSkillsInResponse(t *testing.T) {
 
 	archiveReq := newRequest(http.MethodPost, "/api/agents/"+agentID+"/archive", nil)
 	archiveReq = withURLParam(archiveReq, "id", agentID)
-	archiveW := httptest.NewRecorder()
-	testHandler.ArchiveAgent(archiveW, archiveReq)
-	if archiveW.Code != http.StatusOK {
-		t.Fatalf("ArchiveAgent: expected 200, got %d: %s", archiveW.Code, archiveW.Body.String())
-	}
+	archiveW := testutil.Call(t, testHandler.ArchiveAgent, archiveReq).Want(http.StatusOK)
 	var archived AgentResponse
-	if err := json.NewDecoder(archiveW.Body).Decode(&archived); err != nil {
-		t.Fatalf("decode archive: %v", err)
-	}
+	archiveW.Decode(&archived)
 	if len(archived.Skills) != 1 || archived.Skills[0].ID != skillID {
 		t.Errorf("ArchiveAgent: expected 1 skill %s, got %+v", skillID, archived.Skills)
 	}
 
 	restoreReq := newRequest(http.MethodPost, "/api/agents/"+agentID+"/restore", nil)
 	restoreReq = withURLParam(restoreReq, "id", agentID)
-	restoreW := httptest.NewRecorder()
-	testHandler.RestoreAgent(restoreW, restoreReq)
-	if restoreW.Code != http.StatusOK {
-		t.Fatalf("RestoreAgent: expected 200, got %d: %s", restoreW.Code, restoreW.Body.String())
-	}
+	restoreW := testutil.Call(t, testHandler.RestoreAgent, restoreReq).Want(http.StatusOK)
 	var restored AgentResponse
-	if err := json.NewDecoder(restoreW.Body).Decode(&restored); err != nil {
-		t.Fatalf("decode restore: %v", err)
-	}
+	restoreW.Decode(&restored)
 	if len(restored.Skills) != 1 || restored.Skills[0].ID != skillID {
 		t.Errorf("RestoreAgent: expected 1 skill %s, got %+v", skillID, restored.Skills)
 	}
@@ -1595,18 +1451,9 @@ func TestArchiveRestoreAgent_PreservesSkillsInResponse(t *testing.T) {
 // dragging the full TaskService into the test.
 func insertHandlerTestTask(t *testing.T, agentID string) string {
 	t.Helper()
-	ctx := context.Background()
+
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority)
-		VALUES ($1, $2, 'running', 0)
-		RETURNING id
-	`, agentID, handlerTestRuntimeID(t)).Scan(&taskID); err != nil {
-		t.Fatalf("insert test task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": handlerTestRuntimeID(t), "status": testutil.Raw("'running'"), "priority": testutil.Raw("0")})
 	return taskID
 }
 

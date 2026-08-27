@@ -3,8 +3,9 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestUpdateComment_RequeuesDelegatedFailureRecoverySurvivor(t *testing.T) {
@@ -20,16 +21,7 @@ func TestUpdateComment_RequeuesDelegatedFailureRecoverySurvivor(t *testing.T) {
 	}
 
 	var workerID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, 'delegated recovery worker', '', 'cloud', '{}'::jsonb, $2, 'private', 1, $3)
-		RETURNING id`, testWorkspaceID, runtimeID, testUserID).Scan(&workerID); err != nil {
-		t.Fatalf("create worker agent: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, workerID) })
+	workerID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'delegated recovery worker'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 
 	var workerIssueID string
 	if err := testPool.QueryRow(ctx, `
@@ -91,15 +83,12 @@ func TestUpdateComment_RequeuesDelegatedFailureRecoverySurvivor(t *testing.T) {
 		RETURNING id`, coordinatorID, runtimeID, sourceIssueID, recoveryCommentID, humanCommentID, testUserID).Scan(&cancelledTaskID); err != nil {
 		t.Fatalf("create queued coordinator batch: %v", err)
 	}
-	w := httptest.NewRecorder()
+
 	req := newRequest(http.MethodPut, "/api/comments/"+humanCommentID, map[string]any{
 		"content": "edited instruction",
 	})
 	req = withURLParam(req, "commentId", humanCommentID)
-	testHandler.UpdateComment(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateComment: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateComment, req).Want(http.StatusOK)
 
 	var cancelledStatus string
 	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, cancelledTaskID).Scan(&cancelledStatus); err != nil {

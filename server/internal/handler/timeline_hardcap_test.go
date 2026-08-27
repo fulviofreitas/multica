@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -43,9 +44,7 @@ func fetchTimelineRecorder(t *testing.T, issueID, rawQuery string) *httptest.Res
 
 func decodeTimelineEntries(t *testing.T, w *httptest.ResponseRecorder) []TimelineEntry {
 	t.Helper()
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var entries []TimelineEntry
 	if err := json.Unmarshal(w.Body.Bytes(), &entries); err != nil {
 		t.Fatalf("decode timeline: %v", err)
@@ -474,9 +473,7 @@ func TestListTimeline_WrappedShapeReportsHasMoreBefore(t *testing.T) {
 	bulkSeedActivities(t, issueID, start, total)
 
 	w := fetchTimelineRecorder(t, issueID, "limit=50")
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp timelinePaginatedResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode wrapped response: %v", err)

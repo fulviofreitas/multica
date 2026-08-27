@@ -2,11 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // claimAgentInstructionsForTest claims the next queued task for runtimeID and
@@ -17,15 +17,11 @@ import (
 func claimAgentInstructionsForTest(t *testing.T, runtimeID string) (taskID string, instructions string, isLeaderTask bool, raw string) {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "squad-briefing-claim")
 	req = withURLParam(req, "runtimeId", runtimeID)
 
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
 	var resp struct {
 		Task *struct {
@@ -37,9 +33,7 @@ func claimAgentInstructionsForTest(t *testing.T, runtimeID string) (taskID strin
 			} `json:"agent"`
 		} `json:"task"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode claim response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Task == nil {
 		return "", "", false, w.Body.String()
 	}
@@ -86,14 +80,7 @@ func newSquadBriefingClaimFixture(t *testing.T, ctx context.Context, name string
 	}
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, name+" squad", agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": name + " squad", "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	return squadBriefingClaimFixture{
 		RuntimeID: runtimeID,
@@ -112,14 +99,7 @@ func enqueueClaimTask(t *testing.T, ctx context.Context, fx squadBriefingClaimFi
 	} else {
 		squadArg = nil
 	}
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, is_leader_task, squad_id)
-		VALUES ($1, $2, $3, 'queued', 0, $4, $5)
-		RETURNING id
-	`, fx.AgentID, fx.RuntimeID, fx.IssueID, isLeader, squadArg).Scan(&taskID); err != nil {
-		t.Fatalf("enqueue claim task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": fx.AgentID, "runtime_id": fx.RuntimeID, "issue_id": fx.IssueID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("0"), "is_leader_task": isLeader, "squad_id": squadArg})
 	return taskID
 }
 

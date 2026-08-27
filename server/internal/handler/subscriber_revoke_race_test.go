@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -97,13 +97,13 @@ func TestSubtreeUnsubscribe_LosesToConcurrentRevoke(t *testing.T) {
 	// pre-check sees a member that is about to stop existing.
 	done := make(chan int, 1)
 	go func() {
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/"+issueID+"/unsubscribe/subtree", map[string]any{
 			"user_id":   userID,
 			"user_type": "member",
 		})
 		req = withURLParam(req, "id", issueID)
-		testHandler.UnsubscribeFromIssueSubtree(w, req)
+		w := testutil.Call(t, testHandler.UnsubscribeFromIssueSubtree, req)
 		done <- w.Code
 	}()
 
@@ -144,21 +144,18 @@ func TestSubtreeUnsubscribe_LosesToConcurrentRevoke(t *testing.T) {
 
 func createRaceIssue(t *testing.T) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "subtree revoke race",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() {
-		dw := httptest.NewRecorder()
+
 		dreq := newRequest("DELETE", "/api/issues/"+issue.ID, nil)
 		dreq = withURLParam(dreq, "id", issue.ID)
-		testHandler.DeleteIssue(dw, dreq)
+		testutil.Call(t, testHandler.DeleteIssue, dreq)
 	})
 	return issue.ID
 }

@@ -3,9 +3,9 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -36,15 +36,12 @@ func TestUnsubscribeEndpoints_SubtreeIsASeparateRoute(t *testing.T) {
 	// A body field named "subtree" must be inert on the shared endpoint. If it
 	// ever regains meaning here, an old backend and a new backend disagree
 	// about what the same request does — which is the whole defect.
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues/"+parentID+"/unsubscribe", map[string]any{
 		"subtree": true,
 	})
 	req = withURLParam(req, "id", parentID)
-	testHandler.UnsubscribeFromIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UnsubscribeFromIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UnsubscribeFromIssue, req).Want(http.StatusOK)
 
 	if isSubscriberOf(t, parentID) {
 		t.Fatal("the plain endpoint must still unsubscribe the issue it targets")
@@ -64,13 +61,9 @@ func TestUnsubscribeEndpoints_SubtreeRouteLeavesDescendants(t *testing.T) {
 	subscribeTo(t, parentID)
 	subscribeTo(t, childID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/"+parentID+"/unsubscribe/subtree", nil)
 	req = withURLParam(req, "id", parentID)
-	testHandler.UnsubscribeFromIssueSubtree(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UnsubscribeFromIssueSubtree: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UnsubscribeFromIssueSubtree, req).Want(http.StatusOK)
 
 	if isSubscriberOf(t, parentID) {
 		t.Fatal("subtree unsubscribe must leave the root issue")
@@ -88,13 +81,13 @@ func createSubscriberTreeFixture(t *testing.T) (parentID, childID string) {
 	t.Helper()
 
 	create := func(title string, parent *string) string {
-		w := httptest.NewRecorder()
+
 		body := map[string]any{"title": title}
 		if parent != nil {
 			body["parent_issue_id"] = *parent
 		}
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body)
-		testHandler.CreateIssue(w, req)
+		w := testutil.Call(t, testHandler.CreateIssue, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateIssue(%s): expected 201, got %d: %s", title, w.Code, w.Body.String())
 		}
@@ -108,10 +101,10 @@ func createSubscriberTreeFixture(t *testing.T) (parentID, childID string) {
 
 	t.Cleanup(func() {
 		for _, id := range []string{childID, parentID} {
-			w := httptest.NewRecorder()
+
 			req := newRequest("DELETE", "/api/issues/"+id, nil)
 			req = withURLParam(req, "id", id)
-			testHandler.DeleteIssue(w, req)
+			testutil.Call(t, testHandler.DeleteIssue, req)
 		}
 	})
 	return parentID, childID
@@ -119,10 +112,10 @@ func createSubscriberTreeFixture(t *testing.T) (parentID, childID string) {
 
 func subscribeTo(t *testing.T, issueID string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues/"+issueID+"/subscribe", nil)
 	req = withURLParam(req, "id", issueID)
-	testHandler.SubscribeToIssue(w, req)
+	w := testutil.Call(t, testHandler.SubscribeToIssue, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("SubscribeToIssue(%s): expected 200, got %d: %s", issueID, w.Code, w.Body.String())
 	}

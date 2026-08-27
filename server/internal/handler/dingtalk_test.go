@@ -200,8 +200,7 @@ func TestListDingTalkGroupsForAgent_FollowsAgentViewPermissionMatrix(t *testing.
 				}
 				req := newRequestAs(actor.userID, http.MethodGet, "/api/agents/"+agentID+"/dingtalk/groups", nil)
 				req = withURLParams(req, "id", agentID)
-				w := httptest.NewRecorder()
-				testHandler.ListDingTalkGroupsForAgent(w, req)
+				w := testutil.Call(t, testHandler.ListDingTalkGroupsForAgent, req)
 				if want := accessModel.want[actor.name]; w.Code != want {
 					t.Fatalf("ListDingTalkGroupsForAgent: want %d, got %d: %s", want, w.Code, w.Body.String())
 				}
@@ -298,14 +297,12 @@ INSERT INTO dingtalk_group_presence (
 				installReq := newRequestAs(actor.userID, http.MethodGet,
 					"/api/workspaces/"+testWorkspaceID+"/dingtalk/installations", nil)
 				installReq = withURLParams(installReq, "id", testWorkspaceID)
-				installRec := httptest.NewRecorder()
-				testHandler.ListDingTalkInstallations(installRec, installReq)
+				installRec := testutil.Call(t, testHandler.ListDingTalkInstallations, installReq)
 
 				groupReq := newRequestAs(actor.userID, http.MethodGet,
 					"/api/workspaces/"+testWorkspaceID+"/dingtalk/groups", nil)
 				groupReq = withURLParams(groupReq, "id", testWorkspaceID)
-				groupRec := httptest.NewRecorder()
-				testHandler.ListDingTalkGroups(groupRec, groupReq)
+				groupRec := testutil.Call(t, testHandler.ListDingTalkGroups, groupReq)
 
 				wantStatus := http.StatusOK
 				if actor.userID == "" {
@@ -323,13 +320,9 @@ INSERT INTO dingtalk_group_presence (
 				var installations struct {
 					Installations []DingTalkInstallationResponse `json:"installations"`
 				}
-				if err := json.Unmarshal(installRec.Body.Bytes(), &installations); err != nil {
-					t.Fatal(err)
-				}
+				installRec.JSON(&installations)
 				var groups ListDingTalkGroupsResponse
-				if err := json.Unmarshal(groupRec.Body.Bytes(), &groups); err != nil {
-					t.Fatal(err)
-				}
+				groupRec.JSON(&groups)
 				wantCount := 0
 				if accessModel.visible[actor.name] {
 					wantCount = 1
@@ -501,17 +494,11 @@ func TestListDingTalkInstallations_OrphanIsAdminOnlyAndMarkedUnavailable(t *test
 		req := newRequestAs(userID, http.MethodGet,
 			"/api/workspaces/"+testWorkspaceID+"/dingtalk/installations", nil)
 		req = withURLParams(req, "id", testWorkspaceID)
-		rec := httptest.NewRecorder()
-		testHandler.ListDingTalkInstallations(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("ListDingTalkInstallations status = %d: %s", rec.Code, rec.Body.String())
-		}
+		rec := testutil.Call(t, testHandler.ListDingTalkInstallations, req).Want(http.StatusOK)
 		var response struct {
 			Installations []DingTalkInstallationResponse `json:"installations"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-			t.Fatal(err)
-		}
+		rec.JSON(&response)
 		return response.Installations
 	}
 
@@ -564,9 +551,7 @@ func TestRegisterDingTalkBYO_AuthorizesAgentOwnerAndAdmins(t *testing.T) {
 					want = http.StatusBadRequest
 				}
 				w := register(tc.userID)
-				if w.Code != want {
-					t.Fatalf("RegisterDingTalkBYO: want %d, got %d: %s", want, w.Code, w.Body.String())
-				}
+				testutil.Equal(t, w.Code, want, "HTTP status")
 			})
 		}
 	}
@@ -610,8 +595,7 @@ INSERT INTO dingtalk_bot_identity (
 		)
 		req := newRequestAs(userID, http.MethodDelete,
 			"/api/workspaces/"+testWorkspaceID+"/dingtalk/installations/"+installationID+"/groups/cid%2Fforget", nil)
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+		rec := testutil.Call(t, router.ServeHTTP, req)
 		return rec.Code
 	}
 	if got := forget(memberID); got != http.StatusForbidden {
@@ -638,15 +622,9 @@ SELECT
 	listReq := newRequestAs(testUserID, http.MethodGet,
 		"/api/workspaces/"+testWorkspaceID+"/dingtalk/groups", nil)
 	listReq = withURLParams(listReq, "id", testWorkspaceID)
-	listRec := httptest.NewRecorder()
-	testHandler.ListDingTalkGroups(listRec, listReq)
-	if listRec.Code != http.StatusOK {
-		t.Fatalf("list groups after forget status = %d: %s", listRec.Code, listRec.Body.String())
-	}
+	listRec := testutil.Call(t, testHandler.ListDingTalkGroups, listReq).Want(http.StatusOK)
 	var listing ListDingTalkGroupsResponse
-	if err := json.Unmarshal(listRec.Body.Bytes(), &listing); err != nil {
-		t.Fatal(err)
-	}
+	listRec.JSON(&listing)
 	forgottenGroupPresent := false
 	for _, group := range listing.Groups {
 		for _, bot := range group.Bots {
@@ -682,8 +660,7 @@ func TestRevokeDingTalkInstallation_AuthorizesAgentOwnerAndAdmins(t *testing.T) 
 		req := newRequestAs(userID, http.MethodDelete,
 			"/api/workspaces/"+testWorkspaceID+"/dingtalk/installations/"+installationID, nil)
 		req = withURLParams(req, "id", testWorkspaceID, "installationId", installationID)
-		w := httptest.NewRecorder()
-		testHandler.RevokeDingTalkInstallation(w, req)
+		w := testutil.Call(t, testHandler.RevokeDingTalkInstallation, req)
 		return w.Code
 	}
 
@@ -733,8 +710,7 @@ func TestRevokeDingTalkInstallation_OrphanCleanableByAdminNotMember(t *testing.T
 		req := newRequestAs(userID, http.MethodDelete,
 			"/api/workspaces/"+testWorkspaceID+"/dingtalk/installations/"+installationID, nil)
 		req = withURLParams(req, "id", testWorkspaceID, "installationId", installationID)
-		w := httptest.NewRecorder()
-		testHandler.RevokeDingTalkInstallation(w, req)
+		w := testutil.Call(t, testHandler.RevokeDingTalkInstallation, req)
 		return w.Code
 	}
 
@@ -843,16 +819,11 @@ func TestRedeemDingTalkBindingTokenPublishesAccountBindingUpdateAfterCommit(t *t
 		)
 	})
 
-	recorder := httptest.NewRecorder()
-	h.RedeemDingTalkBindingToken(recorder, newRequest(
+	testutil.Call(t, h.RedeemDingTalkBindingToken, newRequest(
 		http.MethodPost,
 		"/api/dingtalk/binding/redeem",
 		RedeemDingTalkBindingTokenRequest{Token: token.Raw},
-	))
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("redeem status = %d, body = %s", recorder.Code, recorder.Body.String())
-	}
+	)).Want(http.StatusOK)
 	if eventCount != 1 {
 		t.Fatalf("binding update event count = %d, want 1", eventCount)
 	}
@@ -938,19 +909,13 @@ INSERT INTO dingtalk_group_presence (
 	rctx.URLParams.Add("id", testWorkspaceID)
 	req := newRequestAs(testUserID, http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/dingtalk/groups", nil)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-	testHandler.ListDingTalkGroups(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list groups status = %d: %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.ListDingTalkGroups, req).Want(http.StatusOK)
 	var response struct {
 		Groups                  []DingTalkGroupResponse `json:"groups"`
 		GroupDiscoverySupported bool                    `json:"group_discovery_supported"`
 		InactiveGroupCounts     map[string]int64        `json:"inactive_group_counts"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	rec.JSON(&response)
 	if !response.GroupDiscoverySupported || len(response.Groups) != 1 || response.Groups[0].ConversationID != "cid-shared" ||
 		response.Groups[0].ConversationTitle != "Platform" || len(response.Groups[0].Bots) != 2 {
 		t.Fatalf("group response = %+v", response.Groups)
@@ -971,14 +936,8 @@ INSERT INTO dingtalk_group_presence (
 	inactiveReq := newRequestAs(testUserID, http.MethodGet,
 		"/api/workspaces/"+testWorkspaceID+"/dingtalk/groups?activity=inactive&installation_id="+installOne, nil)
 	inactiveReq = inactiveReq.WithContext(context.WithValue(inactiveReq.Context(), chi.RouteCtxKey, rctx))
-	inactiveRec := httptest.NewRecorder()
-	testHandler.ListDingTalkGroups(inactiveRec, inactiveReq)
-	if inactiveRec.Code != http.StatusOK {
-		t.Fatalf("list inactive groups status = %d: %s", inactiveRec.Code, inactiveRec.Body.String())
-	}
-	if err := json.Unmarshal(inactiveRec.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
+	inactiveRec := testutil.Call(t, testHandler.ListDingTalkGroups, inactiveReq).Want(http.StatusOK)
+	inactiveRec.JSON(&response)
 	if len(response.Groups) != 2 || response.Groups[0].ConversationID != "cid-z" ||
 		response.Groups[1].ConversationID != "cid-untitled" {
 		t.Fatalf("inactive groups = %+v", response.Groups)
@@ -986,9 +945,7 @@ INSERT INTO dingtalk_group_presence (
 
 	agentRec := httptest.NewRecorder()
 	testHandler.listDingTalkGroups(agentRec, req, parseUUID(testWorkspaceID), agentOne, nil)
-	if agentRec.Code != http.StatusOK {
-		t.Fatalf("list Agent groups status = %d: %s", agentRec.Code, agentRec.Body.String())
-	}
+	testutil.Equal(t, agentRec.Code, http.StatusOK, "HTTP status")
 	if err := json.Unmarshal(agentRec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
@@ -999,8 +956,7 @@ INSERT INTO dingtalk_group_presence (
 }
 
 func TestListDingTalkGroupsDisabledDeploymentReturnsStableEmptyShape(t *testing.T) {
-	rec := httptest.NewRecorder()
-	(&Handler{}).ListDingTalkGroups(rec, httptest.NewRequest(http.MethodGet, "/api/workspaces/bad/dingtalk/groups", nil))
+	rec := testutil.Call(t, (&Handler{}).ListDingTalkGroups, httptest.NewRequest(http.MethodGet, "/api/workspaces/bad/dingtalk/groups", nil))
 	if rec.Code != http.StatusOK || rec.Body.String() != "{\"groups\":[],\"group_discovery_supported\":true,\"inactive_group_counts\":{},\"bot_identities\":{}}\n" {
 		t.Fatalf("disabled groups response = %d %q", rec.Code, rec.Body.String())
 	}
@@ -1021,11 +977,7 @@ func TestListDingTalkGroupsReturnsInternalErrorOnDatabaseFailure(t *testing.T) {
 	cancel()
 	req := newRequestAs(testUserID, http.MethodGet, "/api/workspaces/"+testWorkspaceID+"/dingtalk/groups", nil)
 	req = req.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
-	rec := httptest.NewRecorder()
-	testHandler.ListDingTalkGroups(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("database failure status = %d, want 500: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Call(t, testHandler.ListDingTalkGroups, req).Want(http.StatusInternalServerError)
 
 	inactiveReq := newRequestAs(testUserID, http.MethodGet,
 		"/api/workspaces/"+testWorkspaceID+"/dingtalk/groups?activity=inactive&installation_id=d1473000-0000-4000-8000-000000000099", nil)

@@ -134,6 +134,18 @@ func (r *Response) JSON(dest any) *Response {
 	return r
 }
 
+// Decode decodes the first JSON value in the response body into dest. It
+// preserves json.Decoder semantics for tests whose existing handler contract
+// intentionally permits trailing whitespace or another streamed value.
+func (r *Response) Decode(dest any) *Response {
+	r.t.Helper()
+	if err := json.NewDecoder(r.Body).Decode(dest); err != nil {
+		r.t.Fatalf("%s %s: decode response: %v: %s",
+			r.req.Method, r.req.URL.RequestURI(), err, r.Body.String())
+	}
+	return r
+}
+
 // Map decodes the body into a generic object, for assertions that only touch
 // one or two fields and do not earn a named struct.
 func (r *Response) Map() map[string]any {

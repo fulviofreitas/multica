@@ -2,11 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -42,8 +41,7 @@ func TestCreateAgent_LegacyVisibilityMapsToPermission(t *testing.T) {
 	runtimeID := handlerTestRuntimeID(t)
 
 	create := func(name, visibility string) AgentResponse {
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
 			"name":       name,
 			"runtime_id": runtimeID,
 			"visibility": visibility,
@@ -52,9 +50,7 @@ func TestCreateAgent_LegacyVisibilityMapsToPermission(t *testing.T) {
 			t.Fatalf("create %q (visibility=%s): expected 201, got %d: %s", name, visibility, w.Code, w.Body.String())
 		}
 		var resp AgentResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
+		w.Decode(&resp)
 		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, resp.ID) })
 		return resp
 	}
@@ -101,18 +97,7 @@ func TestMigrationBackfill_VisibilityToPermission(t *testing.T) {
 	runtimeID := handlerTestRuntimeID(t)
 
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, 'backfill-legacy-workspace-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'workspace', 'private', 1, $3)
-		RETURNING id
-	`, testWorkspaceID, runtimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("insert pre-migration agent: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'backfill-legacy-workspace-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'workspace'"), "permission_mode": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 
 	// Exact backfill statements from migration 130 (idempotent).
 	if _, err := testPool.Exec(ctx, `UPDATE agent SET permission_mode = 'public_to' WHERE visibility = 'workspace'`); err != nil {
@@ -159,22 +144,16 @@ func TestCanInvokeAgent_PublicToMemberWhitelist(t *testing.T) {
 	otherMember := createPermissionTestMember(t, "perm-other-member@multica.test")
 
 	// Owner (testUserID) creates an agent public_to the allowed member only.
-	w := httptest.NewRecorder()
-	testHandler.CreateAgent(w, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateAgent, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
 		"name":            "public-to-specific-member-agent",
 		"runtime_id":      runtimeID,
 		"permission_mode": "public_to",
 		"invocation_targets": []map[string]any{
 			{"target_type": "member", "target_id": allowedMember},
 		},
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create agent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var agent AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&agent); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&agent)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agent.ID) })
 
 	// Derived legacy visibility for a member-only public_to agent must be
@@ -184,8 +163,7 @@ func TestCanInvokeAgent_PublicToMemberWhitelist(t *testing.T) {
 	}
 
 	assignAs := func(actorID string) int {
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, newRequestAs(actorID, "POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		rec := testutil.Call(t, testHandler.CreateIssue, newRequestAs(actorID, "POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 			"title":         "assign to member-scoped agent",
 			"status":        "todo",
 			"assignee_type": "agent",
@@ -213,8 +191,7 @@ func TestCanInvokeAgent_PublicToMemberWhitelist(t *testing.T) {
 // and returns its id.
 func createPublicToAgentWithTargets(t *testing.T, name string, targets []map[string]any) string {
 	t.Helper()
-	w := httptest.NewRecorder()
-	testHandler.CreateAgent(w, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateAgent, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
 		"name":               name,
 		"runtime_id":         handlerTestRuntimeID(t),
 		"permission_mode":    "public_to",
@@ -224,9 +201,7 @@ func createPublicToAgentWithTargets(t *testing.T, name string, targets []map[str
 		t.Fatalf("create %q: expected 201, got %d: %s", name, w.Code, w.Body.String())
 	}
 	var resp AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&resp)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, resp.ID) })
 	return resp.ID
 }
@@ -305,7 +280,7 @@ func TestUpdateAgent_BatchReplaceOverlappingMembers(t *testing.T) {
 	}
 
 	// Batch-replace the allow-list with an overlapping set: drop A, keep B, add C.
-	w := httptest.NewRecorder()
+
 	r := newRequest("PUT", "/api/agents/"+agentID, map[string]any{
 		"permission_mode": "public_to",
 		"invocation_targets": []map[string]any{
@@ -314,10 +289,7 @@ func TestUpdateAgent_BatchReplaceOverlappingMembers(t *testing.T) {
 		},
 	})
 	r = withURLParam(r, "id", agentID)
-	testHandler.UpdateAgent(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("update: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgent, r).Want(http.StatusOK)
 
 	if n := invocationTargetCount(t, agentID); n != 2 {
 		t.Errorf("after batch replace expected exactly 2 targets, got %d (stale rows not cleared?)", n)
@@ -355,7 +327,7 @@ func TestUpdateAgent_WorkspaceStacksWithMembersThenNarrowed(t *testing.T) {
 
 	// Narrow to member C only — workspace grant is dropped by the replace.
 	memberC := createPermissionTestMember(t, "perm-stack-c@multica.test")
-	w := httptest.NewRecorder()
+
 	r := newRequest("PUT", "/api/agents/"+agentID, map[string]any{
 		"permission_mode": "public_to",
 		"invocation_targets": []map[string]any{
@@ -363,10 +335,7 @@ func TestUpdateAgent_WorkspaceStacksWithMembersThenNarrowed(t *testing.T) {
 		},
 	})
 	r = withURLParam(r, "id", agentID)
-	testHandler.UpdateAgent(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("narrow update: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgent, r).Want(http.StatusOK)
 	if canMemberInvoke(t, agentID, memberB) {
 		t.Errorf("after dropping workspace target, non-listed member B must lose access")
 	}
@@ -384,20 +353,14 @@ func TestCreateAgent_EmptyPublicToNormalizesToWorkspace(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	w := httptest.NewRecorder()
-	testHandler.CreateAgent(w, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
+	w := testutil.Call(t, testHandler.CreateAgent, newRequest("POST", "/api/agents?workspace_id="+testWorkspaceID, map[string]any{
 		"name":            "empty-public-to-agent",
 		"runtime_id":      handlerTestRuntimeID(t),
 		"permission_mode": "public_to",
 		// no invocation_targets on purpose
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var resp AgentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&resp)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, resp.ID) })
 
 	if resp.PermissionMode != "public_to" {
@@ -545,14 +508,7 @@ func TestRevokeMember_InvocationTargetCleanupIsWorkspaceScoped(t *testing.T) {
 	// allow-lists the same userX.
 	testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = 'xws-b-perm-test'`)
 	var wsB string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ('XWS B', 'xws-b-perm-test', '', 'XWB')
-		RETURNING id
-	`).Scan(&wsB); err != nil {
-		t.Fatalf("create workspace B: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, wsB) })
+	wsB = dbfx.Insert(t, "workspace", testutil.Cols{"name": testutil.Raw("'XWS B'"), "slug": testutil.Raw("'xws-b-perm-test'"), "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'XWB'")})
 
 	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`, wsB, testUserID); err != nil {
 		t.Fatalf("add owner to B: %v", err)
@@ -647,21 +603,18 @@ func TestUpdateAgent_AccessChangeIsOwnerOnly(t *testing.T) {
 	adminID := createPermissionTestAdmin(t, "perm-access-admin@multica.test")
 
 	put := func(actorID string, body map[string]any) int {
-		rec := httptest.NewRecorder()
+
 		r := newRequestAs(actorID, "PUT", "/api/agents/"+agentID, body)
 		r = withURLParam(r, "id", agentID)
-		testHandler.UpdateAgent(rec, r)
+		rec := testutil.Call(t, testHandler.UpdateAgent, r)
 		return rec.Code
 	}
 
 	// Admin (non-owner) attempts a REAL access change → 403.
-	rec := httptest.NewRecorder()
+
 	r := newRequestAs(adminID, "PUT", "/api/agents/"+agentID, map[string]any{"permission_mode": "private"})
 	r = withURLParam(r, "id", agentID)
-	testHandler.UpdateAgent(rec, r)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("admin access change: expected 403, got %d: %s", rec.Code, rec.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgent, r).Want(http.StatusForbidden)
 	// Access must be unchanged (still public_to workspace).
 	if a, _ := testHandler.Queries.GetAgent(ctx, util.MustParseUUID(agentID)); a.PermissionMode != "public_to" {
 		t.Errorf("access must be unchanged after rejected admin write, got %q", a.PermissionMode)
@@ -708,10 +661,10 @@ func TestUpdateAgent_LegacyVisibilityNoOpForMemberOnlyPublicTo(t *testing.T) {
 	adminID := createPermissionTestAdmin(t, "perm-legacyvis-admin@multica.test")
 
 	put := func(actorID string, body map[string]any) int {
-		rec := httptest.NewRecorder()
+
 		r := newRequestAs(actorID, "PUT", "/api/agents/"+agentID, body)
 		r = withURLParam(r, "id", agentID)
-		testHandler.UpdateAgent(rec, r)
+		rec := testutil.Call(t, testHandler.UpdateAgent, r)
 		return rec.Code
 	}
 

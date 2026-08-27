@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -34,12 +35,9 @@ func withIssuePropertyParams(req *http.Request, issueID, propertyID string) *htt
 
 func createTestProperty(t *testing.T, body map[string]any) PropertyResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/properties", body)
-	testHandler.CreateProperty(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProperty: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProperty, req).Want(http.StatusCreated)
 	var created PropertyResponse
 	json.NewDecoder(w.Body).Decode(&created)
 	t.Cleanup(func() { deleteTestProperty(t, created.ID) })
@@ -110,9 +108,7 @@ func TestPropertyDefinitionCRUD(t *testing.T) {
 		"name": "severity", "type": "text",
 	})
 	testHandler.CreateProperty(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("duplicate name: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusConflict, "HTTP status")
 
 	// Rename + replace options, keeping the first option's id: values that
 	// reference it must survive option-list edits.
@@ -128,9 +124,7 @@ func TestPropertyDefinitionCRUD(t *testing.T) {
 	})
 	req = withURLParam(req, "id", created.ID)
 	testHandler.UpdateProperty(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateProperty: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var updated PropertyResponse
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.Name != "Sev" || updated.Icon != "shield" || updated.Config.Options[0].ID != keepID || updated.Config.Options[0].Name != "Blocker" {
@@ -142,9 +136,7 @@ func TestPropertyDefinitionCRUD(t *testing.T) {
 	req = newRequest("PATCH", "/api/properties/"+created.ID, map[string]any{"icon": ""})
 	req = withURLParam(req, "id", created.ID)
 	testHandler.UpdateProperty(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear icon: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.Icon != "" {
 		t.Fatalf("icon not cleared: %q", updated.Icon)
@@ -155,13 +147,10 @@ func TestPropertyDefinitionCRUD(t *testing.T) {
 	req = newRequest("PATCH", "/api/properties/"+created.ID, map[string]any{"archived": true})
 	req = withURLParam(req, "id", created.ID)
 	testHandler.UpdateProperty(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("archive: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	listProperties := func(query string) []PropertyResponse {
-		w := httptest.NewRecorder()
-		testHandler.ListProperties(w, newRequest("GET", "/api/properties"+query, nil))
+		w := testutil.Call(t, testHandler.ListProperties, newRequest("GET", "/api/properties"+query, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("ListProperties%s: expected 200, got %d: %s", query, w.Code, w.Body.String())
 		}
@@ -208,8 +197,7 @@ func TestPropertyDefinitionValidation(t *testing.T) {
 			}}}, "duplicate option name"},
 	}
 	for _, tc := range cases {
-		w := httptest.NewRecorder()
-		testHandler.CreateProperty(w, newRequest("POST", "/api/properties", tc.body))
+		w := testutil.Call(t, testHandler.CreateProperty, newRequest("POST", "/api/properties", tc.body))
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.want) {
 			t.Fatalf("%s: expected 400 containing %q, got %d: %s", tc.name, tc.want, w.Code, w.Body.String())
 		}
@@ -226,9 +214,7 @@ func TestPropertyAdminGate(t *testing.T) {
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", uuid.NewString())
 	testHandler.CreateProperty(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("agent CreateProperty: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	property := createTestProperty(t, map[string]any{"name": "AgentWritable" + uuid.NewString()[:8], "type": "text"})
 	issueID := createPropertyTestIssue(t, "agent value write")
@@ -239,9 +225,7 @@ func TestPropertyAdminGate(t *testing.T) {
 	req.Header.Set("X-Agent-ID", uuid.NewString())
 	req = withIssuePropertyParams(req, issueID, property.ID)
 	testHandler.SetIssueProperty(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("agent SetIssueProperty: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 func TestIssuePropertyValues(t *testing.T) {
@@ -279,9 +263,7 @@ func TestIssuePropertyValues(t *testing.T) {
 	// multi_select: duplicates dropped, order canonicalized to config order.
 	webID, iosID := multi.Config.Options[2].ID, multi.Config.Options[0].ID
 	w := setIssuePropertyRaw(t, issueID, multi.ID, []string{webID, iosID, webID})
-	if w.Code != http.StatusOK {
-		t.Fatalf("multi_select set: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp struct {
 		Properties map[string]any `json:"properties"`
 	}
@@ -312,23 +294,17 @@ func TestIssuePropertyValues(t *testing.T) {
 	}
 
 	// Archived definitions reject new values but allow unset.
-	warch := httptest.NewRecorder()
+
 	req := newRequest("PATCH", "/api/properties/"+sel.ID, map[string]any{"archived": true})
 	req = withURLParam(req, "id", sel.ID)
-	testHandler.UpdateProperty(warch, req)
-	if warch.Code != http.StatusOK {
-		t.Fatalf("archive: expected 200, got %d: %s", warch.Code, warch.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateProperty, req).Want(http.StatusOK)
 	if w := setIssuePropertyRaw(t, issueID, sel.ID, sel.Config.Options[1].ID); w.Code != http.StatusBadRequest {
 		t.Fatalf("set on archived: expected 400, got %d: %s", w.Code, w.Body.String())
 	}
-	wdel := httptest.NewRecorder()
+
 	req = newRequest("DELETE", "/api/issues/"+issueID+"/properties/"+sel.ID, nil)
 	req = withIssuePropertyParams(req, issueID, sel.ID)
-	testHandler.DeleteIssueProperty(wdel, req)
-	if wdel.Code != http.StatusOK {
-		t.Fatalf("unset on archived: expected 200, got %d: %s", wdel.Code, wdel.Body.String())
-	}
+	wdel := testutil.Call(t, testHandler.DeleteIssueProperty, req).Want(http.StatusOK)
 	// Fresh struct: json.Decode merges into a pre-populated map, which would
 	// leave the earlier bag contents (including sel.ID) in place.
 	var afterDelete struct {
@@ -410,15 +386,11 @@ func TestPropertyOptionRemovalGuard(t *testing.T) {
 		{"id": usedID, "name": "Used (renamed)", "color": "#ef4444"},
 		{"id": unusedID, "name": "Unused", "color": "#6b7280"},
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("rename: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Dropping only the unused option → 200.
 	w = patchConfig([]map[string]any{{"id": usedID, "name": "Used (renamed)", "color": "#ef4444"}})
-	if w.Code != http.StatusOK {
-		t.Fatalf("unused removal: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 // TestListIssuesPropertyFilterAndSort covers the server-side list support:
@@ -483,8 +455,7 @@ func TestListIssuesPropertyFilterAndSort(t *testing.T) {
 
 	listIssues := func(query string) []IssueResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", "/api/issues"+query, nil))
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", "/api/issues"+query, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("ListIssues%s: expected 200, got %d: %s", query, w.Code, w.Body.String())
 		}
@@ -572,11 +543,7 @@ func TestListIssuesPropertyFilterAndSort(t *testing.T) {
 	}
 
 	// Malformed property sort id → 400; unknown definition → 200 position order.
-	w := httptest.NewRecorder()
-	testHandler.ListIssues(w, newRequest("GET", "/api/issues?sort=property:nope", nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("malformed property sort: expected 400, got %d", w.Code)
-	}
+	testutil.Call(t, testHandler.ListIssues, newRequest("GET", "/api/issues?sort=property:nope", nil)).Want(http.StatusBadRequest)
 	if got := listIssues("?limit=5&sort=property:" + uuid.NewString()); len(got) == 0 {
 		t.Fatalf("unknown-definition sort should fall back to position order, got empty")
 	}
@@ -887,8 +854,7 @@ func TestPropertyActorDefinitionRejectsOptions(t *testing.T) {
 		}
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.CreateProperty(w, newRequest("POST", "/api/properties", map[string]any{
+	w := testutil.Call(t, testHandler.CreateProperty, newRequest("POST", "/api/properties", map[string]any{
 		"name": "Owner" + uuid.NewString()[:8],
 		"type": "actor",
 		"config": map[string]any{"options": []map[string]any{
@@ -921,24 +887,17 @@ func TestIssueActorPropertyValues(t *testing.T) {
 
 	// A real workspace member round-trips as "member:<user_id>".
 	w := setIssuePropertyRaw(t, issueID, owner.ID, memberRef)
-	if w.Code != http.StatusOK {
-		t.Fatalf("actor set member: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := decodePropertiesBag(t, w)[owner.ID]; got != memberRef {
 		t.Fatalf("actor value not stored as %q: %v", memberRef, got)
 	}
 	// Read back through the issue endpoint, not just the write response.
-	wget := httptest.NewRecorder()
+
 	getReq := newRequest("GET", "/api/issues/"+issueID, nil)
 	getReq = withURLParam(getReq, "id", issueID)
-	testHandler.GetIssue(wget, getReq)
-	if wget.Code != http.StatusOK {
-		t.Fatalf("GetIssue: expected 200, got %d: %s", wget.Code, wget.Body.String())
-	}
+	wget := testutil.Call(t, testHandler.GetIssue, getReq).Want(http.StatusOK)
 	var fetched IssueResponse
-	if err := json.NewDecoder(wget.Body).Decode(&fetched); err != nil {
-		t.Fatalf("decode issue: %v", err)
-	}
+	wget.Decode(&fetched)
 	if fetched.Properties[owner.ID] != memberRef {
 		t.Fatalf("actor value missing from the issue bag: %v", fetched.Properties)
 	}
@@ -948,9 +907,7 @@ func TestIssueActorPropertyValues(t *testing.T) {
 	// which matches the reference string exactly, silently misses it.
 	upper := "member:" + strings.ToUpper(testUserID)
 	w = setIssuePropertyRaw(t, issueID, owner.ID, upper)
-	if w.Code != http.StatusOK {
-		t.Fatalf("actor set uppercase member: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := decodePropertiesBag(t, w)[owner.ID]; got != memberRef {
 		t.Fatalf("uppercase actor id not canonicalized on write: %v", got)
 	}
@@ -979,9 +936,7 @@ func TestIssueActorPropertyValues(t *testing.T) {
 	}
 	// multi_actor: duplicates dropped, insertion order kept.
 	w = setIssuePropertyRaw(t, issueID, reviewers.ID, []string{memberRef, secondRef, memberRef})
-	if w.Code != http.StatusOK {
-		t.Fatalf("multi_actor set: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	stored, ok := decodePropertiesBag(t, w)[reviewers.ID].([]any)
 	if !ok || len(stored) != 2 {
 		t.Fatalf("multi_actor not stored as a 2-element array: %v", stored)
@@ -1041,7 +996,7 @@ func TestIssueActorPropertyFacets(t *testing.T) {
 
 	facetKeys := func(userID string) map[string]int64 {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		req := newRequestAs(userID, http.MethodPost, "/api/issues/table/facets", map[string]any{
 			"query": map[string]any{
 				"scope":   map[string]any{"kind": "workspace"},
@@ -1051,14 +1006,9 @@ func TestIssueActorPropertyFacets(t *testing.T) {
 			"facets":        []map[string]any{{"kind": "property", "property_id": property.ID}},
 			"include_total": false,
 		})
-		testHandler.ListIssueTableFacets(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListIssueTableFacets: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListIssueTableFacets, req).Want(http.StatusOK)
 		var resp issueTableFacetsResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode facets: %v", err)
-		}
+		w.Decode(&resp)
 		counts := map[string]int64{}
 		for _, facet := range resp.Facets {
 			for _, value := range facet.Values {
@@ -1104,7 +1054,6 @@ func TestIssuePropertyFacetNoValue(t *testing.T) {
 		t.Fatalf("set hold: %d %s", w.Code, w.Body.String())
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodPost, "/api/issues/table/facets", map[string]any{
 		"query": map[string]any{
 			"scope":   map[string]any{"kind": "workspace"},
@@ -1114,14 +1063,9 @@ func TestIssuePropertyFacetNoValue(t *testing.T) {
 		"facets":        []map[string]any{{"kind": "property", "property_id": hold.ID}},
 		"include_total": false,
 	})
-	testHandler.ListIssueTableFacets(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListIssueTableFacets: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListIssueTableFacets, req).Want(http.StatusOK)
 	var resp issueTableFacetsResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode facets: %v", err)
-	}
+	w.Decode(&resp)
 	counts := map[string]int64{}
 	for _, facet := range resp.Facets {
 		for _, value := range facet.Values {

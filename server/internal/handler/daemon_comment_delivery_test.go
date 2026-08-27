@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -235,23 +236,18 @@ func createCommentDeliveryFixture(t *testing.T, label string) commentDeliveryFix
 
 func claimCommentDeliveryFixture(t *testing.T, fixture commentDeliveryFixture, capabilities string) AgentTaskResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+fixture.runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "comment-delivery-matrix")
 	if capabilities != "" {
 		req.Header.Set("X-Client-Capabilities", capabilities)
 	}
 	req = withURLParam(req, "runtimeId", fixture.runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 	var response struct {
 		Task *AgentTaskResponse `json:"task"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode claim response: %v", err)
-	}
+	w.JSON(&response)
 	if response.Task == nil {
 		t.Fatalf("claim returned no task: %s", w.Body.String())
 	}
@@ -360,21 +356,15 @@ func TestClaimTaskByRuntime_CoalescedOnlyStaleTaskDoesNotReuseDeletedTriggerCapa
 		t.Fatalf("delete trigger directly: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+fixture.runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "stale-comment-plan-repair")
 	req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityCoalescedCommentsV1)
 	req = withURLParam(req, "runtimeId", fixture.runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("repair stale claim: got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 	var response struct {
 		Task *AgentTaskResponse `json:"task"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode stale-plan repair response: %v", err)
-	}
+	w.JSON(&response)
 	if response.Task != nil {
 		t.Fatalf("stale plan was dispatched instead of repaired: %+v", response.Task)
 	}
@@ -390,15 +380,11 @@ func TestUpdateComment_RequeuesSurvivingCoalescedBatch(t *testing.T) {
 		t.Fatalf("assign edited-trigger issue: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodPut, "/api/comments/"+fixture.commentID[2], map[string]any{
 		"content": "edited latest instruction",
 	})
 	req = withURLParam(req, "commentId", fixture.commentID[2])
-	testHandler.UpdateComment(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateComment: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateComment, req).Want(http.StatusOK)
 
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[:2])
 }
@@ -412,13 +398,9 @@ func TestDeleteComment_RequeuesSurvivingCoalescedBatch(t *testing.T) {
 		t.Fatalf("assign deleted-trigger issue: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodDelete, "/api/comments/"+fixture.commentID[2], nil)
 	req = withURLParam(req, "commentId", fixture.commentID[2])
-	testHandler.DeleteComment(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteComment: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteComment, req).Want(http.StatusNoContent)
 
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[1], fixture.commentID[:1])
 	var deletedCount int
@@ -439,15 +421,11 @@ func TestUpdateComment_CancelsAndRequeuesWhenEditedInputIsCoalesced(t *testing.T
 		t.Fatalf("assign edited-coalesced issue: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodPut, "/api/comments/"+fixture.commentID[0], map[string]any{
 		"content": "edited earlier instruction",
 	})
 	req = withURLParam(req, "commentId", fixture.commentID[0])
-	testHandler.UpdateComment(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateComment: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateComment, req).Want(http.StatusOK)
 
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[0], fixture.commentID[1:])
 }
@@ -461,13 +439,9 @@ func TestDeleteComment_CancelsAndRequeuesWhenDeletedInputIsCoalesced(t *testing.
 		t.Fatalf("assign deleted-coalesced issue: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodDelete, "/api/comments/"+fixture.commentID[0], nil)
 	req = withURLParam(req, "commentId", fixture.commentID[0])
-	testHandler.DeleteComment(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteComment: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteComment, req).Want(http.StatusNoContent)
 
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[1:2])
 }
@@ -483,13 +457,10 @@ func TestDeleteComment_FailureRestoresCancelledCompleteBatch(t *testing.T) {
 
 	failingHandler := *testHandler
 	failingHandler.Queries = db.New(&failDeleteCommentDB{delegate: testPool})
-	w := httptest.NewRecorder()
+
 	req := newRequest(http.MethodDelete, "/api/comments/"+fixture.commentID[2], nil)
 	req = withURLParam(req, "commentId", fixture.commentID[2])
-	failingHandler.DeleteComment(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("DeleteComment failure: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, failingHandler.DeleteComment, req).Want(http.StatusInternalServerError)
 
 	var existing int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM comment WHERE id = $1`, fixture.commentID[2]).Scan(&existing); err != nil {
@@ -512,13 +483,10 @@ func TestDeleteComment_ConcurrentNoOpIsReportedAndRestoresCancelledBatch(t *test
 
 	zeroHandler := *testHandler
 	zeroHandler.Queries = db.New(&zeroDeleteCommentDB{delegate: testPool})
-	w := httptest.NewRecorder()
+
 	req := newRequest(http.MethodDelete, "/api/comments/"+fixture.commentID[2], nil)
 	req = withURLParam(req, "commentId", fixture.commentID[2])
-	zeroHandler.DeleteComment(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("DeleteComment no-op: got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, zeroHandler.DeleteComment, req).Want(http.StatusNotFound)
 
 	assertRepairedCommentBatch(t, fixture, fixture.commentID[2], fixture.commentID[:2])
 }
@@ -906,15 +874,11 @@ func TestClaimTaskByRuntime_FinalizationFailureRequeuesImmediately(t *testing.T)
 	testHandler.TaskService.TxStarter = &failNthBegin{delegate: testPool, failAt: 2}
 	defer func() { testHandler.TaskService.TxStarter = originalTxStarter }()
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/runtimes/"+fixture.runtimeID+"/tasks/claim", nil,
 		testWorkspaceID, "comment-delivery-finalize-failure")
 	req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityCoalescedCommentsV1)
 	req = withURLParam(req, "runtimeId", fixture.runtimeID)
-	failingHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("failed finalization status = %d, want 500: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, failingHandler.ClaimTaskByRuntime, req).Want(http.StatusInternalServerError)
 	if strings.Contains(w.Body.String(), "auth_token") || strings.Contains(w.Body.String(), `"task"`) {
 		t.Fatalf("failed claim leaked a task payload: %s", w.Body.String())
 	}

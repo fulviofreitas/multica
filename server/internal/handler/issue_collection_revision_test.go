@@ -2,13 +2,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestIssueCollectionProjectionsIncludePositiveRevision(t *testing.T) {
@@ -58,8 +58,7 @@ func TestIssueCollectionProjectionsIncludePositiveRevision(t *testing.T) {
 	})
 
 	groupKey := "status:in_review"
-	tableRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableRows(tableRecorder, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+	tableRecorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
 		Query: issueTableQuerySpec{
 			Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 			Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
@@ -68,14 +67,9 @@ func TestIssueCollectionProjectionsIncludePositiveRevision(t *testing.T) {
 		GroupKey:  &groupKey,
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 10},
-	}))
-	if tableRecorder.Code != http.StatusOK {
-		t.Fatalf("table rows status = %d: %s", tableRecorder.Code, tableRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var tableResponse issueTableRowsResponse
-	if err := json.NewDecoder(tableRecorder.Body).Decode(&tableResponse); err != nil {
-		t.Fatalf("decode table rows: %v", err)
-	}
+	tableRecorder.Decode(&tableResponse)
 	if len(tableResponse.Rows) != 1 || tableResponse.Rows[0].Issue.ID != issueID {
 		t.Fatalf("table rows = %+v, want issue %s", tableResponse.Rows, issueID)
 	}
@@ -83,32 +77,20 @@ func TestIssueCollectionProjectionsIncludePositiveRevision(t *testing.T) {
 		t.Fatalf("table row revision = %d, want 7", tableResponse.Rows[0].Issue.Revision)
 	}
 
-	listRecorder := httptest.NewRecorder()
-	testHandler.ListIssues(listRecorder, newRequest(http.MethodGet, "/api/issues?project_id="+url.QueryEscape(projectID), nil))
-	if listRecorder.Code != http.StatusOK {
-		t.Fatalf("list issues status = %d: %s", listRecorder.Code, listRecorder.Body.String())
-	}
+	listRecorder := testutil.Call(t, testHandler.ListIssues, newRequest(http.MethodGet, "/api/issues?project_id="+url.QueryEscape(projectID), nil)).Want(http.StatusOK)
 	var listResponse struct {
 		Issues []IssueResponse `json:"issues"`
 	}
-	if err := json.NewDecoder(listRecorder.Body).Decode(&listResponse); err != nil {
-		t.Fatalf("decode issue list: %v", err)
-	}
+	listRecorder.Decode(&listResponse)
 	if len(listResponse.Issues) != 1 || listResponse.Issues[0].ID != issueID || listResponse.Issues[0].Revision != 7 {
 		t.Fatalf("list projection = %+v, want issue %s at revision 7", listResponse.Issues, issueID)
 	}
 
-	searchRecorder := httptest.NewRecorder()
-	testHandler.SearchIssues(searchRecorder, newRequest(http.MethodGet, "/api/issues/search?q="+url.QueryEscape(title), nil))
-	if searchRecorder.Code != http.StatusOK {
-		t.Fatalf("search issues status = %d: %s", searchRecorder.Code, searchRecorder.Body.String())
-	}
+	searchRecorder := testutil.Call(t, testHandler.SearchIssues, newRequest(http.MethodGet, "/api/issues/search?q="+url.QueryEscape(title), nil)).Want(http.StatusOK)
 	var searchResponse struct {
 		Issues []IssueResponse `json:"issues"`
 	}
-	if err := json.NewDecoder(searchRecorder.Body).Decode(&searchResponse); err != nil {
-		t.Fatalf("decode issue search: %v", err)
-	}
+	searchRecorder.Decode(&searchResponse)
 	if len(searchResponse.Issues) != 1 || searchResponse.Issues[0].ID != issueID || searchResponse.Issues[0].Revision != 7 {
 		t.Fatalf("search projection = %+v, want issue %s at revision 7", searchResponse.Issues, issueID)
 	}

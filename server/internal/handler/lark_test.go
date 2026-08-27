@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 )
 
@@ -24,21 +25,13 @@ import (
 func TestRevokeLarkInstallation_NotConfigured(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodDelete, "/api/workspaces/x/lark/installations/y", nil)
-	w := httptest.NewRecorder()
-	h.RevokeLarkInstallation(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", w.Code)
-	}
+	testutil.Call(t, h.RevokeLarkInstallation, req).Want(http.StatusServiceUnavailable)
 }
 
 func TestRedeemLarkBindingToken_NotConfigured(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodPost, "/api/lark/binding/redeem", strings.NewReader(`{"token":"x"}`))
-	w := httptest.NewRecorder()
-	h.RedeemLarkBindingToken(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", w.Code)
-	}
+	testutil.Call(t, h.RedeemLarkBindingToken, req).Want(http.StatusServiceUnavailable)
 }
 
 func TestBeginLarkInstall_NotConfigured(t *testing.T) {
@@ -50,21 +43,13 @@ func TestBeginLarkInstall_NotConfigured(t *testing.T) {
 	// so this should not be reached through the normal flow.
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodPost, "/api/workspaces/x/lark/install/begin?agent_id=y", nil)
-	w := httptest.NewRecorder()
-	h.BeginLarkInstall(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, h.BeginLarkInstall, req).Want(http.StatusServiceUnavailable)
 }
 
 func TestGetLarkInstallStatus_NotConfigured(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/install/sess_y/status", nil)
-	w := httptest.NewRecorder()
-	h.GetLarkInstallStatus(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", w.Code)
-	}
+	testutil.Call(t, h.GetLarkInstallStatus, req).Want(http.StatusServiceUnavailable)
 }
 
 func TestListLarkInstallations_NotConfiguredReturnsEmpty(t *testing.T) {
@@ -74,19 +59,13 @@ func TestListLarkInstallations_NotConfiguredReturnsEmpty(t *testing.T) {
 	// "not connected" empty state instead of an error banner.
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
-	w := httptest.NewRecorder()
-	h.ListLarkInstallations(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, h.ListLarkInstallations, req).Want(http.StatusOK)
 	var resp struct {
 		Installations    []any `json:"installations"`
 		Configured       bool  `json:"configured"`
 		InstallSupported bool  `json:"install_supported"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Configured {
 		t.Fatalf("configured should be false when LarkInstallations is nil")
 	}
@@ -111,18 +90,12 @@ func TestListLarkInstallations_StubClientReportsInstallNotSupported(t *testing.T
 		LarkAPIClient: lark.NewStubAPIClient(stubLogger),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
-	w := httptest.NewRecorder()
-	h.ListLarkInstallations(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
+	w := testutil.Call(t, h.ListLarkInstallations, req).Want(http.StatusOK)
 	var resp struct {
 		Configured       bool `json:"configured"`
 		InstallSupported bool `json:"install_supported"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.InstallSupported {
 		t.Fatalf("install_supported must be false while only stub APIClient is wired")
 	}
@@ -143,18 +116,12 @@ func TestListLarkInstallations_NotConfigured_HardCodedInstallSupportedFalse(t *t
 		LarkAPIClient:     lark.NewStubAPIClient(stubLogger),
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
-	w := httptest.NewRecorder()
-	h.ListLarkInstallations(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
+	w := testutil.Call(t, h.ListLarkInstallations, req).Want(http.StatusOK)
 	var resp struct {
 		Configured       bool `json:"configured"`
 		InstallSupported bool `json:"install_supported"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Configured {
 		t.Fatalf("configured must be false when LarkInstallations is nil")
 	}
@@ -335,9 +302,7 @@ func TestGetLarkInstallStatus_ScopedToInitiatorOrAdmin(t *testing.T) {
 
 	// The agent owner begins the install, so they are the session initiator.
 	begin := beginLarkInstallAs(ownerID, agentID)
-	if begin.Code != http.StatusOK {
-		t.Fatalf("begin as agent owner: want 200, got %d: %s", begin.Code, begin.Body.String())
-	}
+	testutil.Equal(t, begin.Code, http.StatusOK, "HTTP status")
 	var beginResp BeginLarkInstallResponse
 	if err := json.Unmarshal(begin.Body.Bytes(), &beginResp); err != nil {
 		t.Fatalf("decode begin response: %v", err)
@@ -347,8 +312,7 @@ func TestGetLarkInstallStatus_ScopedToInitiatorOrAdmin(t *testing.T) {
 		req := newRequestAs(userID, http.MethodGet,
 			"/api/workspaces/"+testWorkspaceID+"/lark/install/"+beginResp.SessionID+"/status", nil)
 		req = withURLParams(req, "id", testWorkspaceID, "sessionId", beginResp.SessionID)
-		w := httptest.NewRecorder()
-		testHandler.GetLarkInstallStatus(w, req)
+		w := testutil.Call(t, testHandler.GetLarkInstallStatus, req)
 		return w.Code
 	}
 
@@ -380,16 +344,7 @@ func TestRevokeLarkInstallation_AuthorizesAgentOwnerAndAdmins(t *testing.T) {
 			t.Fatalf("clear prior installation: %v", err)
 		}
 		var instID string
-		if err := testPool.QueryRow(context.Background(), `
-INSERT INTO channel_installation (workspace_id, agent_id, channel_type, config, installer_user_id, status)
-VALUES ($1, $2, 'feishu', jsonb_build_object('app_id', 'cli_revoke_test'), $3, 'active')
-RETURNING id
-`, testWorkspaceID, agentID, ownerID).Scan(&instID); err != nil {
-			t.Fatalf("seed installation: %v", err)
-		}
-		t.Cleanup(func() {
-			testPool.Exec(context.Background(), `DELETE FROM channel_installation WHERE id = $1`, instID)
-		})
+		instID = dbfx.Insert(t, "channel_installation", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "channel_type": testutil.Raw("'feishu'"), "config": testutil.Raw("jsonb_build_object('app_id', 'cli_revoke_test')"), "installer_user_id": ownerID, "status": testutil.Raw("'active'")})
 		return instID
 	}
 
@@ -397,8 +352,7 @@ RETURNING id
 		req := newRequestAs(userID, http.MethodDelete,
 			"/api/workspaces/"+testWorkspaceID+"/lark/installations/"+instID, nil)
 		req = withURLParams(req, "id", testWorkspaceID, "installationId", instID)
-		w := httptest.NewRecorder()
-		testHandler.RevokeLarkInstallation(w, req)
+		w := testutil.Call(t, testHandler.RevokeLarkInstallation, req)
 		return w.Code
 	}
 
@@ -438,16 +392,7 @@ func TestRevokeLarkInstallation_OrphanCleanableByAdminNotMember(t *testing.T) {
 			t.Fatalf("clear prior orphan: %v", err)
 		}
 		var instID string
-		if err := testPool.QueryRow(context.Background(), `
-INSERT INTO channel_installation (workspace_id, agent_id, channel_type, config, installer_user_id, status)
-VALUES ($1, $2, 'feishu', jsonb_build_object('app_id', 'cli_orphan'), $3, 'active')
-RETURNING id
-`, testWorkspaceID, orphanAgent, testUserID).Scan(&instID); err != nil {
-			t.Fatalf("seed orphan installation: %v", err)
-		}
-		t.Cleanup(func() {
-			testPool.Exec(context.Background(), `DELETE FROM channel_installation WHERE id = $1`, instID)
-		})
+		instID = dbfx.Insert(t, "channel_installation", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": orphanAgent, "channel_type": testutil.Raw("'feishu'"), "config": testutil.Raw("jsonb_build_object('app_id', 'cli_orphan')"), "installer_user_id": testUserID, "status": testutil.Raw("'active'")})
 		return instID
 	}
 
@@ -455,8 +400,7 @@ RETURNING id
 		req := newRequestAs(userID, http.MethodDelete,
 			"/api/workspaces/"+testWorkspaceID+"/lark/installations/"+instID, nil)
 		req = withURLParams(req, "id", testWorkspaceID, "installationId", instID)
-		w := httptest.NewRecorder()
-		testHandler.RevokeLarkInstallation(w, req)
+		w := testutil.Call(t, testHandler.RevokeLarkInstallation, req)
 		return w.Code
 	}
 

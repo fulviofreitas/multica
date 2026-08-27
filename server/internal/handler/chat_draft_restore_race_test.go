@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -216,9 +216,9 @@ func TestDeleteWorkspace_SweepsRestoreCommittedByAConcurrentFinalizer(t *testing
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodDelete, fmt.Sprintf("/api/workspaces/%s", f.workspaceID), nil), "id", f.workspaceID)
-		testHandler.DeleteWorkspace(w, req)
+		w := testutil.Call(t, testHandler.DeleteWorkspace, req)
 		code <- w.Code
 	}()
 
@@ -291,13 +291,13 @@ func TestCreateChatSession_BlocksWhileTheWorkspaceDeleteLockIsHeld(t *testing.T)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		w := httptest.NewRecorder()
+
 		req := newRequestAs(testUserID, http.MethodPost, "/api/chat/sessions", map[string]any{
 			"agent_id": agentID,
 			"title":    "Session racing the teardown",
 		})
 		req = req.WithContext(middleware.SetMemberContext(req.Context(), f.workspaceID, member))
-		testHandler.CreateChatSession(w, req)
+		w := testutil.Call(t, testHandler.CreateChatSession, req)
 		code <- w.Code
 	}()
 
@@ -326,12 +326,8 @@ func TestFinalizeDeferredCancelledChat_SkipsTheInsertWhenTheSessionIsGone(t *tes
 	ctx := context.Background()
 	f := seedDraftRestoreRaceFixture(t, "handler-tests-draft-restore-race-gone")
 
-	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, fmt.Sprintf("/api/workspaces/%s", f.workspaceID), nil), "id", f.workspaceID)
-	testHandler.DeleteWorkspace(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteWorkspace: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
 
 	testHandler.TaskService.FinalizeDeferredCancelledChat(ctx, parseUUID(f.taskID))
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type fakeCloudRuntimeProxy struct {
@@ -61,13 +62,7 @@ func TestCreateCloudRuntimeNodeForwardsBody(t *testing.T) {
 		"instance_type": "g5.xlarge",
 	})
 	req.Header.Set("X-Request-ID", "api-request-id")
-	w := httptest.NewRecorder()
-
-	testHandler.CreateCloudRuntimeNode(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateCloudRuntimeNode, req).Want(http.StatusCreated)
 	if !proxy.called {
 		t.Fatal("cloud runtime proxy was not called")
 	}
@@ -89,13 +84,7 @@ func TestCloudRuntimeDisabledReturnsUnavailable(t *testing.T) {
 	useCloudRuntimeProxy(t, &fakeCloudRuntimeProxy{enabled: false})
 
 	req := newRequest(http.MethodGet, "/api/cloud-runtime/nodes", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.ListCloudRuntimeNodes(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ListCloudRuntimeNodes, req).Want(http.StatusServiceUnavailable)
 }
 
 func TestListCloudRuntimeNodesForwardsQuery(t *testing.T) {
@@ -109,13 +98,7 @@ func TestListCloudRuntimeNodesForwardsQuery(t *testing.T) {
 	useCloudRuntimeProxy(t, proxy)
 
 	req := newRequest(http.MethodGet, "/api/cloud-runtime/nodes?limit=10&offset=20", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.ListCloudRuntimeNodes(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ListCloudRuntimeNodes, req).Want(http.StatusOK)
 	if !proxy.called {
 		t.Fatal("cloud runtime proxy was not called")
 	}
@@ -138,13 +121,7 @@ func TestCloudRuntimeNonJSONResponseIsWrapped(t *testing.T) {
 	useCloudRuntimeProxy(t, proxy)
 
 	req := newRequest(http.MethodGet, "/api/cloud-runtime/healthz", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetCloudRuntimeHealth(w, req)
-
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetCloudRuntimeHealth, req).Want(http.StatusBadGateway)
 	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content type = %q", ct)
 	}
@@ -164,13 +141,7 @@ func TestCloudRuntimeEmptyResponseKeepsStatus(t *testing.T) {
 	useCloudRuntimeProxy(t, proxy)
 
 	req := newRequest(http.MethodGet, "/api/cloud-runtime/healthz", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetCloudRuntimeHealth(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetCloudRuntimeHealth, req).Want(http.StatusNoContent)
 	if body := w.Body.String(); body != "" {
 		t.Fatalf("body = %s", body)
 	}
@@ -190,13 +161,7 @@ func TestCreateCloudRuntimeNodeRejectsLargeBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/cloud-runtime/nodes", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", testUserID)
-	w := httptest.NewRecorder()
-
-	testHandler.CreateCloudRuntimeNode(w, req)
-
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateCloudRuntimeNode, req).Want(http.StatusRequestEntityTooLarge)
 	if proxy.called {
 		t.Fatal("cloud runtime proxy should not be called")
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // newWaitlistTestUser inserts a fresh user row, returns its id, and
@@ -51,15 +52,11 @@ func newWaitlistRequest(userID string, body map[string]string) *http.Request {
 func TestJoinCloudWaitlistRecordsEmailAndReason(t *testing.T) {
 	userID := newWaitlistTestUser(t, "waitlist-ok@multica.ai")
 
-	w := httptest.NewRecorder()
 	req := newWaitlistRequest(userID, map[string]string{
 		"email":  "Someone@Example.COM",
 		"reason": "evaluating for our team",
 	})
-	testHandler.JoinCloudWaitlist(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinCloudWaitlist, req).Want(http.StatusOK)
 
 	var (
 		waitlistEmail  *string
@@ -90,14 +87,10 @@ func TestJoinCloudWaitlistRecordsEmailAndReason(t *testing.T) {
 func TestJoinCloudWaitlistAllowsEmptyReason(t *testing.T) {
 	userID := newWaitlistTestUser(t, "waitlist-noreason@multica.ai")
 
-	w := httptest.NewRecorder()
 	req := newWaitlistRequest(userID, map[string]string{
 		"email": "noreason@example.com",
 	})
-	testHandler.JoinCloudWaitlist(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.JoinCloudWaitlist, req).Want(http.StatusOK)
 
 	var waitlistReason *string
 	if err := testPool.QueryRow(context.Background(),
@@ -121,9 +114,9 @@ func TestJoinCloudWaitlistMissingEmailReturns400(t *testing.T) {
 	}
 
 	for i, body := range cases {
-		w := httptest.NewRecorder()
+
 		req := newWaitlistRequest(userID, body)
-		testHandler.JoinCloudWaitlist(w, req)
+		w := testutil.Call(t, testHandler.JoinCloudWaitlist, req)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("case %d: expected 400, got %d: %s", i, w.Code, w.Body.String())
 		}
@@ -133,15 +126,11 @@ func TestJoinCloudWaitlistMissingEmailReturns400(t *testing.T) {
 func TestJoinCloudWaitlistRejectsOverlongReason(t *testing.T) {
 	userID := newWaitlistTestUser(t, "waitlist-long@multica.ai")
 
-	w := httptest.NewRecorder()
 	req := newWaitlistRequest(userID, map[string]string{
 		"email":  "long@example.com",
 		"reason": strings.Repeat("x", cloudWaitlistReasonMaxLen+1),
 	})
-	testHandler.JoinCloudWaitlist(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for overlong reason, got %d", w.Code)
-	}
+	testutil.Call(t, testHandler.JoinCloudWaitlist, req).Want(http.StatusBadRequest)
 }
 
 func TestJoinCloudWaitlistSecondCallOverwrites(t *testing.T) {
@@ -154,9 +143,7 @@ func TestJoinCloudWaitlistSecondCallOverwrites(t *testing.T) {
 		"reason": "first",
 	})
 	testHandler.JoinCloudWaitlist(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("first call: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Second submission with different values.
 	w = httptest.NewRecorder()
@@ -165,9 +152,7 @@ func TestJoinCloudWaitlistSecondCallOverwrites(t *testing.T) {
 		"reason": "changed my mind",
 	})
 	testHandler.JoinCloudWaitlist(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("second call: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var (
 		waitlistEmail  string
@@ -245,16 +230,10 @@ func TestBootstrapOnboardingRuntimeCreatesSingleGuideIssue(t *testing.T) {
 		"workspace_id": testWorkspaceID,
 		"runtime_id":   testRuntimeID,
 	}
-	w := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingRuntime(w, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body))
-	if w.Code != http.StatusOK {
-		t.Fatalf("BootstrapOnboardingRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BootstrapOnboardingRuntime, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body)).Want(http.StatusOK)
 
 	var resp bootstrapOnboardingRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.WorkspaceID != testWorkspaceID || resp.AgentID == "" || resp.IssueID == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
@@ -339,15 +318,9 @@ func TestBootstrapOnboardingRuntimeCreatesSingleGuideIssue(t *testing.T) {
 		t.Fatal("expected onboarding issue to enqueue an agent task")
 	}
 
-	w2 := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingRuntime(w2, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body))
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second BootstrapOnboardingRuntime: expected 200, got %d: %s", w2.Code, w2.Body.String())
-	}
+	w2 := testutil.Call(t, testHandler.BootstrapOnboardingRuntime, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body)).Want(http.StatusOK)
 	var resp2 bootstrapOnboardingRuntimeResponse
-	if err := json.NewDecoder(w2.Body).Decode(&resp2); err != nil {
-		t.Fatalf("decode second response: %v", err)
-	}
+	w2.Decode(&resp2)
 	if resp2.AgentID != resp.AgentID || resp2.IssueID != resp.IssueID {
 		t.Fatalf("bootstrap should be idempotent: first=%+v second=%+v", resp, resp2)
 	}
@@ -399,15 +372,9 @@ func TestBootstrapOnboardingRuntime_WithStarterPrompt(t *testing.T) {
 		"runtime_id":     testRuntimeID,
 		"starter_prompt": wantPrompt,
 	}
-	w := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingRuntime(w, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body))
-	if w.Code != http.StatusOK {
-		t.Fatalf("BootstrapOnboardingRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BootstrapOnboardingRuntime, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body)).Want(http.StatusOK)
 	var resp bootstrapOnboardingRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 
 	var description *string
 	if err := testPool.QueryRow(ctx, `
@@ -464,15 +431,9 @@ func TestBootstrapOnboardingRuntime_NoStarterPrompt(t *testing.T) {
 		"workspace_id": testWorkspaceID,
 		"runtime_id":   testRuntimeID,
 	}
-	w := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingRuntime(w, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body))
-	if w.Code != http.StatusOK {
-		t.Fatalf("BootstrapOnboardingRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BootstrapOnboardingRuntime, newRequest(http.MethodPost, "/api/me/onboarding/runtime-bootstrap", body)).Want(http.StatusOK)
 	var resp bootstrapOnboardingRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 
 	var description *string
 	if err := testPool.QueryRow(ctx, `
@@ -513,16 +474,10 @@ func TestBootstrapOnboardingNoRuntimeCreatesSingleGuideIssue(t *testing.T) {
 	body := map[string]string{
 		"workspace_id": testWorkspaceID,
 	}
-	w := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingNoRuntime(w, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body))
-	if w.Code != http.StatusOK {
-		t.Fatalf("BootstrapOnboardingNoRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BootstrapOnboardingNoRuntime, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body)).Want(http.StatusOK)
 
 	var resp bootstrapOnboardingNoRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.WorkspaceID != testWorkspaceID || resp.IssueID == "" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
@@ -594,15 +549,9 @@ func TestBootstrapOnboardingNoRuntimeCreatesSingleGuideIssue(t *testing.T) {
 		t.Fatalf("expected no agent tasks for no-runtime issue, got %d", taskCount)
 	}
 
-	w2 := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingNoRuntime(w2, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body))
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second BootstrapOnboardingNoRuntime: expected 200, got %d: %s", w2.Code, w2.Body.String())
-	}
+	w2 := testutil.Call(t, testHandler.BootstrapOnboardingNoRuntime, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body)).Want(http.StatusOK)
 	var resp2 bootstrapOnboardingNoRuntimeResponse
-	if err := json.NewDecoder(w2.Body).Decode(&resp2); err != nil {
-		t.Fatalf("decode second response: %v", err)
-	}
+	w2.Decode(&resp2)
 	if resp2.IssueID != resp.IssueID {
 		t.Fatalf("bootstrap should be idempotent: first=%+v second=%+v", resp, resp2)
 	}
@@ -636,16 +585,10 @@ func TestBootstrapOnboardingNoRuntimeUsesChineseGuideForChineseUsers(t *testing.
 	body := map[string]string{
 		"workspace_id": testWorkspaceID,
 	}
-	w := httptest.NewRecorder()
-	testHandler.BootstrapOnboardingNoRuntime(w, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body))
-	if w.Code != http.StatusOK {
-		t.Fatalf("BootstrapOnboardingNoRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BootstrapOnboardingNoRuntime, newRequest(http.MethodPost, "/api/me/onboarding/no-runtime-bootstrap", body)).Want(http.StatusOK)
 
 	var resp bootstrapOnboardingNoRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 
 	var description string
 	if err := testPool.QueryRow(ctx, `
@@ -702,11 +645,7 @@ func patchOnboardingAs(t *testing.T, h *Handler, userID, questionnaire string) {
 	req := httptest.NewRequest("PATCH", "/api/me/onboarding", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", userID)
-	w := httptest.NewRecorder()
-	h.PatchOnboarding(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("patch onboarding: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, h.PatchOnboarding, req).Want(http.StatusOK)
 }
 
 // The in-flow questionnaire is role + use_case only (MUL-5159): its

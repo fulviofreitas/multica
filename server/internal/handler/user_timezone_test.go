@@ -2,9 +2,9 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func newTimezoneTestUser(t *testing.T, email string) string {
@@ -27,13 +27,8 @@ func newTimezoneTestUser(t *testing.T, email string) string {
 func TestUpdateMeAcceptsTimezone(t *testing.T) {
 	userID := newTimezoneTestUser(t, "tz-set@multica.ai")
 
-	w := httptest.NewRecorder()
 	req := newPatchMeRequest(userID, `{"timezone":"Asia/Shanghai"}`)
-	testHandler.UpdateMe(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateMe, req).Want(200)
 
 	var stored *string
 	if err := testPool.QueryRow(context.Background(),
@@ -46,9 +41,7 @@ func TestUpdateMeAcceptsTimezone(t *testing.T) {
 	}
 
 	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	if got, _ := resp["timezone"].(string); got != "Asia/Shanghai" {
 		t.Fatalf("expected response timezone=Asia/Shanghai, got %v", resp["timezone"])
 	}
@@ -57,13 +50,8 @@ func TestUpdateMeAcceptsTimezone(t *testing.T) {
 func TestUpdateMeRejectsInvalidTimezone(t *testing.T) {
 	userID := newTimezoneTestUser(t, "tz-reject@multica.ai")
 
-	w := httptest.NewRecorder()
 	req := newPatchMeRequest(userID, `{"timezone":"Not/A/Real/Zone"}`)
-	testHandler.UpdateMe(w, req)
-
-	if w.Code != 400 {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateMe, req).Want(400)
 
 	var stored *string
 	if err := testPool.QueryRow(context.Background(),
@@ -86,13 +74,8 @@ func TestUpdateMePreservesTimezoneWhenNotProvided(t *testing.T) {
 		t.Fatalf("preset timezone: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newPatchMeRequest(userID, `{"name":"Updated Name"}`)
-	testHandler.UpdateMe(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateMe, req).Want(200)
 
 	var stored *string
 	if err := testPool.QueryRow(context.Background(),
@@ -118,13 +101,8 @@ func TestUpdateMeClearsTimezoneOnEmptyString(t *testing.T) {
 		t.Fatalf("preset timezone: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newPatchMeRequest(userID, `{"timezone":""}`)
-	testHandler.UpdateMe(w, req)
-
-	if w.Code != 200 {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateMe, req).Want(200)
 
 	var stored *string
 	if err := testPool.QueryRow(context.Background(),
@@ -137,9 +115,7 @@ func TestUpdateMeClearsTimezoneOnEmptyString(t *testing.T) {
 	}
 
 	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	// JSON null marshals from *string nil — confirm the response reflects
 	// the cleared state, so the frontend can switch its picker back to
 	// "(browser)" without a refetch.

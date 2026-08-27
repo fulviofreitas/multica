@@ -3,10 +3,10 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -54,14 +54,14 @@ type claimResult struct {
 
 func claimTaskRaw(t *testing.T, runtimeID, daemonID string) claimResult {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil,
 		testWorkspaceID, daemonID)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("runtimeId", runtimeID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.ClaimTaskByRuntime(w, req)
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req)
 	out := claimResult{code: w.Code, body: w.Body.String()}
 	if w.Code == 200 {
 		var resp struct {

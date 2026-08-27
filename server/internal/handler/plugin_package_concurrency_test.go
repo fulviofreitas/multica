@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Publish, install and delete race each other.
@@ -44,14 +45,11 @@ func TestDeleteAndInstallRaceLeavesNoDanglingInstallation(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			body, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": []string{"issues:read"}})
-			recorder := httptest.NewRecorder()
-			testHandler.InstallPlugin(recorder,
-				pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+			testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
 		}()
 		go func() {
 			defer wait.Done()
-			recorder := httptest.NewRecorder()
-			testHandler.DeletePluginPackage(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil,
+			testutil.Call(t, testHandler.DeletePluginPackage, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil,
 				map[string]string{"id": testWorkspaceID, "packageId": published.ID}))
 		}()
 		wait.Wait()
@@ -91,8 +89,7 @@ func TestPublishAndDeleteRaceLeavesNoOrphanVersion(t *testing.T) {
 		}()
 		go func() {
 			defer wait.Done()
-			recorder := httptest.NewRecorder()
-			testHandler.DeletePluginPackage(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil,
+			testutil.Call(t, testHandler.DeletePluginPackage, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil,
 				map[string]string{"id": testWorkspaceID, "packageId": published.ID}))
 		}()
 		wait.Wait()
@@ -129,9 +126,7 @@ func TestFailedPublishDoesNotMovePackageState(t *testing.T) {
 	renamed := packageManifest("1.0.0")
 	renamed = replaceOnce(t, renamed, `"name": "Published Panel"`, `"name": "Renamed Panel"`)
 	recorder := uploadPluginBundle(t, pluginBundleZip(t, renamed, "console.log('tampered');\n"))
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("republish status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusConflict, "HTTP status")
 
 	var name string
 	var versions int

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -17,19 +17,17 @@ import (
 // the public handler and registers cleanup. It returns the new label id.
 func createTestIssueLabel(t *testing.T, name string) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/labels", map[string]any{
 		"name":  name,
 		"color": "#ef4444",
 	})
-	testHandler.CreateLabel(w, req)
+	w := testutil.Call(t, testHandler.CreateLabel, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("CreateLabel %q: expected 201, got %d: %s", name, w.Code, w.Body.String())
 	}
 	var created LabelResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode label: %v", err)
-	}
+	w.Decode(&created)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM issue_label WHERE id = $1`, created.ID)
 	})
@@ -67,17 +65,13 @@ func TestCreateIssueAttachesLabelsAtomically(t *testing.T) {
 	labelA := createTestIssueLabel(t, "cl-a-"+uuid.NewString()[:8])
 	labelB := createTestIssueLabel(t, "cl-b-"+uuid.NewString()[:8])
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":     "create-labels attaches",
 		"status":    "todo",
 		"priority":  "low",
 		"label_ids": []string{labelA, labelB},
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() { deleteTestIssue(t, issue.ID) })
@@ -109,16 +103,13 @@ func TestCreateIssueAttachesLabelsAtomically(t *testing.T) {
 // list — the signal a newer client uses to know the backend handled labels and
 // skip its legacy per-label attach fallback.
 func TestCreateIssueResponseAlwaysIncludesLabelsField(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    "create-labels no-label response",
 		"status":   "todo",
 		"priority": "low",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() { deleteTestIssue(t, issue.ID) })
@@ -146,17 +137,13 @@ func TestCreateIssueEventCarriesLabels(t *testing.T) {
 		}
 	})
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":     "create-labels event carries",
 		"status":    "todo",
 		"priority":  "low",
 		"label_ids": []string{label},
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() { deleteTestIssue(t, issue.ID) })
@@ -193,17 +180,13 @@ func TestCreateIssueEventCarriesLabels(t *testing.T) {
 func TestCreateIssueDedupesDuplicateLabelIDs(t *testing.T) {
 	label := createTestIssueLabel(t, "cl-dup-"+uuid.NewString()[:8])
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":     "create-labels dedupe",
 		"status":    "todo",
 		"priority":  "low",
 		"label_ids": []string{label, label},
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() { deleteTestIssue(t, issue.ID) })
@@ -218,17 +201,14 @@ func TestCreateIssueDedupesDuplicateLabelIDs(t *testing.T) {
 // atomicity guarantee the old post-create attach flow could not offer.
 func TestCreateIssueRejectsUnknownLabelWithoutCreating(t *testing.T) {
 	const title = "create-labels unknown rejected"
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":     title,
 		"status":    "todo",
 		"priority":  "low",
 		"label_ids": []string{uuid.NewString()},
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("CreateIssue: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusBadRequest)
 	if got := countIssuesWithTitle(t, title); got != 0 {
 		t.Errorf("expected no issue created on invalid label, found %d", got)
 	}
@@ -239,29 +219,17 @@ func TestCreateIssueRejectsUnknownLabelWithoutCreating(t *testing.T) {
 // mirroring the resource_type guard baked into AttachLabelToIssue.
 func TestCreateIssueRejectsNonIssueScopedLabel(t *testing.T) {
 	var agentLabelID string
-	if err := testPool.QueryRow(context.Background(),
-		`INSERT INTO issue_label (workspace_id, resource_type, name, color)
-		 VALUES ($1, 'agent', $2, '#000000') RETURNING id`,
-		testWorkspaceID, "create-labels agent "+uuid.NewString(),
-	).Scan(&agentLabelID); err != nil {
-		t.Fatalf("insert agent label: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue_label WHERE id = $1`, agentLabelID)
-	})
+	agentLabelID = dbfx.Insert(t, "issue_label", testutil.Cols{"workspace_id": testWorkspaceID, "resource_type": testutil.Raw("'agent'"), "name": "create-labels agent " + uuid.NewString(), "color": testutil.Raw("'#000000'")})
 
 	const title = "create-labels wrong scope rejected"
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":     title,
 		"status":    "todo",
 		"priority":  "low",
 		"label_ids": []string{agentLabelID},
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("CreateIssue: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusBadRequest)
 	if got := countIssuesWithTitle(t, title); got != 0 {
 		t.Errorf("expected no issue created on wrong-scope label, found %d", got)
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func ptrInt32(value int32) *int32 { return &value }
@@ -70,9 +71,7 @@ func TestUpsertClientUsageKeepsRuntimeSnapshotOnActivityRefresh(t *testing.T) {
 			"online_count":     1, "offline_count": 0,
 		},
 	})
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("runtime report status = %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 	if w = report(map[string]any{"install_id": installID}); w.Code != http.StatusNoContent {
 		t.Fatalf("activity refresh status = %d: %s", w.Code, w.Body.String())
 	}

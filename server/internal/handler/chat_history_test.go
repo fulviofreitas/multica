@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -71,16 +72,7 @@ func newChatHistoryTask(t *testing.T, chatSession bool) string {
 		sessionArg = createHandlerTestChatSession(t, agentID)
 	}
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, 'completed', 0, $3)
-		RETURNING id
-	`, agentID, runtimeID, sessionArg).Scan(&taskID); err != nil {
-		t.Fatalf("insert chat history task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "status": testutil.Raw("'completed'"), "priority": testutil.Raw("0"), "chat_session_id": sessionArg})
 	return taskID
 }
 
@@ -91,16 +83,7 @@ func newChatHistoryTaskForSession(t *testing.T, sessionID string) string {
 	agentID := createHandlerTestAgent(t, "ChatHistorySessionAgent-"+uuid.NewString(), []byte("[]"))
 	runtimeID := handlerTestRuntimeID(t)
 	var taskID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, 'completed', 0, $3)
-		RETURNING id
-	`, agentID, runtimeID, sessionID).Scan(&taskID); err != nil {
-		t.Fatalf("insert chat history task for session: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "status": testutil.Raw("'completed'"), "priority": testutil.Raw("0"), "chat_session_id": sessionID})
 	return taskID
 }
 
@@ -136,16 +119,9 @@ func TestGetChatChannelHistory_Success(t *testing.T) {
 	}}
 	withSlackHistory(t, fake)
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history?limit=10", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history?limit=10", taskID)).Want(http.StatusOK)
 	var resp ChatChannelHistoryResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.ChannelType != "slack" || len(resp.Messages) != 2 || resp.NextCursor != "100" {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
@@ -165,12 +141,7 @@ func TestGetChatThread_CurrentThread(t *testing.T) {
 	fake := &fakeChatHistoryReader{page: channel.HistoryPage{ChannelType: "slack", ThreadID: "50.0", Messages: []channel.HistoryMessage{{ID: "50.0", TS: "50.0", Text: "root"}}}}
 	withSlackHistory(t, fake)
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetChatThread, taskActorReq("/api/chat/thread", taskID)).Want(http.StatusOK)
 	if fake.threadCalls != 1 || fake.overviewCalls != 0 {
 		t.Errorf("expected Thread, got overview=%d thread=%d", fake.overviewCalls, fake.threadCalls)
 	}
@@ -187,12 +158,7 @@ func TestGetChatThread_ByID(t *testing.T) {
 	fake := &fakeChatHistoryReader{page: channel.HistoryPage{ChannelType: "slack", ThreadID: "70.0"}}
 	withSlackHistory(t, fake)
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatThread(w, taskActorReq("/api/chat/thread?id=70.0", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetChatThread, taskActorReq("/api/chat/thread?id=70.0", taskID)).Want(http.StatusOK)
 	if fake.gotThreadID != "70.0" {
 		t.Errorf("thread id passed to reader = %q, want 70.0", fake.gotThreadID)
 	}
@@ -209,12 +175,7 @@ func TestGetChatHistory_NoSlackBindingFallsBackToTranscript(t *testing.T) {
 	taskID := newChatHistoryTask(t, true)
 	withSlackHistory(t, &fakeChatHistoryReader{err: slack.ErrNoSlackSession})
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID)).Want(http.StatusOK)
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Note != "" || len(resp.Messages) != 0 {
@@ -242,12 +203,7 @@ func TestGetChatHistory_NoSlackBindingReadsStoredTranscript(t *testing.T) {
 	insertChatVisibilityMessage(t, sessionID, "/issue hidden", "channel_command", true, base.Add(2*time.Second))
 	insertChatVisibilityMessage(t, sessionID, "second user turn", "message", true, base.Add(3*time.Second))
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID)).Want(http.StatusOK)
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Note != "" {
@@ -285,12 +241,7 @@ func TestGetChatHistory_NilReaderServesTranscript(t *testing.T) {
 	taskID := newChatHistoryTask(t, true)
 	withSlackHistory(t, nil)
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID)).Want(http.StatusOK)
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Note != "" || len(resp.Messages) != 0 {
@@ -316,12 +267,7 @@ func TestGetChatHistory_NilReaderServesStoredTranscript(t *testing.T) {
 	insertChatVisibilityMessage(t, sessionID, "nil reader still reads me", "message", true, base)
 	insertChatMessageRole(t, sessionID, "assistant", "and my reply", "message", true, base.Add(time.Second))
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID)).Want(http.StatusOK)
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Note != "" {
@@ -349,16 +295,7 @@ func TestGetChatHistory_TranscriptNamesItsChannel(t *testing.T) {
 	withSlackHistory(t, nil)
 
 	var instID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO channel_installation (workspace_id, agent_id, channel_type, config, status, installer_user_id)
-		VALUES ($1, $2, 'wecom', '{"app_id":"bot-transcript-channel"}'::jsonb, 'active', $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&instID); err != nil {
-		t.Fatalf("create installation: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM channel_installation WHERE id = $1`, instID)
-	})
+	instID = dbfx.Insert(t, "channel_installation", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "channel_type": testutil.Raw("'wecom'"), "config": testutil.Raw("'{\"app_id\":\"bot-transcript-channel\"}'::jsonb"), "status": testutil.Raw("'active'"), "installer_user_id": testUserID})
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO channel_chat_session_binding
 			(chat_session_id, installation_id, channel_type, channel_chat_id, chat_type)
@@ -378,9 +315,7 @@ func TestGetChatHistory_TranscriptNamesItsChannel(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var served ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &served)
 
@@ -408,8 +343,7 @@ func TestGetChatHistory_WebOnlyTranscriptHasNoChannelType(t *testing.T) {
 	withSlackHistory(t, nil)
 	insertChatVisibilityMessage(t, sessionID, "a web turn", "message", true, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC))
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID))
 
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
@@ -484,9 +418,7 @@ func TestGetChatHistory_ChannelTaskCannotReadEarlierContextGeneration(t *testing
 
 	w := httptest.NewRecorder()
 	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp ChatChannelHistoryResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -497,9 +429,7 @@ func TestGetChatHistory_ChannelTaskCannotReadEarlierContextGeneration(t *testing
 
 	w = httptest.NewRecorder()
 	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", legacyTaskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("legacy status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode legacy response: %v", err)
 	}
@@ -538,8 +468,7 @@ func TestGetChatHistory_TranscriptPagesWithoutDuplicatesOrGaps(t *testing.T) {
 		if before != "" {
 			target += "&before=" + url.QueryEscape(before)
 		}
-		w := httptest.NewRecorder()
-		testHandler.GetChatChannelHistory(w, taskActorReq(target, taskID))
+		w := testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq(target, taskID))
 		if w.Code != http.StatusOK {
 			t.Fatalf("page %d status = %d, want 200: %s", page, w.Code, w.Body.String())
 		}
@@ -606,12 +535,7 @@ func TestGetChatHistory_RejectsForgedTaskID(t *testing.T) {
 
 	req := newRequest("GET", "/api/chat/history", nil)
 	req.Header.Set("X-Task-ID", taskID) // forged: no X-Actor-Source=task_token
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", w.Code)
-	}
+	testutil.Call(t, testHandler.GetChatChannelHistory, req).Want(http.StatusForbidden)
 	if fake.overviewCalls != 0 || fake.threadCalls != 0 {
 		t.Fatalf("reader must not be called for a forged X-Task-ID")
 	}
@@ -624,11 +548,7 @@ func TestGetChatHistory_MissingTaskHeader(t *testing.T) {
 	// Task-token actor source but no X-Task-ID: a defensive 400.
 	req := newRequest("GET", "/api/chat/history", nil)
 	req.Header.Set("X-Actor-Source", "task_token")
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
-	}
+	testutil.Call(t, testHandler.GetChatChannelHistory, req).Want(http.StatusBadRequest)
 }
 
 func TestGetChatHistory_NonChatTask(t *testing.T) {
@@ -638,9 +558,5 @@ func TestGetChatHistory_NonChatTask(t *testing.T) {
 	taskID := newChatHistoryTask(t, false) // task with no chat_session_id
 	withSlackHistory(t, &fakeChatHistoryReader{})
 
-	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetChatChannelHistory, taskActorReq("/api/chat/history", taskID)).Want(http.StatusBadRequest)
 }

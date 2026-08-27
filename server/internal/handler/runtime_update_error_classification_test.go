@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // failingUpdateStore returns a chosen error from Create. The embedded interface
@@ -39,15 +40,10 @@ func TestInitiateUpdate_InfrastructureErrorIsNotAConflict(t *testing.T) {
 	testHandler.UpdateStore = &failingUpdateStore{createErr: infraErr}
 	t.Cleanup(func() { testHandler.UpdateStore = original })
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/runtimes/"+testRuntimeID+"/update", map[string]any{"target_version": "v1.2.3"})
 	r = withURLParams(r, "runtimeId", testRuntimeID)
 
-	testHandler.InitiateUpdate(w, r)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("infrastructure failure: expected 500, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.InitiateUpdate, r).Want(http.StatusInternalServerError)
 	body := w.Body.String()
 	for _, leak := range []string{"10.1.2.3:6379", "connection refused", "reserve active update"} {
 		if strings.Contains(body, leak) {
@@ -68,15 +64,10 @@ func TestInitiateUpdate_InProgressStillConflicts(t *testing.T) {
 	testHandler.UpdateStore = &failingUpdateStore{createErr: errUpdateInProgress}
 	t.Cleanup(func() { testHandler.UpdateStore = original })
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/runtimes/"+testRuntimeID+"/update", map[string]any{"target_version": "v1.2.3"})
 	r = withURLParams(r, "runtimeId", testRuntimeID)
 
-	testHandler.InitiateUpdate(w, r)
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("update-in-progress: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.InitiateUpdate, r).Want(http.StatusConflict)
 	if !strings.Contains(w.Body.String(), "already in progress") {
 		t.Fatalf("409 should keep its actionable message, got %s", w.Body.String())
 	}

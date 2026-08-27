@@ -12,6 +12,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -124,9 +125,7 @@ func TestCloudBillingProxiesForwardCorrectly(t *testing.T) {
 			w := httptest.NewRecorder()
 			tc.invoke(t, w, req)
 
-			if w.Code != http.StatusOK {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 			if !proxy.called {
 				t.Fatal("expected cloud proxy to be called")
 			}
@@ -169,13 +168,7 @@ func TestGetCloudBillingCheckoutSession_AppendsSessionIDToPath(t *testing.T) {
 
 	req := newRequest(http.MethodGet, "/api/cloud-billing/checkout-sessions/cs_test_abc", nil)
 	req = withURLParam(req, "sessionId", "cs_test_abc")
-	w := httptest.NewRecorder()
-
-	testHandler.GetCloudBillingCheckoutSession(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetCloudBillingCheckoutSession, req).Want(http.StatusOK)
 	if proxy.req.Path != "/api/v1/billing/checkout-sessions/cs_test_abc" {
 		t.Errorf("upstream path = %s, want /api/v1/billing/checkout-sessions/cs_test_abc", proxy.req.Path)
 	}
@@ -201,11 +194,7 @@ func TestGetCloudBillingCheckoutSession_RejectsPathTraversal(t *testing.T) {
 		t.Run(sessionID, func(t *testing.T) {
 			req := newRequest(http.MethodGet, "/api/cloud-billing/checkout-sessions/x", nil)
 			req = withURLParam(req, "sessionId", sessionID)
-			w := httptest.NewRecorder()
-			testHandler.GetCloudBillingCheckoutSession(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.GetCloudBillingCheckoutSession, req).Want(http.StatusBadRequest)
 			if proxy.called {
 				t.Fatal("upstream must not be called for invalid session_id")
 			}
@@ -222,12 +211,7 @@ func TestGetCloudBillingCheckoutSession_MissingPathParamReturns400(t *testing.T)
 
 	req := newRequest(http.MethodGet, "/api/cloud-billing/checkout-sessions/", nil)
 	// No URL param injected.
-	w := httptest.NewRecorder()
-	testHandler.GetCloudBillingCheckoutSession(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetCloudBillingCheckoutSession, req).Want(http.StatusBadRequest)
 	if proxy.called {
 		t.Fatal("upstream must not be called when session_id is missing")
 	}
@@ -240,12 +224,7 @@ func TestCloudBillingDisabledReturnsUnavailable(t *testing.T) {
 	useCloudRuntimeProxy(t, &fakeCloudRuntimeProxy{enabled: false})
 
 	req := newRequest(http.MethodGet, "/api/cloud-billing/balance", nil)
-	w := httptest.NewRecorder()
-	testHandler.GetCloudBillingBalance(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.GetCloudBillingBalance, req).Want(http.StatusServiceUnavailable)
 }
 
 func withCloudSubscriptionWorkspace(req *http.Request, role string) *http.Request {
@@ -266,12 +245,7 @@ func TestCloudWorkspaceSubscriptionsDisabledByDefault(t *testing.T) {
 			useCloudRuntimeProxy(t, proxy)
 
 			req := withCloudSubscriptionWorkspace(newRequest(http.MethodGet, path, nil), "member")
-			w := httptest.NewRecorder()
-			invoke(w, req)
-
-			if w.Code != http.StatusServiceUnavailable {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, invoke, req).Want(http.StatusServiceUnavailable)
 			if proxy.called {
 				t.Fatal("upstream must not be called while the feature flag is off")
 			}
@@ -344,12 +318,7 @@ func TestCloudWorkspaceSubscriptionReadAndWritesUseScopedPaths(t *testing.T) {
 			if strings.Contains(tc.path, "portal-sessions") {
 				req.Header.Set(idempotencyKeyHeader, "portal-request-1")
 			}
-			w := httptest.NewRecorder()
-			tc.invoke(w, req)
-
-			if w.Code != tc.wantStatus {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.invoke, req).Want(tc.wantStatus)
 			if proxy.req.Method != tc.method || proxy.req.Path != tc.wantPath {
 				t.Fatalf("upstream = %s %s, want %s %s", proxy.req.Method, proxy.req.Path, tc.method, tc.wantPath)
 			}
@@ -385,12 +354,7 @@ func TestCreateCloudWorkspaceSubscriptionCheckoutInjectsAuthoritativeWorkspaceAn
 	})
 	req.Header.Set(idempotencyKeyHeader, "checkout-header-1")
 	req = withCloudSubscriptionWorkspace(req, "owner")
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionCheckout(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionCheckout, req).Want(http.StatusCreated)
 	if proxy.req.Path != "/api/v1/subscriptions/checkout-sessions" || proxy.req.Method != http.MethodPost {
 		t.Fatalf("upstream = %s %s", proxy.req.Method, proxy.req.Path)
 	}
@@ -420,8 +384,7 @@ func TestCreateCloudWorkspaceSubscriptionCheckoutFailsWhenPayerCannotBeResolved(
 	})
 	req.Header.Set("X-User-ID", "00000000-0000-0000-0000-000000000099")
 	req = withCloudSubscriptionWorkspace(req, "owner")
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionCheckout(w, req)
+	w := testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionCheckout, req)
 
 	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "failed to resolve checkout payer") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -442,8 +405,7 @@ func TestCreateCloudWorkspaceSubscriptionCheckoutRejectsInvalidPayerID(t *testin
 	})
 	req.Header.Set("X-User-ID", "not-a-uuid")
 	req = withCloudSubscriptionWorkspace(req, "owner")
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionCheckout(w, req)
+	w := testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionCheckout, req)
 
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid user id") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -466,8 +428,7 @@ func TestCreateCloudWorkspaceSubscriptionCheckoutRejectsEmptyPayerEmail(t *testi
 	})
 	req.Header.Set("X-User-ID", emptyEmailUserID)
 	req = withCloudSubscriptionWorkspace(req, "owner")
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionCheckout(w, req)
+	w := testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionCheckout, req)
 
 	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), "checkout payer email is unavailable") {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -493,12 +454,7 @@ func TestCreateCloudWorkspaceSubscriptionCheckoutAcceptsHeaderIdempotencyKey(t *
 		"admin",
 	)
 	req.Header.Set(idempotencyKeyHeader, "checkout-header-only")
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionCheckout(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionCheckout, req).Want(http.StatusCreated)
 	var body cloudSubscriptionCheckoutUpstreamRequest
 	if err := json.Unmarshal(proxy.req.Body, &body); err != nil {
 		t.Fatalf("decode upstream body: %v", err)
@@ -522,8 +478,7 @@ func TestCloudWorkspaceSeatPurchaseForwardsOnlyAdditiveConfirmation(t *testing.T
 		"currency":                  "USD",
 		"idempotency_key":           "seat-request-1",
 	}), "admin")
-	w := httptest.NewRecorder()
-	testHandler.PurchaseCloudWorkspaceSubscriptionSeats(w, req)
+	w := testutil.Call(t, testHandler.PurchaseCloudWorkspaceSubscriptionSeats, req)
 
 	if w.Code != http.StatusAccepted || proxy.req.Path != "/api/v1/subscriptions/"+testWorkspaceID+"/seats/purchases" {
 		t.Fatalf("status=%d path=%s body=%s", w.Code, proxy.req.Path, w.Body.String())
@@ -553,8 +508,7 @@ func TestCloudWorkspaceSeatPurchasePreviewUsesAuthoritativePath(t *testing.T) {
 	req := withCloudSubscriptionWorkspace(newRequest(http.MethodPost, "/api/cloud-subscriptions/seats/purchase-preview", map[string]any{
 		"additional_seats": 10_001, "workspace_id": "00000000-0000-0000-0000-000000000002", "target_seats": 999,
 	}), "owner")
-	w := httptest.NewRecorder()
-	testHandler.PreviewCloudWorkspaceSubscriptionSeatPurchase(w, req)
+	w := testutil.Call(t, testHandler.PreviewCloudWorkspaceSubscriptionSeatPurchase, req)
 
 	if w.Code != http.StatusOK || proxy.req.Path != "/api/v1/subscriptions/"+testWorkspaceID+"/seats/purchase-preview" {
 		t.Fatalf("status=%d path=%s body=%s", w.Code, proxy.req.Path, w.Body.String())
@@ -585,11 +539,7 @@ func TestCloudWorkspaceSeatPurchaseRejectsInvalidRequests(t *testing.T) {
 			if tc.header != "" {
 				req.Header.Set(idempotencyKeyHeader, tc.header)
 			}
-			w := httptest.NewRecorder()
-			testHandler.PurchaseCloudWorkspaceSubscriptionSeats(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.PurchaseCloudWorkspaceSubscriptionSeats, req).Want(http.StatusBadRequest)
 			if proxy.called {
 				t.Fatal("invalid request reached upstream")
 			}
@@ -606,12 +556,7 @@ func TestCloudWorkspaceSubscriptionWritesRequireManagerRole(t *testing.T) {
 		newRequest(http.MethodPost, "/api/cloud-subscriptions/portal-sessions", nil),
 		"member",
 	)
-	w := httptest.NewRecorder()
-	testHandler.CreateCloudWorkspaceSubscriptionPortal(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionPortal, req).Want(http.StatusForbidden)
 	if proxy.called {
 		t.Fatal("upstream must not be called for a non-manager member")
 	}
@@ -631,12 +576,7 @@ func TestCloudWorkspaceSubscriptionsRejectMachineActorsAtHandler(t *testing.T) {
 			)
 			req.Header.Set("X-Actor-Source", actorSource)
 			req.Header.Set(idempotencyKeyHeader, "portal-request-1")
-			w := httptest.NewRecorder()
-			testHandler.CreateCloudWorkspaceSubscriptionPortal(w, req)
-
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.CreateCloudWorkspaceSubscriptionPortal, req).Want(http.StatusForbidden)
 			if proxy.called {
 				t.Fatal("upstream must not be called for a machine actor")
 			}
@@ -693,12 +633,7 @@ func TestCloudWorkspaceSubscriptionMutationsValidateLocally(t *testing.T) {
 			if tc.header != "" {
 				req.Header.Set(idempotencyKeyHeader, tc.header)
 			}
-			w := httptest.NewRecorder()
-			tc.invoke(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, tc.invoke, req).Want(http.StatusBadRequest)
 			if !strings.Contains(w.Body.String(), tc.wantError) {
 				t.Fatalf("body = %s, want error containing %q", w.Body.String(), tc.wantError)
 			}
@@ -739,13 +674,7 @@ func TestStripeWebhookForwardsRawBodyAndSignature(t *testing.T) {
 	req.Header.Set("Stripe-Signature", sig)
 	req.Header.Set("Content-Type", ct)
 	// Deliberately NO X-User-ID — the webhook must work without auth.
-	w := httptest.NewRecorder()
-
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req).Want(http.StatusOK)
 	if !proxy.called {
 		t.Fatal("upstream proxy must be called")
 	}
@@ -788,12 +717,7 @@ func TestStripeWebhookMissingSignatureRejectedLocally(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe",
 		strings.NewReader(`{"id":"evt"}`))
-	w := httptest.NewRecorder()
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req).Want(http.StatusUnauthorized)
 	if proxy.called {
 		t.Fatal("upstream must NOT be called when Stripe-Signature is missing")
 	}
@@ -817,8 +741,7 @@ func TestStripeWebhookForwardsEmptyBody(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe", http.NoBody)
 	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
-	w := httptest.NewRecorder()
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req)
 
 	if !proxy.called {
 		t.Fatal("upstream must be called even on empty body")
@@ -840,12 +763,7 @@ func TestStripeWebhookRejectsLargeBody(t *testing.T) {
 	body := bytes.NewReader(bytes.Repeat([]byte("a"), maxStripeWebhookBodySize+1))
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe", body)
 	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
-	w := httptest.NewRecorder()
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
-
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req).Want(http.StatusRequestEntityTooLarge)
 	if proxy.called {
 		t.Fatal("upstream must not be called for oversized webhook body")
 	}
@@ -860,12 +778,7 @@ func TestStripeWebhookDisabledReturnsUnavailable(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe",
 		strings.NewReader(`{"id":"evt"}`))
 	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
-	w := httptest.NewRecorder()
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
-
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req).Want(http.StatusServiceUnavailable)
 }
 
 // TestStripeWebhookRateLimited pins the per-IP rate-limit fast
@@ -886,12 +799,7 @@ func TestStripeWebhookRateLimited(t *testing.T) {
 		strings.NewReader(`{"id":"evt"}`))
 	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
 	req.RemoteAddr = "203.0.113.7:1234"
-	w := httptest.NewRecorder()
-	testHandler.HandleCloudBillingStripeWebhook(w, req)
-
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.HandleCloudBillingStripeWebhook, req).Want(http.StatusTooManyRequests)
 	if proxy.called {
 		t.Fatal("upstream must not be called when rate limited")
 	}

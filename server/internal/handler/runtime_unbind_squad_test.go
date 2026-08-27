@@ -3,8 +3,9 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // These tests cover what a runtime teardown does to squads whose leader lives
@@ -162,13 +163,9 @@ func TestDeleteAgentRuntime_KeepsSquadsLedByUnboundAgents(t *testing.T) {
 	archivedSquad := seedSquad(t, archivedLeader, "Archived Squad For Runtime Delete", true)
 	activeSquad := seedSquad(t, archivedLeader, "Active Squad For Runtime Delete", false)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if !squadExists(t, archivedSquad) {
 		t.Errorf("archived squad must survive: its leader is unbound, not deleted")
@@ -199,27 +196,11 @@ func TestDeleteAgentRuntime_ActiveSquadWithArchivedLeaderNoLongerConflicts(t *te
 	archivedLeader := seedAgentOnRuntime(t, runtimeID, "Archived Leader Formerly Blocking Delete", true)
 	activeSquad := seedSquad(t, archivedLeader, "Active Squad Formerly Blocking Delete", false)
 	var autopilotID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO autopilot (
-			workspace_id, title, assignee_type, assignee_id,
-			created_by_type, created_by_id, status, execution_mode
-		)
-		VALUES ($1, 'squad runtime pause', 'squad', $2, 'member', $3, 'active', 'run_only')
-		RETURNING id
-	`, testWorkspaceID, activeSquad, testUserID).Scan(&autopilotID); err != nil {
-		t.Fatalf("seed squad autopilot: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, autopilotID)
-	})
+	autopilotID = dbfx.Insert(t, "autopilot", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'squad runtime pause'"), "assignee_type": testutil.Raw("'squad'"), "assignee_id": activeSquad, "created_by_type": testutil.Raw("'member'"), "created_by_id": testUserID, "status": testutil.Raw("'active'"), "execution_mode": testutil.Raw("'run_only'")})
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200 (guard removed), got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if !squadExists(t, activeSquad) {
 		t.Errorf("active squad must survive the runtime delete")
@@ -252,13 +233,9 @@ func TestDeleteAgentRuntime_NoSquadsRegression(t *testing.T) {
 	runtimeID := seedIsolatedRuntime(t, "Runtime With No Squad References")
 	archivedAgent := seedAgentOnRuntime(t, runtimeID, "Archived Agent No Squad", true)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if !agentExists(t, archivedAgent) {
 		t.Errorf("archived agent must survive its runtime as an unbound agent")
@@ -320,17 +297,13 @@ func TestUpdateSquad_UnboundLeaderPausesOnlySquadAutopilots(t *testing.T) {
 		)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.UpdateSquad(w, squadScopeReq(
+	testutil.Call(t, testHandler.UpdateSquad, squadScopeReq(
 		"",
 		http.MethodPatch,
 		"/api/squads/"+squadID,
 		map[string]any{"leader_id": unboundLeaderID},
 		map[string]string{"id": squadID},
-	))
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateSquad: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	)).Want(http.StatusOK)
 
 	var squadStatus, pauseReason, directStatus string
 	if err := testPool.QueryRow(ctx,
@@ -365,13 +338,9 @@ func TestDeleteAgentRuntime_StillBlockedByActiveAgents(t *testing.T) {
 	runtimeID := seedIsolatedRuntime(t, "Runtime With Active Agent")
 	activeAgent := seedAgentOnRuntime(t, runtimeID, "Active Agent Blocking Delete", false)
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("DeleteAgentRuntime: expected 409 active-agent guard, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusConflict)
 
 	if !agentExists(t, activeAgent) {
 		t.Errorf("active agent must NOT have been touched by a refused runtime delete")

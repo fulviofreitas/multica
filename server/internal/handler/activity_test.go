@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // fetchTimeline issues a GET /timeline request and returns the decoded entries
@@ -15,10 +16,10 @@ import (
 // (created_at, id) ascending (oldest first); see ListTimeline / #1929.
 func fetchTimeline(t *testing.T, issueID string) ([]TimelineEntry, int) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/issues/"+issueID+"/timeline", nil)
 	req = withURLParam(req, "id", issueID)
-	testHandler.ListTimeline(w, req)
+	w := testutil.Call(t, testHandler.ListTimeline, req)
 	var entries []TimelineEntry
 	if w.Code == http.StatusOK {
 		json.NewDecoder(w.Body).Decode(&entries)
@@ -30,15 +31,12 @@ func fetchTimeline(t *testing.T, issueID string) ([]TimelineEntry, int) {
 // cleanup so its timeline rows are deleted after the test.
 func createIssueForTimeline(t *testing.T, title string) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  title,
 		"status": "todo",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
 	json.NewDecoder(w.Body).Decode(&issue)
 	t.Cleanup(func() {
@@ -163,10 +161,10 @@ func TestListTimeline_MergesCommentsAndActivities(t *testing.T) {
 // flat array. Used to verify the boundary-compat path doesn't regress.
 func fetchTimelineWrapped(t *testing.T, issueID, query string) (timelinePaginatedResponse, int) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/issues/"+issueID+"/timeline?"+query, nil)
 	req = withURLParam(req, "id", issueID)
-	testHandler.ListTimeline(w, req)
+	w := testutil.Call(t, testHandler.ListTimeline, req)
 	var resp timelinePaginatedResponse
 	if w.Code == http.StatusOK {
 		json.NewDecoder(w.Body).Decode(&resp)

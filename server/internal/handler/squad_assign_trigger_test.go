@@ -2,10 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateIssueAssignedToSquadEnqueuesLeader verifies that creating an
@@ -34,21 +35,16 @@ func TestCreateIssueAssignedToSquadEnqueuesLeader(t *testing.T) {
 	defer testPool.Exec(ctx, `DELETE FROM squad WHERE id = $1`, squadID)
 
 	// Create an issue assigned to the squad.
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":         "Squad-assigned at creation",
 		"assignee_type": "squad",
 		"assignee_id":   squadID,
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 
 	var created IssueResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode issue: %v", err)
-	}
+	w.Decode(&created)
 	defer func() {
 		cleanupReq := newRequest("DELETE", "/api/issues/"+created.ID, nil)
 		cleanupReq = withURLParam(cleanupReq, "id", created.ID)

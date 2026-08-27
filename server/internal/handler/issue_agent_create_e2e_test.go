@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // createPrivateAgentOwnedBy inserts a private agent owned by ownerID and
@@ -62,14 +64,7 @@ func TestAgentCreateOriginator_E2E_CreateAssignSquad_PrivateWorkerTriggered(t *t
 	leaderID := createPrivateAgentOwnedBy(t, "mul4305-e2e-private-leader", ownerH)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'MUL-4305 E2E Squad', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'MUL-4305 E2E Squad'"), "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	// Creator agent A, running a task on behalf of the human H. resolveActor
 	// validates the (A, task) pair; the handler then trusts X-Task-ID as A's
@@ -98,9 +93,7 @@ func TestAgentCreateOriginator_E2E_CreateAssignSquad_PrivateWorkerTriggered(t *t
 	r.Header.Set("X-Agent-ID", creatorAID)
 	r.Header.Set("X-Task-ID", creatorTaskID)
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode issue: %v", err)
@@ -147,9 +140,7 @@ func TestAgentCreateOriginator_E2E_CreateAssignSquad_PrivateWorkerTriggered(t *t
 	r.Header.Set("X-Task-ID", leaderTaskID)
 	r = withURLParam(r, "id", created.ID)
 	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment (leader mentions worker): expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Step 3: the private worker J must now have a queued task whose originator
 	// is the original human H — the whole point of the fix.
@@ -187,14 +178,7 @@ func TestAgentCreateOriginator_E2E_UpdateAssignSquad_HandlerGateAdmitsPrivateLea
 	leaderID, ownerH, _ := privateAgentTestFixture(t)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'MUL-4305 E2E Update-Assign Squad', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'MUL-4305 E2E Update-Assign Squad'"), "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	creatorAID := createHandlerTestAgent(t, "mul4305-e2e-update-creator", nil)
 	var creatorTaskID string
@@ -217,9 +201,7 @@ func TestAgentCreateOriginator_E2E_UpdateAssignSquad_HandlerGateAdmitsPrivateLea
 	r.Header.Set("X-Agent-ID", creatorAID)
 	r.Header.Set("X-Task-ID", creatorTaskID)
 	testHandler.CreateIssue(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode issue: %v", err)
@@ -240,9 +222,7 @@ func TestAgentCreateOriginator_E2E_UpdateAssignSquad_HandlerGateAdmitsPrivateLea
 	r.Header.Set("X-Task-ID", creatorTaskID)
 	r = withURLParam(r, "id", created.ID)
 	testHandler.UpdateIssue(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue (assign squad): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// The gated handler path must have enqueued the private leader carrying H.
 	var leaderCount int

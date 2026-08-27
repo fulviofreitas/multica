@@ -2,11 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func findCommentOutcome(t *testing.T, outcomes []CommentTriggerOutcome, targetID string) CommentTriggerOutcome {
@@ -57,16 +57,11 @@ func TestCreateComment_MixedMentionSurfacesPartialTriggerOutcomes(t *testing.T) 
 	}
 
 	// Create the comment: it must save (201) and report partial outcomes.
-	w := httptest.NewRecorder()
+
 	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201 (comment must save despite blocked mention), got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	var resp CommentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode comment: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.ID == "" {
 		t.Fatal("comment was not saved")
 	}
@@ -158,16 +153,10 @@ func TestCreateComment_AgentAndSameLeaderSquad(t *testing.T) {
 			squadID := createCommentTriggerPreviewSquad(t, "Shared Leader Squad "+tc.name, agentID)
 			issueID := createCommentTriggerPreviewIssue(t, "same-leader "+tc.name, "", "")
 
-			w := httptest.NewRecorder()
 			r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": tc.content(agentID, squadID)}), "id", issueID)
-			testHandler.CreateComment(w, r)
-			if w.Code != http.StatusCreated {
-				t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 			var resp CommentResponse
-			if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-				t.Fatalf("decode comment: %v", err)
-			}
+			w.Decode(&resp)
 
 			// One coalesced execution carrying the leader role for squad S.
 			var taskCount int
@@ -219,16 +208,10 @@ func TestCreateComment_TwoSquadsSharingLeaderCoalescesNonWinner(t *testing.T) {
 	issueID := createCommentTriggerPreviewIssue(t, "two squads sharing leader", "", "")
 	content := fmt.Sprintf("[@S1](mention://squad/%s) [@S2](mention://squad/%s) please", squad1, squad2)
 
-	w := httptest.NewRecorder()
 	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	var resp CommentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode comment: %v", err)
-	}
+	w.Decode(&resp)
 
 	// Exactly one queued task (a single leader agent can only run once).
 	if got := countQueuedCommentTriggerTasks(t, issueID, leaderID); got != 1 {
@@ -279,19 +262,14 @@ func TestCreateComment_SquadLeaderSelfMentionCompletedTaskDoesNotFakeSuccess(t *
 	}
 
 	content := fmt.Sprintf("[@S](mention://squad/%s) revisit please", squadID)
-	w := httptest.NewRecorder()
+
 	r := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)
 	// Author the comment AS the leader agent (A2A self-mention).
 	r.Header.Set("X-Agent-ID", leaderID)
 	r.Header.Set("X-Task-ID", completedTaskID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	var resp CommentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode comment: %v", err)
-	}
+	w.Decode(&resp)
 
 	// The self-mention neither re-fired the leader nor is covered by an active
 	// run: the outcome is non-success, never a fake `deferred`.

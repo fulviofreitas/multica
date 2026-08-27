@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/storage"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // withAvatarStorage swaps the handler's storage/config for one test and
@@ -263,16 +264,7 @@ func seedAvatarObject(t *testing.T, opts avatarObjectOpts) string {
 		issueID = seedIssueForAvatarTest(t, workspaceID)
 	}
 	key := "workspaces/" + workspaceID + "/" + id.String() + ".png"
-	if _, err := testPool.Exec(context.Background(), `
-		INSERT INTO attachment (id, workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes, issue_id)
-		VALUES ($1, $2, 'member', $3, 'avatar.png', $4, $5, 10, $6)
-	`, id.String(), workspaceID, testUserID,
-		"https://cdn.example.com/"+key, opts.contentType, issueID); err != nil {
-		t.Fatalf("seed attachment row: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, id.String())
-	})
+	dbfx.InsertNoID(t, "attachment", testutil.Cols{"id": id.String(), "workspace_id": workspaceID, "uploader_type": testutil.Raw("'member'"), "uploader_id": testUserID, "filename": testutil.Raw("'avatar.png'"), "url": "https://cdn.example.com/" + key, "content_type": opts.contentType, "size_bytes": testutil.Raw("10"), "issue_id": issueID}, "id = $1", id.String())
 	return key
 }
 
@@ -284,9 +276,7 @@ func TestServeAvatar_PresignRedirects(t *testing.T) {
 	key := seedAvatarObject(t, avatarObjectOpts{})
 
 	w := serveAvatarRequest(t, signAvatarKey(key), key)
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	loc, err := url.Parse(w.Header().Get("Location"))
 	if err != nil {
 		t.Fatalf("parse Location: %v", err)
@@ -334,9 +324,7 @@ func TestServeAvatar_ProxiesPrivateHostBody(t *testing.T) {
 	store.put(key, []byte("PNGBYTES"))
 
 	w := serveAvatarRequest(t, signAvatarKey(key), key)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Header().Get("Content-Type"); got != "image/png" {
 		t.Fatalf("Content-Type = %q, want image/png", got)
 	}
@@ -547,9 +535,7 @@ func TestServeAvatar_ShortTTLDisablesRedirectCaching(t *testing.T) {
 	key := seedAvatarObject(t, avatarObjectOpts{})
 
 	w := serveAvatarRequest(t, signAvatarKey(key), key)
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	if got := w.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}

@@ -4,9 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateAgent_ThinkingLevel_ValidationConsistency exercises the
@@ -38,11 +39,7 @@ func TestCreateAgent_ThinkingLevel_ValidationConsistency(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("empty thinking_level: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 	})
 
 	t.Run("known claude value succeeds", func(t *testing.T) {
@@ -53,11 +50,7 @@ func TestCreateAgent_ThinkingLevel_ValidationConsistency(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "high",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("thinking_level=high: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "high" {
@@ -76,11 +69,7 @@ func TestCreateAgent_ThinkingLevel_ValidationConsistency(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "none",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("codex-only thinking_level on claude runtime: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 	})
 
 	t.Run("garbage value rejected", func(t *testing.T) {
@@ -91,11 +80,7 @@ func TestCreateAgent_ThinkingLevel_ValidationConsistency(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "supersonic",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("garbage thinking_level: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 	})
 }
 
@@ -121,11 +106,7 @@ func TestCreateAgent_PiThinkingLevelValidation(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "max",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("Pi thinking_level=max: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "max" {
@@ -141,11 +122,7 @@ func TestCreateAgent_PiThinkingLevelValidation(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "ultra",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("Pi thinking_level=ultra: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 	})
 }
 
@@ -167,11 +144,7 @@ func TestAgentServiceTierValidationAndTriState(t *testing.T) {
 			"model":                "gpt-5.6-sol",
 			"service_tier":         "priority",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("create service_tier: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["service_tier"] != "priority" {
@@ -182,14 +155,10 @@ func TestAgentServiceTierValidationAndTriState(t *testing.T) {
 			testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, agentID)
 		})
 
-		clear := httptest.NewRecorder()
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, map[string]any{
 			"service_tier": "",
 		}), "id", agentID)
-		testHandler.UpdateAgent(clear, req)
-		if clear.Code != http.StatusOK {
-			t.Fatalf("clear service_tier: expected 200, got %d: %s", clear.Code, clear.Body.String())
-		}
+		clear := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var cleared map[string]any
 		_ = json.NewDecoder(clear.Body).Decode(&cleared)
 		if cleared["service_tier"] != "" {
@@ -205,11 +174,7 @@ func TestAgentServiceTierValidationAndTriState(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"service_tier":         "priority",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("Claude service_tier: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 	})
 }
 
@@ -240,12 +205,9 @@ func TestUpdateAgent_ThinkingLevel_TriState(t *testing.T) {
 		body := map[string]any{
 			"name": "thinking-update-test-renamed",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("name-only update: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "high" {
@@ -258,12 +220,9 @@ func TestUpdateAgent_ThinkingLevel_TriState(t *testing.T) {
 		body := map[string]any{
 			"thinking_level": "",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("clear update: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "" {
@@ -276,12 +235,9 @@ func TestUpdateAgent_ThinkingLevel_TriState(t *testing.T) {
 		body := map[string]any{
 			"thinking_level": "warp-speed",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("garbage thinking_level: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusBadRequest)
 	})
 
 	// 4. Codex-only token while bound to a Claude runtime → 400. This
@@ -292,12 +248,9 @@ func TestUpdateAgent_ThinkingLevel_TriState(t *testing.T) {
 		body := map[string]any{
 			"thinking_level": "minimal",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("codex token on claude runtime: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusBadRequest)
 	})
 }
 
@@ -339,12 +292,9 @@ func TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid(t *testing.
 		body := map[string]any{
 			"runtime_id": claudeRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 when existing value is still valid, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "high" {
@@ -360,12 +310,9 @@ func TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid(t *testing.
 		body := map[string]any{
 			"runtime_id": claudeRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 when existing value is invalid for new runtime, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusBadRequest)
 	})
 
 	t.Run("simultaneous explicit clear lets the switch through", func(t *testing.T) {
@@ -378,12 +325,9 @@ func TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid(t *testing.
 			"runtime_id":     claudeRuntimeID,
 			"thinking_level": "",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 with simultaneous clear, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "" {
@@ -399,12 +343,9 @@ func TestUpdateAgent_RuntimeSwitch_PreservesValidValueRejectsInvalid(t *testing.
 			"runtime_id":     claudeRuntimeID,
 			"thinking_level": "high",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 with simultaneous set, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["thinking_level"] != "high" {
@@ -438,12 +379,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 		body := map[string]any{
 			"runtime_id": codexRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 switching runtime with incompatible model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "" {
@@ -456,12 +394,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 		body := map[string]any{
 			"runtime_id": codexRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 switching runtime with provider-prefixed model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "" {
@@ -474,12 +409,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 		body := map[string]any{
 			"runtime_id": codexRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 preserving exact target accepted model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "gpt-5.5" {
@@ -492,12 +424,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 		body := map[string]any{
 			"runtime_id": secondClaudeRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 preserving context-tagged Claude model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "claude-opus-5[1m]" {
@@ -511,12 +440,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 			"runtime_id": codexRuntimeID,
 			"model":      "gpt-5.5",
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 with explicit replacement model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "gpt-5.5" {
@@ -529,12 +455,9 @@ func TestUpdateAgent_RuntimeSwitch_ClearsKnownIncompatibleModel(t *testing.T) {
 		body := map[string]any{
 			"runtime_id": codexRuntimeID,
 		}
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID, body), "id", agentID)
-		testHandler.UpdateAgent(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("expected 200 preserving unknown custom model, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusOK)
 		var resp map[string]any
 		_ = json.NewDecoder(w.Body).Decode(&resp)
 		if resp["model"] != "private-lab-model" {
@@ -619,11 +542,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "high",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("copilot thinking_level=high: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 		if !strings.Contains(w.Body.String(), "does not support a per-agent reasoning effort") {
 			t.Errorf("expected a capability explanation in the 400 body, got %s", w.Body.String())
 		}
@@ -637,11 +556,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("copilot empty thinking_level: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 	})
 
 	// hermes with no discovered catalog must REFUSE, not accept. The catalog is
@@ -659,11 +574,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "high",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("hermes thinking_level=high with no catalog: expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusBadRequest)
 		if !strings.Contains(w.Body.String(), "has not reported a model catalog yet") {
 			t.Errorf("expected the not-yet-discovered explanation, got %s", w.Body.String())
 		}
@@ -683,11 +594,7 @@ func TestCreateAgent_NoReasoningControlRejectsThinkingLevel(t *testing.T) {
 			"max_concurrent_tasks": 1,
 			"thinking_level":       "",
 		}
-		w := httptest.NewRecorder()
-		testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("hermes empty thinking_level: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 	})
 }
 
@@ -705,39 +612,28 @@ func TestUpdateAgent_ThinkingLevelCarriesOverToUndiscoveredHermes(t *testing.T) 
 	claudeRuntimeID := createClaudeProviderRuntime(t)
 	hermesRuntimeID := createProviderRuntime(t, "hermes")
 
-	created := httptest.NewRecorder()
-	testHandler.CreateAgent(created, newRequest(http.MethodPost, "/api/agents", map[string]any{
+	created := testutil.Call(t, testHandler.CreateAgent, newRequest(http.MethodPost, "/api/agents", map[string]any{
 		"name":                 "carryover-thinking-agent",
 		"runtime_id":           claudeRuntimeID,
 		"visibility":           "private",
 		"max_concurrent_tasks": 1,
 		"thinking_level":       "high",
-	}))
-	if created.Code != http.StatusCreated {
-		t.Fatalf("seed agent: expected 201, got %d: %s", created.Code, created.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var seeded map[string]any
 	_ = json.NewDecoder(created.Body).Decode(&seeded)
 	agentID, _ := seeded["id"].(string)
 	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent WHERE id = $1`, agentID) })
 
-	w := httptest.NewRecorder()
-	testHandler.UpdateAgent(w, withURLParam(
+	w := testutil.Call(t, testHandler.UpdateAgent, withURLParam(
 		newRequest(http.MethodPatch, "/api/agents/"+agentID, map[string]any{
 			"runtime_id": hermesRuntimeID,
-		}), "id", agentID))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("carry-over onto undiscovered hermes: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+		}), "id", agentID)).Want(http.StatusBadRequest)
 	// Decode rather than substring-match the raw body: the escape hatch contains
 	// quotes, which JSON-escapes to `thinking_level=\"\"` on the wire.
 	var errBody struct {
 		Error string `json:"error"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&errBody); err != nil {
-		t.Fatalf("decode error body: %v", err)
-	}
+	w.Decode(&errBody)
 	if !strings.Contains(errBody.Error, "has not reported a model catalog yet") {
 		t.Errorf("expected the not-yet-discovered explanation, got %q", errBody.Error)
 	}

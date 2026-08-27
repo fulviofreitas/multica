@@ -1,12 +1,12 @@
 package handler
 
 import (
-	"context"
 	"net/http/httptest"
 	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -21,19 +21,7 @@ import (
 func TestSetAgentRuntimeSkillEnabledBroadcastsAgentStatus(t *testing.T) {
 	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
 	var agentID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, $2, '', 'local', '{}'::jsonb, $3, 'private', 'private', 1, $4)
-		RETURNING id
-	`, testWorkspaceID, "Runtime Skill Broadcast "+t.Name(), runtimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Runtime Skill Broadcast " + t.Name(), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'local'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'private'"), "permission_mode": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 
 	// The bus is synchronous, so counts observed right after each request are
 	// deterministic; the mutex only guards against a future async listener.

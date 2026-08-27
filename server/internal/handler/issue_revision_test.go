@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -143,13 +144,9 @@ func TestRevisionConflictsPreserveLatestIssueAndComment(t *testing.T) {
 	if title != "revision latest" || issueRevision != 2 {
 		t.Fatalf("issue after stale write = (%q, %d), want latest/2", title, issueRevision)
 	}
-	legacyIssue := httptest.NewRecorder()
-	testHandler.UpdateIssue(legacyIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"title": "legacy issue update",
-	}), "id", issueID))
-	if legacyIssue.Code != http.StatusOK {
-		t.Fatalf("legacy issue update = %d: %s", legacyIssue.Code, legacyIssue.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusOK)
 	if err := testPool.QueryRow(ctx, `SELECT title, revision FROM issue WHERE id = $1`, issueID).Scan(&title, &issueRevision); err != nil {
 		t.Fatalf("reload legacy issue update: %v", err)
 	}
@@ -216,13 +213,9 @@ func TestRevisionConflictsPreserveLatestIssueAndComment(t *testing.T) {
 	if commentRevision != 3 {
 		t.Fatalf("comment revision after attachment update = %d, want 3", commentRevision)
 	}
-	legacyComment := httptest.NewRecorder()
-	testHandler.UpdateComment(legacyComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
+	testutil.Call(t, testHandler.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content": "legacy comment update",
-	}), "commentId", commentID))
-	if legacyComment.Code != http.StatusOK {
-		t.Fatalf("legacy comment update = %d: %s", legacyComment.Code, legacyComment.Body.String())
-	}
+	}), "commentId", commentID)).Want(http.StatusOK)
 	if err := testPool.QueryRow(ctx, `SELECT content, revision FROM comment WHERE id = $1`, commentID).Scan(&content, &commentRevision); err != nil {
 		t.Fatalf("reload legacy comment update: %v", err)
 	}
@@ -254,55 +247,35 @@ func TestTextBaselinesIgnoreUnrelatedAggregateRevisionChanges(t *testing.T) {
 	})
 
 	// An unrelated priority write advances the aggregate owner revision.
-	priority := httptest.NewRecorder()
-	testHandler.UpdateIssue(priority, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"priority": "high",
-	}), "id", issueID))
-	if priority.Code != http.StatusOK {
-		t.Fatalf("unrelated issue update = %d: %s", priority.Code, priority.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusOK)
 
-	text := httptest.NewRecorder()
-	testHandler.UpdateIssue(text, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"title":            "edited title",
 		"title_base":       "baseline title",
 		"description":      "edited description",
 		"description_base": "baseline description",
-	}), "id", issueID))
-	if text.Code != http.StatusOK {
-		t.Fatalf("text update after unrelated revision = %d: %s", text.Code, text.Body.String())
-	}
-	staleDescription := httptest.NewRecorder()
-	testHandler.UpdateIssue(staleDescription, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	}), "id", issueID)).Want(http.StatusOK)
+	testutil.Call(t, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"description":      "stale description overwrite",
 		"description_base": "baseline description",
-	}), "id", issueID))
-	if staleDescription.Code != http.StatusConflict {
-		t.Fatalf("true issue description conflict = %d, want 409: %s", staleDescription.Code, staleDescription.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusConflict)
 
 	// A reaction/resolve-style aggregate bump on the comment must likewise not
 	// reject a body edit whose content baseline is still current.
 	if _, err := testPool.Exec(ctx, `UPDATE comment SET revision = revision + 1 WHERE id = $1`, commentID); err != nil {
 		t.Fatalf("bump comment revision: %v", err)
 	}
-	comment := httptest.NewRecorder()
-	testHandler.UpdateComment(comment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
+	testutil.Call(t, testHandler.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content":      "edited comment",
 		"content_base": "baseline comment",
-	}), "commentId", commentID))
-	if comment.Code != http.StatusOK {
-		t.Fatalf("comment edit after unrelated revision = %d: %s", comment.Code, comment.Body.String())
-	}
+	}), "commentId", commentID)).Want(http.StatusOK)
 
-	stale := httptest.NewRecorder()
-	testHandler.UpdateComment(stale, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
+	testutil.Call(t, testHandler.UpdateComment, withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 		"content":      "stale overwrite",
 		"content_base": "baseline comment",
-	}), "commentId", commentID))
-	if stale.Code != http.StatusConflict {
-		t.Fatalf("true comment content conflict = %d, want 409: %s", stale.Code, stale.Body.String())
-	}
+	}), "commentId", commentID)).Want(http.StatusConflict)
 }
 
 func TestConcurrentRevisionWritesHaveExactlyOneWinner(t *testing.T) {
@@ -350,20 +323,20 @@ func TestConcurrentRevisionWritesHaveExactlyOneWinner(t *testing.T) {
 	}
 
 	assertOneWinner(func(title string) int {
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 			"title": title, "title_base": "concurrent revision",
 		}), "id", issueID)
-		testHandler.UpdateIssue(w, req)
+		w := testutil.Call(t, testHandler.UpdateIssue, req)
 		return w.Code
 	})
 
 	assertOneWinner(func(content string) int {
-		w := httptest.NewRecorder()
+
 		req := withURLParam(newRequest(http.MethodPut, "/api/comments/"+commentID, map[string]any{
 			"content": content, "content_base": "concurrent original",
 		}), "commentId", commentID)
-		testHandler.UpdateComment(w, req)
+		w := testutil.Call(t, testHandler.UpdateComment, req)
 		return w.Code
 	})
 
@@ -406,12 +379,12 @@ func TestConcurrentCommentRevisionConflictCancelsTaskBatchOnce(t *testing.T) {
 	for _, content := range []string{"concurrent edit a", "concurrent edit b"} {
 		go func() {
 			<-start
-			w := httptest.NewRecorder()
+
 			req := withURLParam(newRequest(http.MethodPut, "/api/comments/"+fixture.commentID[2], map[string]any{
 				"content":      content,
 				"content_base": fixture.content[2],
 			}), "commentId", fixture.commentID[2])
-			testHandler.UpdateComment(w, req)
+			w := testutil.Call(t, testHandler.UpdateComment, req)
 			results <- w.Code
 		}()
 	}
@@ -465,14 +438,10 @@ func TestNoOpIssueUpdateDoesNotAdvanceRevisionOrUpdatedAt(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.UpdateIssue(w, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"title":             "no-op issue update",
 		"expected_revision": 1,
-	}), "id", issueID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("no-op update = %d: %s", w.Code, w.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusOK)
 	var revision int64
 	var updatedAt time.Time
 	if err := testPool.QueryRow(ctx, `SELECT revision, updated_at FROM issue WHERE id = $1`, issueID).Scan(&revision, &updatedAt); err != nil {
@@ -517,15 +486,11 @@ func TestNoOpIssueWithAttachmentPublishesFreshOwnerBeforeAttachmentEvent(t *test
 		}
 	})
 
-	w := httptest.NewRecorder()
-	h.UpdateIssue(w, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, h.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"title":             "ordered attachment events",
 		"attachment_ids":    []string{attachmentID},
 		"expected_revision": 1,
-	}), "id", issueID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("combined update = %d: %s", w.Code, w.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusOK)
 	if len(ordered) != 2 || ordered[0].Type != protocol.EventIssueUpdated || ordered[1].Type != protocol.EventIssueAttachmentsChanged {
 		t.Fatalf("event order = %#v, want issue:updated then issue_attachments:changed", ordered)
 	}
@@ -649,9 +614,7 @@ func TestIssueUpdateAndAttachmentBindingExcludeInterleavingMutation(t *testing.T
 
 	close(releaseLink)
 	response := <-handlerDone
-	if response.Code != http.StatusOK {
-		t.Fatalf("combined update = %d: %s", response.Code, response.Body.String())
-	}
+	testutil.Equal(t, response.Code, http.StatusOK, "HTTP status")
 	var updated IssueResponse
 	if err := json.NewDecoder(response.Body).Decode(&updated); err != nil {
 		t.Fatalf("decode combined update: %v", err)
@@ -702,14 +665,10 @@ func TestIssueUpdateRollsBackWhenAttachmentBindingFails(t *testing.T) {
 
 	h := *testHandler
 	h.TxStarter = failIssueAttachmentLinkTxStarter{inner: testHandler.TxStarter}
-	w := httptest.NewRecorder()
-	h.UpdateIssue(w, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
+	testutil.Call(t, h.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, map[string]any{
 		"title":          "attachment rollback changed",
 		"attachment_ids": []string{attachmentID},
-	}), "id", issueID))
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("injected link failure = %d, want 500: %s", w.Code, w.Body.String())
-	}
+	}), "id", issueID)).Want(http.StatusInternalServerError)
 
 	var title string
 	var revision int64
@@ -769,11 +728,7 @@ func TestAuxiliaryVisibleMutationsAdvanceOwnerRevisionExactlyOnce(t *testing.T) 
 	if err != nil || attached.Changed || attached.IssueRevision != 0 {
 		t.Fatalf("duplicate label attach = (%+v, %v), want no-op", attached, err)
 	}
-	labelsResponse := httptest.NewRecorder()
-	testHandler.ListLabelsForIssue(labelsResponse, withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/labels", nil), "id", issueID))
-	if labelsResponse.Code != http.StatusOK {
-		t.Fatalf("list issue labels = %d: %s", labelsResponse.Code, labelsResponse.Body.String())
-	}
+	labelsResponse := testutil.Call(t, testHandler.ListLabelsForIssue, withURLParam(newRequest(http.MethodGet, "/api/issues/"+issueID+"/labels", nil), "id", issueID)).Want(http.StatusOK)
 	var labelPayload struct {
 		IssueRevision int64 `json:"issue_revision"`
 	}

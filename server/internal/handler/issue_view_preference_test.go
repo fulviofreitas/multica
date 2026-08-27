@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestIssueViewPreferenceRoundTrip(t *testing.T) {
@@ -17,9 +19,7 @@ func TestIssueViewPreferenceRoundTrip(t *testing.T) {
 	// Empty document before any write.
 	w := httptest.NewRecorder()
 	testHandler.GetIssueViewPreference(w, newRequest("GET", "/api/issue-view-preferences?scope_type=workspace", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("get(empty): expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var got IssueViewPreferenceResponse
 	json.NewDecoder(w.Body).Decode(&got)
 	if string(got.Prefs) != "{}" {
@@ -36,9 +36,7 @@ func TestIssueViewPreferenceRoundTrip(t *testing.T) {
 		"scope_type": "workspace",
 		"prefs":      prefs,
 	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("put: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	w = httptest.NewRecorder()
 	testHandler.GetIssueViewPreference(w, newRequest("GET", "/api/issue-view-preferences?scope_type=workspace", nil))
@@ -55,9 +53,7 @@ func TestIssueViewPreferenceRoundTrip(t *testing.T) {
 		"scope_type": "workspace",
 		"prefs":      map[string]any{"hidden": []string{}},
 	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("put2: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	w = httptest.NewRecorder()
 	testHandler.GetIssueViewPreference(w, newRequest("GET", "/api/issue-view-preferences?scope_type=workspace", nil))
 	json.NewDecoder(w.Body).Decode(&got)
@@ -81,9 +77,7 @@ func TestIssueViewPreferenceIsPerUser(t *testing.T) {
 		"scope_type": "workspace",
 		"prefs":      map[string]any{"hidden": []string{"view:x"}},
 	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("put: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	otherID := createSecondWorkspaceMember(t)
 	w = httptest.NewRecorder()

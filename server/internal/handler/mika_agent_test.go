@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -49,9 +50,7 @@ func TestCreateMikaAgent_ServerOwnsTheDefinition(t *testing.T) {
 		"runtime_id": handlerTestRuntimeID(t),
 		"language":   "en",
 	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	resp := decodeAgent(t, w)
 
 	if resp.SystemKey != service.MikaSystemKey {
@@ -89,13 +88,9 @@ func TestCreateMikaAgent_IsIdempotentPerWorkspace(t *testing.T) {
 	runtimeID := handlerTestRuntimeID(t)
 
 	first := createMika(t, map[string]any{"runtime_id": runtimeID, "language": "en"})
-	if first.Code != http.StatusCreated {
-		t.Fatalf("first call: expected 201, got %d: %s", first.Code, first.Body.String())
-	}
+	testutil.Equal(t, first.Code, http.StatusCreated, "HTTP status")
 	second := createMika(t, map[string]any{"runtime_id": runtimeID, "language": "zh"})
-	if second.Code != http.StatusOK {
-		t.Fatalf("second call: expected 200, got %d: %s", second.Code, second.Body.String())
-	}
+	testutil.Equal(t, second.Code, http.StatusOK, "HTTP status")
 	if a, b := decodeAgent(t, first).ID, decodeAgent(t, second).ID; a != b {
 		t.Fatalf("expected the same agent back, got %s then %s", a, b)
 	}
@@ -114,9 +109,7 @@ func TestCreateMikaAgent_IsIdempotentPerWorkspace(t *testing.T) {
 func TestCreateMikaAgent_RejectsUnsupportedLanguage(t *testing.T) {
 	cleanupMika(t)
 	w := createMika(t, map[string]any{"runtime_id": handlerTestRuntimeID(t), "language": "fr"})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 // TestComposeMikaInstructions covers the layering contract: the product half
@@ -184,19 +177,13 @@ func TestArchiveMikaIsRejected(t *testing.T) {
 		"runtime_id": handlerTestRuntimeID(t),
 		"language":   "en",
 	})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	agentID := decodeAgent(t, w).ID
 
 	req := withChatTestWorkspaceCtx(t, withURLParam(
 		newRequest("POST", "/api/agents/"+agentID+"/archive", nil), "id", agentID,
 	))
-	archiveW := httptest.NewRecorder()
-	testHandler.ArchiveAgent(archiveW, req)
-	if archiveW.Code != http.StatusBadRequest {
-		t.Fatalf("archiving a system agent: expected 400, got %d: %s", archiveW.Code, archiveW.Body.String())
-	}
+	testutil.Call(t, testHandler.ArchiveAgent, req).Want(http.StatusBadRequest)
 
 	var archivedAt *string
 	if err := testPool.QueryRow(context.Background(),

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -204,17 +204,9 @@ func TestGetAttachmentByID_IgnoresStableCapability(t *testing.T) {
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.GetAttachmentByID(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /api/attachments/{id} = %d, body %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAttachmentByID, req).Want(http.StatusOK)
 	var resp AttachmentResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if !strings.Contains(resp.DownloadURL, "Signature=") {
 		t.Errorf("single-attachment endpoint must always sign, even for stable-mode callers; got %q", resp.DownloadURL)
 	}

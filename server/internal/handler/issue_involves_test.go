@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // involvesFixture seeds, for a single test, the data needed to exercise every
@@ -99,14 +99,7 @@ func setupInvolvesFixture(t *testing.T) *involvesFixture {
 
 	// --- second workspace, mirroring all four shapes for cross-ws negatives ---
 	var otherWsID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, '', 'OTH')
-		RETURNING id
-	`, fmt.Sprintf("InvolvesOtherWs-%d", suffix), fmt.Sprintf("involves-other-ws-%d", suffix)).Scan(&otherWsID); err != nil {
-		t.Fatalf("create other workspace: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWsID) })
+	otherWsID = dbfx.Insert(t, "workspace", testutil.Cols{"name": fmt.Sprintf("InvolvesOtherWs-%d", suffix), "slug": fmt.Sprintf("involves-other-ws-%d", suffix), "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'OTH'")})
 	fx.otherWsID = otherWsID
 
 	// Membership in other workspace (so the user could legitimately be assigned
@@ -229,17 +222,11 @@ func listIssuesInvolves(t *testing.T, userID string) []string {
 	t.Helper()
 	path := fmt.Sprintf("/api/issues?workspace_id=%s&involves_user_id=%s&limit=500",
 		testWorkspaceID, userID)
-	w := httptest.NewRecorder()
-	testHandler.ListIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 	var resp struct {
 		Issues []IssueResponse `json:"issues"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
+	w.Decode(&resp)
 	ids := make([]string, 0, len(resp.Issues))
 	for _, iss := range resp.Issues {
 		ids = append(ids, iss.ID)
@@ -254,15 +241,9 @@ func listGroupedIssuesInvolves(t *testing.T, userID string) []string {
 	path := fmt.Sprintf(
 		"/api/issues/grouped?workspace_id=%s&group_by=assignee&statuses=todo&involves_user_id=%s&limit=100",
 		testWorkspaceID, userID)
-	w := httptest.NewRecorder()
-	testHandler.ListGroupedIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListGroupedIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListGroupedIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 	var resp GroupedIssuesResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode grouped response: %v", err)
-	}
+	w.Decode(&resp)
 	ids := []string{}
 	for _, g := range resp.Groups {
 		for _, iss := range g.Issues {
@@ -424,17 +405,11 @@ func TestListIssues_InvolvesUserID_CombinesWithCreatorID(t *testing.T) {
 
 	path := fmt.Sprintf("/api/issues?workspace_id=%s&involves_user_id=%s&creator_id=%s&limit=500",
 		testWorkspaceID, fx.userID, fx.userID)
-	w := httptest.NewRecorder()
-	testHandler.ListIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 	var resp struct {
 		Issues []IssueResponse `json:"issues"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
+	w.Decode(&resp)
 	got := make([]string, 0, len(resp.Issues))
 	for _, iss := range resp.Issues {
 		got = append(got, iss.ID)
@@ -447,11 +422,7 @@ func TestListIssues_InvolvesUserID_CombinesWithCreatorID(t *testing.T) {
 
 func TestListIssues_InvolvesUserID_InvalidUUIDReturns400(t *testing.T) {
 	path := fmt.Sprintf("/api/issues?workspace_id=%s&involves_user_id=not-a-uuid", testWorkspaceID)
-	w := httptest.NewRecorder()
-	testHandler.ListIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 on invalid UUID, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusBadRequest)
 }
 
 // Grouped path also exercises canonical-leader resolution, so a single positive

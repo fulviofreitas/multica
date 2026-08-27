@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func cronPreviewRequest(expr, tz string) *http.Request {
@@ -35,9 +37,7 @@ func TestCronPreview_ValidExpression(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	testHandler.CronPreview(w, cronPreviewRequest("0 9 * * *", "UTC"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	runs := decodeCronPreview(t, w)
 	if len(runs) != 3 {
 		t.Fatalf("expected 3 next_runs, got %d: %v", len(runs), runs)
@@ -64,9 +64,7 @@ func TestCronPreview_CompoundExpression(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	testHandler.CronPreview(w, cronPreviewRequest("0 9-21/2 * * 2-4", "Asia/Shanghai"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
 		t.Fatalf("failed to load location: %v", err)
@@ -92,9 +90,7 @@ func TestCronPreview_TimezoneApplied(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	testHandler.CronPreview(w, cronPreviewRequest("0 9 * * *", "Asia/Shanghai"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	runs := decodeCronPreview(t, w)
 	if len(runs) == 0 {
 		t.Fatal("expected next_runs, got none")
@@ -115,9 +111,7 @@ func TestCronPreview_DefaultsToUTC(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	testHandler.CronPreview(w, cronPreviewRequest("30 18 * * *", ""))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	runs := decodeCronPreview(t, w)
 	if len(runs) == 0 {
 		t.Fatal("expected next_runs, got none")
@@ -140,9 +134,7 @@ func TestCronPreview_NeverFiringExpression(t *testing.T) {
 	}
 	w := httptest.NewRecorder()
 	testHandler.CronPreview(w, cronPreviewRequest("0 0 30 2 *", "UTC"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if runs := decodeCronPreview(t, w); len(runs) != 0 {
 		t.Fatalf("expected no next_runs, got %v", runs)
 	}
@@ -169,11 +161,7 @@ func TestCronPreview_BadRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
-			testHandler.CronPreview(w, cronPreviewRequest(tc.expr, tc.tz))
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CronPreview, cronPreviewRequest(tc.expr, tc.tz)).Want(http.StatusBadRequest)
 			var body struct {
 				Error string `json:"error"`
 				Code  string `json:"code"`
@@ -181,9 +169,7 @@ func TestCronPreview_BadRequests(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Error == "" {
 				t.Fatalf("expected {\"error\": ...} body, got %s", w.Body.String())
 			}
-			if body.Code != tc.code {
-				t.Fatalf("expected code %q, got %q", tc.code, body.Code)
-			}
+			testutil.Equal(t, body.Code, tc.code, "HTTP status")
 		})
 	}
 }

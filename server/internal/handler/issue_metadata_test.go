@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Round-trip: set primitives of each type, list, get them back, delete, confirm gone.
@@ -25,10 +27,10 @@ func TestIssueMetadataSetGetDelete(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/"+c.key, json.RawMessage(`{"value":`+c.value+`}`))
 		req = withURLParams(req, "id", issueID, "key", c.key)
-		testHandler.SetIssueMetadataKey(w, req)
+		w := testutil.Call(t, testHandler.SetIssueMetadataKey, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("Set %s=%s: expected 200, got %d: %s", c.key, c.value, w.Code, w.Body.String())
 		}
@@ -39,9 +41,7 @@ func TestIssueMetadataSetGetDelete(t *testing.T) {
 	req := newRequest("GET", "/api/issues/"+issueID+"/metadata", nil)
 	req = withURLParam(req, "id", issueID)
 	testHandler.ListIssueMetadata(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("List metadata: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp struct {
 		Metadata map[string]any `json:"metadata"`
 	}
@@ -66,9 +66,7 @@ func TestIssueMetadataSetGetDelete(t *testing.T) {
 	req = newRequest("DELETE", "/api/issues/"+issueID+"/metadata/pipeline_status", nil)
 	req = withURLParams(req, "id", issueID, "key", "pipeline_status")
 	testHandler.DeleteIssueMetadataKey(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("Delete pipeline_status: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/issues/"+issueID+"/metadata", nil)
 	req = withURLParam(req, "id", issueID)
@@ -106,16 +104,13 @@ func TestIssueMetadataValidation(t *testing.T) {
 	}
 	for _, c := range bad {
 		t.Run(c.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			// chi pulls the key from URL params (injected via withURLParams);
 			// the raw URL needs to be a valid request line, so PathEscape any
 			// chars (spaces, etc.) that would otherwise break httptest.NewRequest.
 			req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/"+url.PathEscape(c.key), json.RawMessage(c.rawBody))
 			req = withURLParams(req, "id", issueID, "key", c.key)
-			testHandler.SetIssueMetadataKey(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.SetIssueMetadataKey, req).Want(http.StatusBadRequest)
 		})
 	}
 }
@@ -128,13 +123,10 @@ func TestIssueMetadataSizeLimit(t *testing.T) {
 
 	huge := strings.Repeat("a", 9000)
 	body, _ := json.Marshal(map[string]any{"value": huge})
-	w := httptest.NewRecorder()
+
 	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/blob", body)
 	req = withURLParams(req, "id", issueID, "key", "blob")
-	testHandler.SetIssueMetadataKey(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 from size CHECK, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SetIssueMetadataKey, req).Want(http.StatusBadRequest)
 }
 
 // The 50-key cap is enforced in the handler with a clear 400.
@@ -143,10 +135,10 @@ func TestIssueMetadataKeyCountCap(t *testing.T) {
 
 	for i := 0; i < maxIssueMetadataKeys; i++ {
 		key := fmt.Sprintf("k_%d", i)
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/"+key, json.RawMessage(`{"value":"v"}`))
 		req = withURLParams(req, "id", issueID, "key", key)
-		testHandler.SetIssueMetadataKey(w, req)
+		w := testutil.Call(t, testHandler.SetIssueMetadataKey, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("key #%d: expected 200, got %d: %s", i, w.Code, w.Body.String())
 		}
@@ -155,9 +147,7 @@ func TestIssueMetadataKeyCountCap(t *testing.T) {
 	req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/overflow", json.RawMessage(`{"value":"v"}`))
 	req = withURLParams(req, "id", issueID, "key", "overflow")
 	testHandler.SetIssueMetadataKey(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("overflow key: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Updating an existing key past the cap is still allowed — only new keys
 	// are blocked.
@@ -165,9 +155,7 @@ func TestIssueMetadataKeyCountCap(t *testing.T) {
 	req = newRequest("PUT", "/api/issues/"+issueID+"/metadata/k_0", json.RawMessage(`{"value":"v2"}`))
 	req = withURLParams(req, "id", issueID, "key", "k_0")
 	testHandler.SetIssueMetadataKey(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("update existing at cap: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 // ListIssues with `metadata` query param does JSONB containment filtering and
@@ -177,11 +165,11 @@ func TestListIssuesMetadataFilter(t *testing.T) {
 	doneID := createMetadataTestIssue(t, "Done issue")
 
 	for issueID, status := range map[string]string{waitingID: "waiting_review", doneID: "deployed"} {
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/issues/"+issueID+"/metadata/pipeline_status",
 			json.RawMessage(`{"value":"`+status+`"}`))
 		req = withURLParams(req, "id", issueID, "key", "pipeline_status")
-		testHandler.SetIssueMetadataKey(w, req)
+		w := testutil.Call(t, testHandler.SetIssueMetadataKey, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("seed %s: %d %s", issueID, w.Code, w.Body.String())
 		}
@@ -190,9 +178,7 @@ func TestListIssuesMetadataFilter(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := newRequest("GET", `/api/issues?metadata={"pipeline_status":"waiting_review"}`, nil)
 	testHandler.ListIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("List with filter: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var listResp struct {
 		Issues []IssueResponse `json:"issues"`
 	}
@@ -218,9 +204,7 @@ func TestListIssuesMetadataFilter(t *testing.T) {
 	w = httptest.NewRecorder()
 	req = newRequest("GET", `/api/issues?metadata={not-json}`, nil)
 	testHandler.ListIssues(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("malformed metadata: expected 400, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 // New issues default to an empty metadata object — never null — so frontend
@@ -228,13 +212,9 @@ func TestListIssuesMetadataFilter(t *testing.T) {
 func TestNewIssueDefaultsToEmptyMetadata(t *testing.T) {
 	issueID := createMetadataTestIssue(t, "Default empty metadata")
 
-	w := httptest.NewRecorder()
 	req := newRequest("GET", "/api/issues/"+issueID, nil)
 	req = withURLParam(req, "id", issueID)
-	testHandler.GetIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetIssue: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetIssue, req).Want(http.StatusOK)
 	var got IssueResponse
 	json.NewDecoder(w.Body).Decode(&got)
 	if got.Metadata == nil {
@@ -247,19 +227,14 @@ func TestNewIssueDefaultsToEmptyMetadata(t *testing.T) {
 
 func createMetadataTestIssue(t *testing.T, title string) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    title,
 		"status":   "todo",
 		"priority": "medium",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("createMetadataTestIssue: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var issue IssueResponse
-	if err := json.NewDecoder(w.Body).Decode(&issue); err != nil {
-		t.Fatalf("decode issue: %v", err)
-	}
+	w.Decode(&issue)
 	return issue.ID
 }

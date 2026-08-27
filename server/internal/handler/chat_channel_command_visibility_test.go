@@ -2,13 +2,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -46,15 +46,9 @@ func TestChannelCommandVisibility_MessageListsExcludeCommandsBeforePagination(t 
 	legacyReq.Header.Set("X-User-ID", testUserID)
 	legacyReq = withURLParam(legacyReq, "sessionId", sessionID)
 	legacyReq = withChatTestWorkspaceCtx(t, legacyReq)
-	legacyW := httptest.NewRecorder()
-	testHandler.ListChatMessages(legacyW, legacyReq)
-	if legacyW.Code != http.StatusOK {
-		t.Fatalf("ListChatMessages: expected 200, got %d: %s", legacyW.Code, legacyW.Body.String())
-	}
+	legacyW := testutil.Call(t, testHandler.ListChatMessages, legacyReq).Want(http.StatusOK)
 	var legacy []ChatMessageResponse
-	if err := json.Unmarshal(legacyW.Body.Bytes(), &legacy); err != nil {
-		t.Fatalf("decode legacy messages: %v", err)
-	}
+	legacyW.JSON(&legacy)
 	if len(legacy) != 3 || legacy[0].Content != "visible oldest" || legacy[1].Content != "visible middle" || legacy[2].Content != "visible newest" {
 		t.Fatalf("legacy visible messages = %#v", legacy)
 	}

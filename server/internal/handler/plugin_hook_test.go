@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/multica-ai/multica/server/internal/service"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
@@ -52,17 +54,11 @@ func installHookPlugin(t *testing.T) string {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "net:example.com"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install hook plugin: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 	var installed struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
-		t.Fatalf("decode installation: %v", err)
-	}
+	recorder.JSON(&installed)
 	return installed.ID
 }
 
@@ -86,8 +82,7 @@ func TestInvokePluginHookRefusesHostDrivenTriggers(t *testing.T) {
 	installationID := installHookPlugin(t)
 
 	for _, trigger := range []string{plugincontract.TriggerEvent, plugincontract.TriggerAgent, "", "nonsense"} {
-		recorder := httptest.NewRecorder()
-		testHandler.InvokePluginHook(recorder, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": trigger}))
+		recorder := testutil.Call(t, testHandler.InvokePluginHook, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": trigger}))
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("trigger %q: status=%d body=%s, want 400", trigger, recorder.Code, recorder.Body.String())
 		}
@@ -101,15 +96,12 @@ func TestInvokePluginHookRefusesTriggerTheManifestDidNotDeclare(t *testing.T) {
 	cleanupPluginInstallations(t)
 	installationID := installHookPlugin(t)
 
-	recorder := httptest.NewRecorder()
 	// manual_only declares manual, not ui.
-	testHandler.InvokePluginHook(recorder, invokeHookRequest(installationID, "manual_only", map[string]any{"trigger": "ui"}))
+	recorder := testutil.Call(t, testHandler.InvokePluginHook, invokeHookRequest(installationID, "manual_only", map[string]any{"trigger": "ui"}))
 	if recorder.Code == http.StatusOK {
 		t.Fatalf("a hook was invoked through a trigger it never declared: %s", recorder.Body.String())
 	}
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("status=%d body=%s, want 403", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusForbidden, "HTTP status")
 }
 
 func TestInvokePluginHookRefusesUnknownHook(t *testing.T) {
@@ -117,11 +109,7 @@ func TestInvokePluginHookRefusesUnknownHook(t *testing.T) {
 	cleanupPluginInstallations(t)
 	installationID := installHookPlugin(t)
 
-	recorder := httptest.NewRecorder()
-	testHandler.InvokePluginHook(recorder, invokeHookRequest(installationID, "not_declared", map[string]any{"trigger": "manual"}))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s, want 404", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.InvokePluginHook, invokeHookRequest(installationID, "not_declared", map[string]any{"trigger": "manual"})).Want(http.StatusNotFound)
 }
 
 // The flag gates the hook endpoint like every other plugin route: fail closed,
@@ -132,11 +120,7 @@ func TestInvokePluginHookRequiresTheFeatureFlag(t *testing.T) {
 	installationID := installHookPlugin(t)
 
 	withPluginsV1Flag(t, testHandler, false)
-	recorder := httptest.NewRecorder()
-	testHandler.InvokePluginHook(recorder, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": "manual"}))
-	if recorder.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status=%d body=%s, want 503", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.InvokePluginHook, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": "manual"})).Want(http.StatusServiceUnavailable)
 }
 
 // A disabled installation is off, not hidden. A stale tab must not keep
@@ -146,19 +130,11 @@ func TestInvokePluginHookRefusesDisabledInstallation(t *testing.T) {
 	cleanupPluginInstallations(t)
 	installationID := installHookPlugin(t)
 
-	disable := httptest.NewRecorder()
-	testHandler.DisablePlugin(disable, pluginHandlerRequest(http.MethodPost, "/disable", nil, map[string]string{
+	testutil.Call(t, testHandler.DisablePlugin, pluginHandlerRequest(http.MethodPost, "/disable", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if disable.Code != http.StatusOK {
-		t.Fatalf("disable: status=%d body=%s", disable.Code, disable.Body.String())
-	}
+	})).Want(http.StatusOK)
 
-	recorder := httptest.NewRecorder()
-	testHandler.InvokePluginHook(recorder, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": "manual"}))
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("status=%d body=%s, want 403", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.InvokePluginHook, invokeHookRequest(installationID, "summarize", map[string]any{"trigger": "manual"})).Want(http.StatusForbidden)
 }
 
 // The install token is returned once and stored only as a hash, so the same
@@ -234,13 +210,9 @@ func TestRotatePluginTokenPreservesPreviousTokenWhenPreparationFails(t *testing.
 	previous := rotateToken(t, installationID)
 	testHandler.PluginService.DeploymentKey = []byte("invalid")
 
-	response := httptest.NewRecorder()
-	testHandler.RotatePluginToken(response, pluginHandlerRequest(http.MethodPost, "/token", nil, map[string]string{
+	testutil.Call(t, testHandler.RotatePluginToken, pluginHandlerRequest(http.MethodPost, "/token", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if response.Code != http.StatusBadGateway {
-		t.Fatalf("failed preparation status=%d body=%s", response.Code, response.Body.String())
-	}
+	})).Want(http.StatusBadGateway)
 	if _, err := testHandler.PluginService.AuthenticateInstallToken(context.Background(), previous.Token); err != nil {
 		t.Fatalf("failed credential preparation invalidated the previous token: %v", err)
 	}
@@ -254,13 +226,9 @@ func TestRevokePluginTokenStopsAuthentication(t *testing.T) {
 	t.Cleanup(func() { testHandler.PluginService.DeploymentKey = nil })
 
 	issued := rotateToken(t, installationID)
-	recorder := httptest.NewRecorder()
-	testHandler.RevokePluginToken(recorder, pluginHandlerRequest(http.MethodDelete, "/token", nil, map[string]string{
+	testutil.Call(t, testHandler.RevokePluginToken, pluginHandlerRequest(http.MethodDelete, "/token", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("revoke: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusNoContent)
 	if _, err := testHandler.PluginService.AuthenticateInstallToken(context.Background(), issued.Token); err == nil {
 		t.Fatal("a revoked token must not authenticate")
 	}
@@ -279,17 +247,11 @@ func TestAuthenticateInstallTokenRefusesMalformedValues(t *testing.T) {
 
 func rotateToken(t *testing.T, installationID string) pluginTokenResponse {
 	t.Helper()
-	recorder := httptest.NewRecorder()
-	testHandler.RotatePluginToken(recorder, pluginHandlerRequest(http.MethodPost, "/token", nil, map[string]string{
+	recorder := testutil.Call(t, testHandler.RotatePluginToken, pluginHandlerRequest(http.MethodPost, "/token", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("rotate: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var issued pluginTokenResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &issued); err != nil {
-		t.Fatalf("decode token response: %v", err)
-	}
+	recorder.JSON(&issued)
 	return issued
 }
 
@@ -350,11 +312,7 @@ func TestEventDispatchRespectsTheFeatureFlagEndToEnd(t *testing.T) {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "net:" + host},
 	})
-	install := httptest.NewRecorder()
-	testHandler.InstallPlugin(install, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if install.Code != http.StatusCreated {
-		t.Fatalf("install: status=%d body=%s", install.Code, install.Body.String())
-	}
+	testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 
 	dispatch := func() {
 		dispatcher := service.NewPluginEventDispatcher(testHandler.PluginService)

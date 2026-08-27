@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -56,35 +56,19 @@ func TestPatchNotificationPreferencesMergesWithoutReplacing(t *testing.T) {
 		`, testWorkspaceID, testUserID)
 	})
 
-	putRecorder := httptest.NewRecorder()
-	testHandler.UpdateNotificationPreferences(
-		putRecorder,
-		notificationPreferenceRequest(t, http.MethodPut, map[string]string{
-			"status_changes": "muted",
-		}),
-	)
-	if putRecorder.Code != http.StatusOK {
-		t.Fatalf("seed preference: status=%d body=%s", putRecorder.Code, putRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateNotificationPreferences, notificationPreferenceRequest(t, http.MethodPut, map[string]string{
+		"status_changes": "muted",
+	})).Want(http.StatusOK)
 
-	patchRecorder := httptest.NewRecorder()
-	testHandler.PatchNotificationPreferences(
-		patchRecorder,
-		notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
-			"comments": "muted",
-		}),
-	)
-	if patchRecorder.Code != http.StatusOK {
-		t.Fatalf("patch preference: status=%d body=%s", patchRecorder.Code, patchRecorder.Body.String())
-	}
+	patchRecorder := testutil.Call(t, testHandler.PatchNotificationPreferences, notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
+		"comments": "muted",
+	})).Want(http.StatusOK)
 
 	var response struct {
 		WorkspaceID string            `json:"workspace_id"`
 		Preferences map[string]string `json:"preferences"`
 	}
-	if err := json.NewDecoder(patchRecorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode patch response: %v", err)
-	}
+	patchRecorder.Decode(&response)
 	if response.WorkspaceID != testWorkspaceID {
 		t.Fatalf("workspace_id = %q, want %q", response.WorkspaceID, testWorkspaceID)
 	}
@@ -95,16 +79,9 @@ func TestPatchNotificationPreferencesMergesWithoutReplacing(t *testing.T) {
 		t.Fatalf("comments patch missing: %#v", response.Preferences)
 	}
 
-	enableRecorder := httptest.NewRecorder()
-	testHandler.PatchNotificationPreferences(
-		enableRecorder,
-		notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
-			"status_changes": "all",
-		}),
-	)
-	if enableRecorder.Code != http.StatusOK {
-		t.Fatalf("enable preference: status=%d body=%s", enableRecorder.Code, enableRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.PatchNotificationPreferences, notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
+		"status_changes": "all",
+	})).Want(http.StatusOK)
 
 	var persisted []byte
 	if err := testPool.QueryRow(ctx, `
@@ -138,23 +115,14 @@ func TestPatchNotificationPreferencesAcceptsMentions(t *testing.T) {
 		`, testWorkspaceID, testUserID)
 	})
 
-	recorder := httptest.NewRecorder()
-	testHandler.PatchNotificationPreferences(
-		recorder,
-		notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
-			"mentions": "muted",
-		}),
-	)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.PatchNotificationPreferences, notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
+		"mentions": "muted",
+	})).Want(http.StatusOK)
 
 	var response struct {
 		Preferences map[string]string `json:"preferences"`
 	}
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	recorder.Decode(&response)
 	if response.Preferences["mentions"] != "muted" {
 		t.Fatalf("mentions not persisted: %#v", response.Preferences)
 	}
@@ -165,14 +133,7 @@ func TestPatchNotificationPreferencesRejectsUnknownGroups(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	recorder := httptest.NewRecorder()
-	testHandler.PatchNotificationPreferences(
-		recorder,
-		notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
-			"unknown_group": "muted",
-		}),
-	)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.PatchNotificationPreferences, notificationPreferenceRequest(t, http.MethodPatch, map[string]string{
+		"unknown_group": "muted",
+	})).Want(http.StatusBadRequest)
 }

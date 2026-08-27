@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -85,9 +86,7 @@ func TestAgentEnv_AgentOwnerMemberCanRevealAndUpdate(t *testing.T) {
 	req := withURLParam(newRequestAs(ownerUserID, http.MethodGet, "/api/agents/"+agentID+"/env", nil), "id", agentID)
 	w := httptest.NewRecorder()
 	testHandler.GetAgentEnv(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetAgentEnv as agent owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp AgentEnvResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode reveal response: %v", err)
@@ -100,9 +99,7 @@ func TestAgentEnv_AgentOwnerMemberCanRevealAndUpdate(t *testing.T) {
 	req = withURLParam(newRequestAs(ownerUserID, http.MethodPut, "/api/agents/"+agentID+"/env", body), "id", agentID)
 	w = httptest.NewRecorder()
 	testHandler.UpdateAgentEnv(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateAgentEnv as agent owner: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var stored string
 	if err := testPool.QueryRow(ctx, `SELECT custom_env::text FROM agent WHERE id = $1`, agentID).Scan(&stored); err != nil {
@@ -161,11 +158,7 @@ func TestAgentEnv_UnrelatedMemberForbidden(t *testing.T) {
 				method = http.MethodPut
 			}
 			req := withURLParam(newRequestAs(strangerID, method, "/api/agents/"+agentID+"/env", tc.body), "id", agentID)
-			w := httptest.NewRecorder()
-			tc.fn(w, req)
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("expected 403 for an unrelated member, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.fn, req).Want(http.StatusForbidden)
 		})
 	}
 
@@ -200,8 +193,7 @@ func TestAgentEnv_WorkspaceRolesUnchanged(t *testing.T) {
 	// testUserID is the workspace owner and does NOT own this agent.
 	for _, actorID := range []string{testUserID, adminID} {
 		req := withURLParam(newRequestAs(actorID, http.MethodGet, "/api/agents/"+agentID+"/env", nil), "id", agentID)
-		w := httptest.NewRecorder()
-		testHandler.GetAgentEnv(w, req)
+		w := testutil.Call(t, testHandler.GetAgentEnv, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("GetAgentEnv as %s: expected 200, got %d: %s", actorID, w.Code, w.Body.String())
 		}
@@ -246,11 +238,7 @@ func TestAgentEnv_AgentActorRejectedForOwnedAgent(t *testing.T) {
 			req := withURLParam(newRequestAs(ownerUserID, method, "/api/agents/"+targetID+"/env", tc.body), "id", targetID)
 			req.Header.Set("X-Agent-ID", hostAgentID)
 			req.Header.Set("X-Task-ID", hostTaskID)
-			w := httptest.NewRecorder()
-			tc.fn(w, req)
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("expected 403 from an agent actor, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.fn, req).Want(http.StatusForbidden)
 		})
 	}
 }

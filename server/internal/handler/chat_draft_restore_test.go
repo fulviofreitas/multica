@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // withDraftRestoreParams sets both chi URL params in one route context —
@@ -39,34 +40,14 @@ func seedDraftRestore(t *testing.T, sessionID, content string, attachmentIDs []s
 		}
 		ids += "}"
 	}
-	if _, err := testPool.Exec(context.Background(), `
-		INSERT INTO chat_draft_restore (id, chat_session_id, task_id, content, attachment_ids)
-		VALUES ($1, $2, $3, $4, $5::uuid[])
-	`, restoreID, sessionID, uuid.NewString(), content, ids); err != nil {
-		t.Fatalf("seed draft restore: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM chat_draft_restore WHERE id = $1`, restoreID)
-	})
+	dbfx.InsertNoID(t, "chat_draft_restore", testutil.Cols{"id": restoreID, "chat_session_id": sessionID, "task_id": uuid.NewString(), "content": content, "attachment_ids": ids}, "id = $1", restoreID)
 	return restoreID
 }
 
 func seedDetachedChatAttachment(t *testing.T, sessionID string) string {
 	t.Helper()
 	var attachmentID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO attachment (
-			workspace_id, chat_session_id, uploader_type, uploader_id,
-			filename, url, content_type, size_bytes
-		)
-		VALUES ($1, $2, 'member', $3, 'notes.txt', 'https://files.test/notes.txt', 'text/plain', 12)
-		RETURNING id
-	`, testWorkspaceID, sessionID, testUserID).Scan(&attachmentID); err != nil {
-		t.Fatalf("seed detached attachment: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID)
-	})
+	attachmentID = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "chat_session_id": sessionID, "uploader_type": testutil.Raw("'member'"), "uploader_id": testUserID, "filename": testutil.Raw("'notes.txt'"), "url": testutil.Raw("'https://files.test/notes.txt'"), "content_type": testutil.Raw("'text/plain'"), "size_bytes": testutil.Raw("12")})
 	return attachmentID
 }
 
@@ -83,9 +64,7 @@ func TestChatDraftRestores_CreatorFetchesAndConsumes(t *testing.T) {
 	listReq = withChatTestWorkspaceCtx(t, listReq)
 	listW := httptest.NewRecorder()
 	testHandler.ListChatDraftRestores(listW, listReq)
-	if listW.Code != http.StatusOK {
-		t.Fatalf("list: expected 200, got %d: %s", listW.Code, listW.Body.String())
-	}
+	testutil.Equal(t, listW.Code, http.StatusOK, "HTTP status")
 	var resp ChatDraftRestoresResponse
 	if err := json.Unmarshal(listW.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode list: %v", err)
@@ -111,8 +90,7 @@ func TestChatDraftRestores_CreatorFetchesAndConsumes(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		delReq := withDraftRestoreParams(newRequest(http.MethodDelete, "/api/chat/sessions/"+sessionID+"/draft-restores/"+restoreID, nil), sessionID, restoreID)
 		delReq = withChatTestWorkspaceCtx(t, delReq)
-		delW := httptest.NewRecorder()
-		testHandler.ConsumeChatDraftRestore(delW, delReq)
+		delW := testutil.Call(t, testHandler.ConsumeChatDraftRestore, delReq)
 		if delW.Code != http.StatusNoContent {
 			t.Fatalf("consume call %d: expected 204, got %d: %s", i+1, delW.Code, delW.Body.String())
 		}
@@ -120,9 +98,7 @@ func TestChatDraftRestores_CreatorFetchesAndConsumes(t *testing.T) {
 
 	listW = httptest.NewRecorder()
 	testHandler.ListChatDraftRestores(listW, withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/draft-restores", nil), "sessionId", sessionID)))
-	if listW.Code != http.StatusOK {
-		t.Fatalf("relist: expected 200, got %d", listW.Code)
-	}
+	testutil.Equal(t, listW.Code, http.StatusOK, "HTTP status")
 	resp = ChatDraftRestoresResponse{}
 	if err := json.Unmarshal(listW.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode relist: %v", err)
@@ -161,20 +137,12 @@ func TestChatDraftRestores_NonCreatorForbidden(t *testing.T) {
 	listReq := withURLParam(newRequest(http.MethodGet, "/api/chat/sessions/"+sessionID+"/draft-restores", nil), "sessionId", sessionID)
 	listReq = withChatTestWorkspaceCtx(t, listReq)
 	listReq.Header.Set("X-User-ID", otherUserID)
-	listW := httptest.NewRecorder()
-	testHandler.ListChatDraftRestores(listW, listReq)
-	if listW.Code != http.StatusForbidden {
-		t.Fatalf("list as non-creator: expected 403, got %d: %s", listW.Code, listW.Body.String())
-	}
+	testutil.Call(t, testHandler.ListChatDraftRestores, listReq).Want(http.StatusForbidden)
 
 	delReq := withDraftRestoreParams(newRequest(http.MethodDelete, "/api/chat/sessions/"+sessionID+"/draft-restores/"+restoreID, nil), sessionID, restoreID)
 	delReq = withChatTestWorkspaceCtx(t, delReq)
 	delReq.Header.Set("X-User-ID", otherUserID)
-	delW := httptest.NewRecorder()
-	testHandler.ConsumeChatDraftRestore(delW, delReq)
-	if delW.Code != http.StatusForbidden {
-		t.Fatalf("consume as non-creator: expected 403, got %d: %s", delW.Code, delW.Body.String())
-	}
+	testutil.Call(t, testHandler.ConsumeChatDraftRestore, delReq).Want(http.StatusForbidden)
 
 	var count int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM chat_draft_restore WHERE id = $1`, restoreID).Scan(&count); err != nil {
@@ -195,11 +163,7 @@ func TestDeleteChatSession_PrunesDraftRestores(t *testing.T) {
 	req := withURLParam(newRequest(http.MethodDelete, "/api/chat/sessions/"+sessionID, nil), "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
 	req.Header.Set("X-User-ID", testUserID)
-	w := httptest.NewRecorder()
-	testHandler.DeleteChatSession(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteChatSession: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteChatSession, req).Want(http.StatusNoContent)
 
 	var count int
 	if err := testPool.QueryRow(context.Background(),
@@ -240,12 +204,8 @@ func TestDeleteAgentRuntime_PrunesDraftRestoresOfSystemAgentSessions(t *testing.
 	sessionID := createHandlerTestChatSession(t, systemAgent)
 	seedDraftRestore(t, sessionID, "prompt stranded by the agent cascade", nil)
 
-	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, "/api/runtimes/"+runtimeID, nil), "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if agentExists(t, systemAgent) {
 		t.Fatal("system agent should have been deleted — the cascade under test never ran")
@@ -270,12 +230,8 @@ func TestDeleteAgentRuntime_KeepsDraftRestoresOfUnboundAgentSessions(t *testing.
 	sessionID := createHandlerTestChatSession(t, archivedAgent)
 	seedDraftRestore(t, sessionID, "prompt that must survive the machine being retired", nil)
 
-	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, "/api/runtimes/"+runtimeID, nil), "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("DeleteAgentRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	if !agentExists(t, archivedAgent) {
 		t.Fatal("archived user agent must survive its runtime as an unbound agent")
@@ -298,16 +254,7 @@ func TestDeleteWorkspace_PrunesDraftRestoresOfCascadedSessions(t *testing.T) {
 	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
 
 	var wsID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description)
-		VALUES ($1, $2, '')
-		RETURNING id
-	`, "Handler Test Draft Restore Cascade", slug).Scan(&wsID); err != nil {
-		t.Fatalf("create workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, wsID)
-	})
+	wsID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Handler Test Draft Restore Cascade", "slug": slug, "description": testutil.Raw("''")})
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO member (workspace_id, user_id, role)
 		VALUES ($1, $2, 'owner')
@@ -348,12 +295,8 @@ func TestDeleteWorkspace_PrunesDraftRestoresOfCascadedSessions(t *testing.T) {
 	}
 	seedDraftRestore(t, sessionID, "prompt stranded by the workspace cascade", nil)
 
-	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+wsID, nil), "id", wsID)
-	testHandler.DeleteWorkspace(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteWorkspace: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
 
 	if n := countDraftRestores(t, sessionID); n != 0 {
 		t.Errorf("draft restores of a workspace-cascaded session must be pruned, count = %d", n)

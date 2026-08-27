@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestIssueMovePositionUsesRelativeAnchors(t *testing.T) {
@@ -73,16 +74,7 @@ func TestMoveIssueRejectsUnsafeInputs(t *testing.T) {
 	})
 
 	var foreignWorkspaceID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, '', 'MOV')
-		RETURNING id
-	`, "Move boundary foreign workspace "+suffix, "move-boundary-"+suffix).Scan(&foreignWorkspaceID); err != nil {
-		t.Fatalf("insert foreign workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-	})
+	foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Move boundary foreign workspace " + suffix, "slug": "move-boundary-" + suffix, "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'MOV'")})
 
 	var foreignAnchorID string
 	if err := testPool.QueryRow(ctx, `
@@ -148,18 +140,14 @@ func TestMoveIssueRejectsUnsafeInputs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest(
 				http.MethodPost,
 				"/api/issues/"+movedIssueID+"/move",
 				tc.body,
 			)
 			req = withURLParam(req, "id", movedIssueID)
-			testHandler.MoveIssue(w, req)
-
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("MoveIssue: expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.MoveIssue, req).Want(http.StatusBadRequest)
 			if !strings.Contains(w.Body.String(), tc.wantError) {
 				t.Fatalf("MoveIssue: expected error %q, got %s", tc.wantError, w.Body.String())
 			}

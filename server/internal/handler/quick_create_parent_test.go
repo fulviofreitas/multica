@@ -11,6 +11,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/entitlement/entitlementtest"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -92,15 +93,7 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, foreignUserID)
 	})
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, $3, $4) RETURNING id
-	`, "QuickCreate Foreign WS", "quickcreate-foreign-ws", "", "QCF").Scan(&foreignWorkspaceID); err != nil {
-		t.Fatalf("create foreign workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-	})
+	foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "QuickCreate Foreign WS", "slug": "quickcreate-foreign-ws", "description": "", "issue_prefix": "QCF"})
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO issue (workspace_id, title, creator_id, creator_type, number)
 		VALUES ($1, 'quick-create parent (foreign)', $2, 'member',
@@ -133,7 +126,7 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 
 	t.Run("same workspace parent enqueues with context", func(t *testing.T) {
 		attachmentID := "019ec09d-6222-722b-bdfa-427b105d80be"
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id":        agentID,
 			"prompt":          "Create a follow-up issue for the local parent",
@@ -142,14 +135,9 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 			"parent_issue_id": localParentID,
 			"attachment_ids":  []string{attachmentID},
 		})
-		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusAccepted)
 		var resp QuickCreateIssueResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&resp)
 		t.Cleanup(func() {
 			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, resp.TaskID)
 		})
@@ -207,23 +195,17 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 			testHandler.TaskService.Entitlements = priorProvider
 		})
 
-		w := httptest.NewRecorder()
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id": agentID,
 			"prompt":   "This task must not be queued when the workspace is full",
 		})
-		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusPaymentRequired {
-			t.Fatalf("expected 402, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusPaymentRequired)
 		var body struct {
 			Code           string `json:"code"`
 			Limit          int    `json:"limit"`
 			PolicyRevision int    `json:"policy_revision"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-			t.Fatalf("decode issue-limit response: %v", err)
-		}
+		w.Decode(&body)
 		if body.Code != "issue_limit_reached" || body.Limit != issueCount || body.PolicyRevision != 23 {
 			t.Fatalf("unexpected issue-limit response: %+v", body)
 		}
@@ -234,16 +216,13 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 
 	t.Run("foreign workspace parent is rejected", func(t *testing.T) {
 		before := countQuickCreateTasks(t)
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id":        agentID,
 			"prompt":          "Try to smuggle a foreign parent",
 			"parent_issue_id": foreignParentID,
 		})
-		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for foreign parent, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusBadRequest)
 		if got := countQuickCreateTasks(t); got != before {
 			// Any increase means the foreign-parent request enqueued a
 			// task despite the 400 — the trust boundary leaked.
@@ -253,16 +232,13 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 
 	t.Run("bogus uuid parent is rejected", func(t *testing.T) {
 		before := countQuickCreateTasks(t)
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id":        agentID,
 			"prompt":          "Try a malformed parent UUID",
 			"parent_issue_id": "not-a-uuid",
 		})
-		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for bogus parent, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusBadRequest)
 		if got := countQuickCreateTasks(t); got != before {
 			t.Fatalf("bogus parent must not enqueue a task: expected %d quick-create tasks, got %d", before, got)
 		}
@@ -270,16 +246,13 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 
 	t.Run("bogus uuid attachment id is rejected", func(t *testing.T) {
 		before := countQuickCreateTasks(t)
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/quick-create", map[string]any{
 			"agent_id":       agentID,
 			"prompt":         "Try a malformed attachment UUID",
 			"attachment_ids": []string{"not-a-uuid"},
 		})
-		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for bogus attachment id, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusBadRequest)
 		if got := countQuickCreateTasks(t); got != before {
 			t.Fatalf("bogus attachment id must not enqueue a task: expected %d quick-create tasks, got %d", before, got)
 		}
@@ -300,12 +273,9 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 				"prompt":   "Try an invalid explicit field",
 				tc.field:   tc.value,
 			}
-			w := httptest.NewRecorder()
+
 			req := newRequest("POST", "/api/issues/quick-create", body)
-			testHandler.QuickCreateIssue(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.QuickCreateIssue, req).Want(http.StatusBadRequest)
 			if got := countQuickCreateTasks(t); got != before {
 				t.Fatalf("invalid field must not enqueue a task: expected %d, got %d", before, got)
 			}
@@ -332,9 +302,7 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 			"priority": "high",
 		})
 		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("explicit fields on 0.4.2: expected 422, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusUnprocessableEntity, "HTTP status")
 		if got := countQuickCreateTasks(t); got != before {
 			t.Fatalf("unsupported explicit fields must not enqueue: expected %d, got %d", before, got)
 		}
@@ -345,9 +313,7 @@ func TestQuickCreateIssueParentTrustBoundary(t *testing.T) {
 			"prompt":   "Basic quick create remains backward compatible",
 		})
 		testHandler.QuickCreateIssue(w, req)
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("basic quick create on 0.4.2: expected 202, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusAccepted, "HTTP status")
 		var resp QuickCreateIssueResponse
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			t.Fatalf("decode response: %v", err)

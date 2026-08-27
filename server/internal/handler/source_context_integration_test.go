@@ -17,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -26,9 +27,7 @@ func TestWriteSourceContextErrorHidesInternalDetails(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	(&Handler{}).writeSourceContextError(recorder, errors.New("postgres password=do-not-leak"), service.SourceContextLimitUsage{})
 
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
-	}
+	testutil.Equal(t, recorder.Code, http.StatusInternalServerError, "HTTP status")
 	if strings.Contains(recorder.Body.String(), "do-not-leak") {
 		t.Fatalf("internal error leaked in response: %s", recorder.Body.String())
 	}
@@ -109,7 +108,6 @@ func TestRetrySourceContextQuickCreateReturnsIssueLimitRecovery(t *testing.T) {
 		testHandler.TaskService.Entitlements = priorProvider
 	})
 
-	recorder := httptest.NewRecorder()
 	request := withURLParam(newRequest(http.MethodPost, "/api/tasks/"+taskID+"/retry-source-context", nil), "taskId", taskID)
 	member, err := testHandler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      util.MustParseUUID(testUserID),
@@ -119,18 +117,13 @@ func TestRetrySourceContextQuickCreateReturnsIssueLimitRecovery(t *testing.T) {
 		t.Fatalf("load retry caller membership: %v", err)
 	}
 	request = request.WithContext(middleware.SetMemberContext(request.Context(), testWorkspaceID, member))
-	testHandler.RetrySourceContextQuickCreate(recorder, request)
-	if recorder.Code != http.StatusPaymentRequired {
-		t.Fatalf("source-context retry at limit = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.RetrySourceContextQuickCreate, request).Want(http.StatusPaymentRequired)
 	var body struct {
 		Code           string `json:"code"`
 		Limit          int    `json:"limit"`
 		PolicyRevision int    `json:"policy_revision"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode retry issue-limit response: %v", err)
-	}
+	recorder.JSON(&body)
 	if body.Code != "issue_limit_reached" || body.Limit != issueCount || body.PolicyRevision != 43 {
 		t.Fatalf("retry issue-limit response = %+v", body)
 	}
@@ -249,16 +242,10 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, sourceIssueID)
 	})
 
-	previewRecorder := httptest.NewRecorder()
 	previewRequest := withURLParam(newRequest(http.MethodGet, "/api/comments/"+selectedID+"/sub-issue-preview", nil), "commentId", selectedID)
-	testHandler.PreviewCommentSubIssue(previewRecorder, previewRequest)
-	if previewRecorder.Code != http.StatusOK {
-		t.Fatalf("preview = %d: %s", previewRecorder.Code, previewRecorder.Body.String())
-	}
+	previewRecorder := testutil.Call(t, testHandler.PreviewCommentSubIssue, previewRequest).Want(http.StatusOK)
 	var preview sourceContextPreviewResponse
-	if err := json.Unmarshal(previewRecorder.Body.Bytes(), &preview); err != nil {
-		t.Fatalf("decode preview: %v", err)
-	}
+	previewRecorder.JSON(&preview)
 	wantThreadHistory := []string{rootID, earlierSiblingID, earlierNestedID, replyID, selectedID}
 	if len(preview.CommentThread) != len(wantThreadHistory) {
 		t.Fatalf("preview thread history length = %d, want %d: %#v", len(preview.CommentThread), len(wantThreadHistory), preview.CommentThread)
@@ -313,15 +300,12 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	if _, err := testPool.Exec(ctx, `UPDATE comment SET content = 'changed before submit', revision = revision + 1, updated_at = now() WHERE id = $1`, earlierSiblingID); err != nil {
 		t.Fatalf("edit earlier thread comment before submit: %v", err)
 	}
-	staleRecorder := httptest.NewRecorder()
+
 	staleRequest := withURLParam(newRequest(http.MethodPost, "/api/comments/"+selectedID+"/sub-issues", map[string]any{
 		"mode": "manual", "capture_token": preview.CaptureToken,
 		"issue": map[string]any{"title": "must not be created", "status": "todo", "priority": "none"},
 	}), "commentId", selectedID)
-	testHandler.CreateCommentSubIssue(staleRecorder, staleRequest)
-	if staleRecorder.Code != http.StatusConflict {
-		t.Fatalf("stale source create = %d: %s", staleRecorder.Code, staleRecorder.Body.String())
-	}
+	staleRecorder := testutil.Call(t, testHandler.CreateCommentSubIssue, staleRequest).Want(http.StatusConflict)
 	var staleBody map[string]any
 	if err := json.Unmarshal(staleRecorder.Body.Bytes(), &staleBody); err != nil || staleBody["code"] != "source_context_changed" {
 		t.Fatalf("stale source body = %#v, err=%v", staleBody, err)
@@ -374,7 +358,7 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 
 		beforeReads, beforeUploads := store.streamCopyCalls()
 		prompt := "source context must not enqueue while the workspace is full"
-		fullRecorder := httptest.NewRecorder()
+
 		fullRequest := withURLParam(newRequest(http.MethodPost, "/api/comments/"+selectedID+"/sub-issues", map[string]any{
 			"mode":          "agent",
 			"capture_token": preview.CaptureToken,
@@ -383,10 +367,7 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 				"prompt":   prompt,
 			},
 		}), "commentId", selectedID)
-		testHandler.CreateCommentSubIssue(fullRecorder, fullRequest)
-		if fullRecorder.Code != http.StatusPaymentRequired {
-			t.Fatalf("full source-context create = %d: %s", fullRecorder.Code, fullRecorder.Body.String())
-		}
+		fullRecorder := testutil.Call(t, testHandler.CreateCommentSubIssue, fullRequest).Want(http.StatusPaymentRequired)
 		var body struct {
 			Code string `json:"code"`
 		}
@@ -434,7 +415,6 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 		t.Fatalf("delete foreign issue: %v", err)
 	}
 
-	createRecorder := httptest.NewRecorder()
 	createRequest := withURLParam(newRequest(http.MethodPost, "/api/comments/"+selectedID+"/sub-issues", map[string]any{
 		"mode":          "manual",
 		"capture_token": preview.CaptureToken,
@@ -442,14 +422,9 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 			"title": "new independent task", "description": "new instructions", "status": "todo", "priority": "none", "stage": 2,
 		},
 	}), "commentId", selectedID)
-	testHandler.CreateCommentSubIssue(createRecorder, createRequest)
-	if createRecorder.Code != http.StatusCreated {
-		t.Fatalf("manual source create = %d: %s", createRecorder.Code, createRecorder.Body.String())
-	}
+	createRecorder := testutil.Call(t, testHandler.CreateCommentSubIssue, createRequest).Want(http.StatusCreated)
 	var created IssueResponse
-	if err := json.Unmarshal(createRecorder.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode created issue: %v", err)
-	}
+	createRecorder.JSON(&created)
 	targetIssueID = created.ID
 	if created.ParentIssueID == nil || *created.ParentIssueID != sourceIssueID || created.Stage == nil || *created.Stage != 2 {
 		t.Fatalf("created relation = parent %#v stage %#v", created.ParentIssueID, created.Stage)
@@ -475,12 +450,9 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 		t.Fatalf("stored clone ids = %#v", selectedSnapshot.Attachments[0])
 	}
 	cloneKey := "workspaces/" + testWorkspaceID + "/source-context/" + cloneID + ".txt"
-	deleteCloneRecorder := httptest.NewRecorder()
+
 	deleteCloneRequest := withURLParam(newRequest(http.MethodDelete, "/api/attachments/"+cloneID, nil), "id", cloneID)
-	testHandler.DeleteAttachment(deleteCloneRecorder, deleteCloneRequest)
-	if deleteCloneRecorder.Code != http.StatusNotFound {
-		t.Fatalf("delete immutable source-context clone = %d: %s", deleteCloneRecorder.Code, deleteCloneRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAttachment, deleteCloneRequest).Want(http.StatusNotFound)
 	if _, err := store.GetReader(ctx, cloneKey); err != nil {
 		t.Fatalf("immutable source-context clone missing after direct delete: %v", err)
 	}
@@ -575,9 +547,9 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	}}) {
 		t.Fatalf("attachment changes = %#v, want removed issue.txt from description", attachmentDetail.ChangeDetails.DescriptionAttachmentChanges)
 	}
-	issueDownloadRecorder := httptest.NewRecorder()
+
 	issueDownloadRequest := withURLParam(newRequest(http.MethodGet, "/api/attachments/"+issueCloneID+"/download", nil), "id", issueCloneID)
-	testHandler.DownloadAttachment(issueDownloadRecorder, issueDownloadRequest)
+	issueDownloadRecorder := testutil.Call(t, testHandler.DownloadAttachment, issueDownloadRequest)
 	if issueDownloadRecorder.Code != http.StatusOK || issueDownloadRecorder.Body.String() != "issue attachment" {
 		t.Fatalf("snapshot issue clone download after live deletion = %d %q", issueDownloadRecorder.Code, issueDownloadRecorder.Body.String())
 	}
@@ -608,11 +580,7 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	// Deleting the source explicitly detaches the target, clears stage, bumps
 	// revision, and leaves its immutable context readable.
 	beforeRevision := issue.Revision
-	deleteRecorder := httptest.NewRecorder()
-	testHandler.DeleteIssue(deleteRecorder, withURLParam(newRequest(http.MethodDelete, "/api/issues/"+sourceIssueID, nil), "id", sourceIssueID))
-	if deleteRecorder.Code != http.StatusNoContent {
-		t.Fatalf("delete source issue = %d: %s", deleteRecorder.Code, deleteRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteIssue, withURLParam(newRequest(http.MethodDelete, "/api/issues/"+sourceIssueID, nil), "id", sourceIssueID)).Want(http.StatusNoContent)
 	sourceIssueID = ""
 	detached, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(targetIssueID))
 	if err != nil {
@@ -639,9 +607,9 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	if deletedDetail.SourceIssueState != "deleted" || deletedDetail.CanOpenCurrentSource {
 		t.Fatalf("deleted-source detail = state %q open=%v", deletedDetail.SourceIssueState, deletedDetail.CanOpenCurrentSource)
 	}
-	downloadRecorder := httptest.NewRecorder()
+
 	downloadRequest := withURLParam(newRequest(http.MethodGet, "/api/attachments/"+cloneID+"/download", nil), "id", cloneID)
-	testHandler.DownloadAttachment(downloadRecorder, downloadRequest)
+	downloadRecorder := testutil.Call(t, testHandler.DownloadAttachment, downloadRequest)
 	if downloadRecorder.Code != http.StatusOK || downloadRecorder.Body.String() != "selected attachment" {
 		t.Fatalf("snapshot clone download after source deletion = %d %q", downloadRecorder.Code, downloadRecorder.Body.String())
 	}
@@ -649,11 +617,7 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	// Deleting the target removes DB ownership atomically and leaves durable
 	// intents for the legacy no-result bulk object deletion path. The sweeper
 	// then reclaims exactly those now-unreferenced clone objects.
-	targetDeleteRecorder := httptest.NewRecorder()
-	testHandler.DeleteIssue(targetDeleteRecorder, withURLParam(newRequest(http.MethodDelete, "/api/issues/"+targetIssueID, nil), "id", targetIssueID))
-	if targetDeleteRecorder.Code != http.StatusNoContent {
-		t.Fatalf("delete target issue = %d: %s", targetDeleteRecorder.Code, targetDeleteRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteIssue, withURLParam(newRequest(http.MethodDelete, "/api/issues/"+targetIssueID, nil), "id", targetIssueID)).Want(http.StatusNoContent)
 	targetIssueID = ""
 	var contextExists, cloneExists bool
 	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_source_context WHERE id = $1)`, contextID).Scan(&contextExists); err != nil {
@@ -741,13 +705,9 @@ func TestBatchDeleteParentAndChildPublishesOnlySurvivingDetach(t *testing.T) {
 		updatedIDs = append(updatedIDs, issue.ID)
 	})
 
-	recorder := httptest.NewRecorder()
-	testHandler.BatchDeleteIssues(recorder, newRequest(http.MethodPost, "/api/issues/batch-delete", map[string]any{
+	recorder := testutil.Call(t, testHandler.BatchDeleteIssues, newRequest(http.MethodPost, "/api/issues/batch-delete", map[string]any{
 		"issue_ids": []string{parentID, childID, parentID},
-	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("batch delete = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var response map[string]int
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response["deleted"] != 2 {
 		t.Fatalf("batch delete response = %#v, err=%v", response, err)

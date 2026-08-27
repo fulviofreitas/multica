@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -80,19 +80,13 @@ func statusCategoryQuery(projectID string) issueTableQuerySpec {
 func TestIssueTableStatusCategoryGroupsFoldCustomStatuses(t *testing.T) {
 	projectID, _ := seedStatusCategoryFixture(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{Kind: "status_category"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var groups issueTableGroupsResponse
-	if err := json.NewDecoder(w.Body).Decode(&groups); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	w.Decode(&groups)
 
 	counts := map[string]int64{}
 	for _, group := range groups.Groups {
@@ -117,20 +111,14 @@ func TestIssueTableStatusCategoryRowsReturnCustomStatusIssues(t *testing.T) {
 	projectID, customKey := seedStatusCategoryFixture(t)
 
 	groupKey := statusCategoryGroupKey("in_review")
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableRows(w, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
 		Query:    statusCategoryQuery(projectID),
 		Group:    issueTableGroupSpec{Kind: "status_category"},
 		GroupKey: &groupKey,
 		Page:     issueTablePageRequest{Limit: 50},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("rows status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var rows issueTableRowsResponse
-	if err := json.NewDecoder(w.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode rows: %v", err)
-	}
+	w.Decode(&rows)
 
 	byStatus := map[string]int{}
 	for _, row := range rows.Rows {
@@ -159,8 +147,7 @@ func TestIssueTableStatusCategoryRowsReturnCustomStatusIssues(t *testing.T) {
 func TestIssueTableCompoundStatusCategoryCellsFoldCustomStatuses(t *testing.T) {
 	projectID, customKey := seedStatusCategoryFixture(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{
 			Kind:      "compound",
@@ -168,14 +155,9 @@ func TestIssueTableCompoundStatusCategoryCellsFoldCustomStatuses(t *testing.T) {
 			Secondary: "status_category",
 		},
 		Page: issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var groups issueTableGroupsResponse
-	if err := json.NewDecoder(w.Body).Decode(&groups); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	w.Decode(&groups)
 	if len(groups.Groups) != 1 {
 		t.Fatalf("groups = %d, want 1 project lane", len(groups.Groups))
 	}
@@ -195,8 +177,7 @@ func TestIssueTableCompoundStatusCategoryCellsFoldCustomStatuses(t *testing.T) {
 
 	// And the cell's own group_key has to page back the same three rows.
 	cellKey := compoundCellGroupKey(groups.Groups[0].Key, "in_review", true)
-	rowsRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableRows(rowsRecorder, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+	rowsRecorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{
 			Kind:      "compound",
@@ -205,14 +186,9 @@ func TestIssueTableCompoundStatusCategoryCellsFoldCustomStatuses(t *testing.T) {
 		},
 		GroupKey: &cellKey,
 		Page:     issueTablePageRequest{Limit: 50},
-	}))
-	if rowsRecorder.Code != http.StatusOK {
-		t.Fatalf("cell rows status = %d: %s", rowsRecorder.Code, rowsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var cellRows issueTableRowsResponse
-	if err := json.NewDecoder(rowsRecorder.Body).Decode(&cellRows); err != nil {
-		t.Fatalf("decode cell rows: %v", err)
-	}
+	rowsRecorder.Decode(&cellRows)
 	if len(cellRows.Rows) != 3 {
 		t.Fatalf("cell rows = %d, want 3", len(cellRows.Rows))
 	}
@@ -252,8 +228,7 @@ func TestIssueTableStatusCategoryMatchesStatusWithoutCustomStatuses(t *testing.T
 
 	collect := func(kind string) map[string]int64 {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+		w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 			Query: statusCategoryQuery(projectID),
 			Group: issueTableGroupSpec{Kind: kind},
 			Page:  issueTablePageRequest{Limit: 100},
@@ -338,15 +313,11 @@ func TestIssueTableStatusCategoryReadsCatalogOncePerRequest(t *testing.T) {
 	projectID, _ := seedStatusCategoryFixture(t)
 	counter := withCountingCatalog(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{Kind: "status_category"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 
 	// Exactly one, not "at most one": a zero would mean the counter never saw
 	// the request and the assertion proved nothing.
@@ -364,8 +335,7 @@ func TestIssueTableCompoundStatusCategoryReadsCatalogOncePerRequest(t *testing.T
 	projectID, _ := seedStatusCategoryFixture(t)
 	counter := withCountingCatalog(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{
 			Kind:      "compound",
@@ -373,10 +343,7 @@ func TestIssueTableCompoundStatusCategoryReadsCatalogOncePerRequest(t *testing.T
 			Secondary: "status_category",
 		},
 		Page: issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	if counter.entryReads != 1 {
 		t.Fatalf("catalog entry reads = %d, want exactly 1", counter.entryReads)
 	}
@@ -392,15 +359,11 @@ func TestIssueTableStatusGroupingReadsNoCatalog(t *testing.T) {
 	projectID, _ := seedStatusCategoryFixture(t)
 	counter := withCountingCatalog(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{Kind: "status"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	if counter.entryReads != 0 || counter.categoryReads != 0 {
 		t.Fatalf("plain status grouping read the catalog (%d entry, %d category), want 0",
 			counter.entryReads, counter.categoryReads)
@@ -415,19 +378,13 @@ func TestIssueTableStatusGroupingReadsNoCatalog(t *testing.T) {
 func TestIssueTableStatusGroupingCarriesCustomStatusGroups(t *testing.T) {
 	projectID, customKey := seedStatusCategoryFixture(t)
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: statusCategoryQuery(projectID),
 		Group: issueTableGroupSpec{Kind: "status"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var groups issueTableGroupsResponse
-	if err := json.NewDecoder(w.Body).Decode(&groups); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	w.Decode(&groups)
 
 	counts := map[string]int64{}
 	for _, group := range groups.Groups {
@@ -442,20 +399,14 @@ func TestIssueTableStatusGroupingCarriesCustomStatusGroups(t *testing.T) {
 
 	// And its group_key has to page back its own rows.
 	groupKey := "status:" + customKey
-	rowsRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableRows(rowsRecorder, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+	rowsRecorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
 		Query:    statusCategoryQuery(projectID),
 		Group:    issueTableGroupSpec{Kind: "status"},
 		GroupKey: &groupKey,
 		Page:     issueTablePageRequest{Limit: 50},
-	}))
-	if rowsRecorder.Code != http.StatusOK {
-		t.Fatalf("rows status = %d: %s", rowsRecorder.Code, rowsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var rows issueTableRowsResponse
-	if err := json.NewDecoder(rowsRecorder.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode rows: %v", err)
-	}
+	rowsRecorder.Decode(&rows)
 	if len(rows.Rows) != 2 {
 		t.Fatalf("custom status rows = %d, want 2", len(rows.Rows))
 	}
@@ -471,38 +422,26 @@ func TestIssueTableFiltersAcceptCustomStatusKeys(t *testing.T) {
 	query := statusCategoryQuery(projectID)
 	query.Filters = issueTableFiltersRequest{Statuses: []string{customKey}}
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest(http.MethodPost, "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: query,
 		Group: issueTableGroupSpec{Kind: "status_category"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var groups issueTableGroupsResponse
-	if err := json.NewDecoder(w.Body).Decode(&groups); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	w.Decode(&groups)
 	if groups.Total != 2 {
 		t.Fatalf("total = %d, want 2 (only the QA rows)", groups.Total)
 	}
 
 	groupKey := statusCategoryGroupKey("in_review")
-	rowsRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableRows(rowsRecorder, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
+	rowsRecorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", issueTableRowsRequest{
 		Query:    query,
 		Group:    issueTableGroupSpec{Kind: "status_category"},
 		GroupKey: &groupKey,
 		Page:     issueTablePageRequest{Limit: 50},
-	}))
-	if rowsRecorder.Code != http.StatusOK {
-		t.Fatalf("rows status = %d, want 200: %s", rowsRecorder.Code, rowsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var rows issueTableRowsResponse
-	if err := json.NewDecoder(rowsRecorder.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode rows: %v", err)
-	}
+	rowsRecorder.Decode(&rows)
 	// The in_review column holds 3 issues, but only the 2 on `qa` match the filter.
 	if len(rows.Rows) != 2 {
 		t.Fatalf("rows = %d, want 2", len(rows.Rows))
@@ -513,12 +452,8 @@ func TestIssueTableFiltersAcceptCustomStatusKeys(t *testing.T) {
 		}
 	}
 
-	facetsRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableFacets(facetsRecorder, newRequest(http.MethodPost, "/api/issues/table/facets", issueTableFacetsRequest{
+	testutil.Call(t, testHandler.ListIssueTableFacets, newRequest(http.MethodPost, "/api/issues/table/facets", issueTableFacetsRequest{
 		Query:  query,
 		Facets: []issueTableFacetSpec{{Kind: "status"}},
-	}))
-	if facetsRecorder.Code != http.StatusOK {
-		t.Fatalf("facets status = %d, want 200: %s", facetsRecorder.Code, facetsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 }

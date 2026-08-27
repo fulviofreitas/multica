@@ -2,11 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateComment_TriggeredTaskRejectsTopLevelComment exercises the full
@@ -23,7 +23,6 @@ func TestCreateComment_TriggeredTaskRejectsTopLevelComment(t *testing.T) {
 
 	fx := newRunningSquadLeaderTaskFixture(t)
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
 		"content": "dispatching a squad from this task",
 	})
@@ -31,18 +30,13 @@ func TestCreateComment_TriggeredTaskRejectsTopLevelComment(t *testing.T) {
 	r.Header.Set("X-Agent-ID", fx.LeaderID)
 	r.Header.Set("X-Task-ID", fx.TaskID)
 
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("CreateComment top-level: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusConflict)
 	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
 		t.Fatalf("expected rejected top-level comment not to be stored, got %d", got)
 	}
 
 	var body map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode error response: %v", err)
-	}
+	w.Decode(&body)
 	msg, _ := body["error"].(string)
 	// Pin the three semantic pieces without locking the exact wording: why it
 	// was rejected, the comment to reply under, and the actionable fix. The last
@@ -69,7 +63,6 @@ func TestCreateComment_TriggeredTaskAllowsReplyUnderTrigger(t *testing.T) {
 
 	fx := newRunningSquadLeaderTaskFixture(t)
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
 		"content":   "replying under the trigger comment",
 		"parent_id": fx.TriggerCommentID,
@@ -78,10 +71,7 @@ func TestCreateComment_TriggeredTaskAllowsReplyUnderTrigger(t *testing.T) {
 	r.Header.Set("X-Agent-ID", fx.LeaderID)
 	r.Header.Set("X-Task-ID", fx.TaskID)
 
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment reply-under-trigger: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 }
 
 // TestCreateComment_TriggeredTaskRejectsForeignParent covers the resumed-session
@@ -108,7 +98,6 @@ func TestCreateComment_TriggeredTaskRejectsForeignParent(t *testing.T) {
 		t.Fatalf("create foreign parent comment: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+fx.IssueID+"/comments", map[string]any{
 		"content":   "posting under a parent carried over from a previous turn",
 		"parent_id": foreignParentID,
@@ -117,18 +106,13 @@ func TestCreateComment_TriggeredTaskRejectsForeignParent(t *testing.T) {
 	r.Header.Set("X-Agent-ID", fx.LeaderID)
 	r.Header.Set("X-Task-ID", fx.TaskID)
 
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("CreateComment foreign parent: expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusConflict)
 	if got := countAgentCommentsForIssue(t, fx.IssueID, fx.LeaderID); got != 0 {
 		t.Fatalf("expected rejected comment not to be stored, got %d", got)
 	}
 
 	var body map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode error response: %v", err)
-	}
+	w.Decode(&body)
 	msg, _ := body["error"].(string)
 	for _, want := range []string{
 		foreignParentID,        // the parent that was refused

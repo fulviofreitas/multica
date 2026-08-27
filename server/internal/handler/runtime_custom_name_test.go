@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // patchRuntimeCustomName is a small helper that PATCHes /api/runtimes/:id with
@@ -31,9 +33,7 @@ func TestUpdateAgentRuntime_CustomNamePatchApplies(t *testing.T) {
 
 	// Owner sets a custom name.
 	w := patchRuntimeCustomName(runtimeOwnerID, runtimeID, map[string]any{"custom_name": "  Prod Box  "})
-	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH custom_name: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp AgentRuntimeResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -48,9 +48,7 @@ func TestUpdateAgentRuntime_CustomNamePatchApplies(t *testing.T) {
 
 	// Empty string clears the override back to NULL.
 	w = patchRuntimeCustomName(runtimeOwnerID, runtimeID, map[string]any{"custom_name": "   "})
-	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH clear custom_name: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	resp = AgentRuntimeResponse{}
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -61,15 +59,11 @@ func TestUpdateAgentRuntime_CustomNamePatchApplies(t *testing.T) {
 
 	// Over-long name is rejected before any mutation.
 	w = patchRuntimeCustomName(runtimeOwnerID, runtimeID, map[string]any{"custom_name": strings.Repeat("x", maxRuntimeCustomNameLen+1)})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("PATCH over-long custom_name: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Plain member cannot rename someone else's runtime.
 	w = patchRuntimeCustomName(plainMemberID, runtimeID, map[string]any{"custom_name": "hijack"})
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("PATCH custom_name as plain member: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestUpdateAgentRuntime_CustomNameMachineFanout verifies that
@@ -109,9 +103,7 @@ func TestUpdateAgentRuntime_CustomNameMachineFanout(t *testing.T) {
 		"custom_name":      "Bohan's MacBook",
 		"apply_to_machine": true,
 	})
-	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH machine rename: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// Both runtimes on the daemon must now carry the name.
 	for _, id := range []string{idA, idB} {
@@ -129,7 +121,7 @@ func TestUpdateAgentRuntime_CustomNameMachineFanout(t *testing.T) {
 // the daemon-token path and returns the first runtime object from the response.
 func registerRuntimeOnDaemon(t *testing.T, daemonID, provider string) map[string]any {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
 		"workspace_id": testWorkspaceID,
 		"daemon_id":    daemonID,
@@ -138,14 +130,12 @@ func registerRuntimeOnDaemon(t *testing.T, daemonID, provider string) map[string
 			{"name": provider + " (host)", "type": provider, "version": "1.0.0", "status": "online"},
 		},
 	}, testWorkspaceID, daemonID)
-	testHandler.DaemonRegister(w, req)
+	w := testutil.Call(t, testHandler.DaemonRegister, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("register %s: expected 200, got %d: %s", provider, w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode register response: %v", err)
-	}
+	w.Decode(&resp)
 	runtimes, ok := resp["runtimes"].([]any)
 	if !ok || len(runtimes) == 0 {
 		t.Fatalf("register %s: no runtimes in response: %v", provider, resp)
@@ -242,7 +232,6 @@ func TestDaemonRegister_FailedProfileInheritsMachineName(t *testing.T) {
 	// A custom runtime profile fails to resolve on this machine.
 	profileID := insertRuntimeProfileFixture(t, ctx, "Custom Codex", "codex", "missing-codex")
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
 		"workspace_id": testWorkspaceID,
 		"daemon_id":    daemonID,
@@ -251,10 +240,7 @@ func TestDaemonRegister_FailedProfileInheritsMachineName(t *testing.T) {
 			{"profile_id": profileID, "command_name": "missing-codex", "reason": "command not found on PATH"},
 		},
 	}, testWorkspaceID, daemonID)
-	testHandler.DaemonRegister(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("register failed profile: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusOK)
 
 	// The failed-profile row must have inherited the machine name.
 	var name *string

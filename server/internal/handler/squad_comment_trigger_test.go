@@ -2,11 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -90,28 +89,10 @@ func newSquadCommentTriggerFixture(t *testing.T) squadCommentTriggerFixture {
 	otherID := createHandlerTestAgent(t, "Squad Comment Other", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, "Squad Comment Trigger", leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Squad Comment Trigger", "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title, assignee_type, assignee_id)
-		VALUES ($1, 'member', $2, $3, 'squad', $4)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "squad comment trigger", squadID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "squad comment trigger", "assignee_type": testutil.Raw("'squad'"), "assignee_id": squadID})
 
 	issue, err := testHandler.Queries.GetIssue(ctx, util.MustParseUUID(issueID))
 	if err != nil {
@@ -340,17 +321,12 @@ func TestCreateComment_SquadPlainReplyToMemberParentKeepsRootMentionOwner(t *tes
 
 	postMemberComment := func(body map[string]any) CommentResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := newRequest("POST", "/api/issues/"+issueID+"/comments", body)
 		r = withURLParam(r, "id", issueID)
-		testHandler.CreateComment(w, r)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 		var resp CommentResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode comment: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 
@@ -432,17 +408,14 @@ func TestCreateComment_DualRoleAgentWorkerCommentWakesLeader(t *testing.T) {
 
 	// L posts a comment in its agent identity (X-Agent-ID + X-Task-ID, the
 	// pair required by resolveActor to trust the agent header).
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "done — pushed the change",
 	})
 	r.Header.Set("X-Agent-ID", fx.LeaderID)
 	r.Header.Set("X-Task-ID", workerTaskID)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// A new leader-role task is enqueued so the leader coordinates next steps.
 	var leaderTasks int
@@ -481,30 +454,22 @@ func TestCreateComment_SquadLeaderMentionTaskDoesNotSelfTriggerAssignedFallback(
 
 	postMemberComment := func(body map[string]any) CommentResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := newRequest("POST", "/api/issues/"+issueID+"/comments", body)
 		r = withURLParam(r, "id", issueID)
-		testHandler.CreateComment(w, r)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateComment(member): expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 		var resp CommentResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode member comment: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 	postAgentComment := func(taskID string, body map[string]any) {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := newRequest("POST", "/api/issues/"+issueID+"/comments", body)
 		r.Header.Set("X-Agent-ID", fx.LeaderID)
 		r.Header.Set("X-Task-ID", taskID)
 		r = withURLParam(r, "id", issueID)
-		testHandler.CreateComment(w, r)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateComment(agent): expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 	}
 	countQueuedLeaderTasks := func() int {
 		t.Helper()
@@ -579,34 +544,24 @@ func TestCreateComment_SquadLeaderThreadParentTaskDoesNotSelfTriggerAssignedFall
 
 	postAgentComment := func(taskID string, body map[string]any) CommentResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := newRequest("POST", "/api/issues/"+issueID+"/comments", body)
 		r.Header.Set("X-Agent-ID", fx.LeaderID)
 		r.Header.Set("X-Task-ID", taskID)
 		r = withURLParam(r, "id", issueID)
-		testHandler.CreateComment(w, r)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateComment(agent): expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 		var resp CommentResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode agent comment: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 	postMemberComment := func(body map[string]any) CommentResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := newRequest("POST", "/api/issues/"+issueID+"/comments", body)
 		r = withURLParam(r, "id", issueID)
-		testHandler.CreateComment(w, r)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateComment(member): expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 		var resp CommentResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode member comment: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 	countQueuedLeaderTasks := func() int {
@@ -728,16 +683,7 @@ func TestCreateComment_SquadMentionPrivateLeaderBlocksPlainMember(t *testing.T) 
 
 	// Create a squad with the private agent as leader.
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, 'Private Leader Squad', '', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'Private Leader Squad'"), "description": testutil.Raw("''"), "leader_id": agentID, "creator_id": testUserID})
 
 	// Create an issue.
 	var issueID string
@@ -755,15 +701,12 @@ func TestCreateComment_SquadMentionPrivateLeaderBlocksPlainMember(t *testing.T) 
 	})
 
 	// Plain member posts a comment mentioning the squad.
-	w := httptest.NewRecorder()
+
 	r := newRequestAs(memberID, "POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "[@Squad](mention://squad/" + squadID + ") please handle",
 	})
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// The private leader must NOT have a queued task — plain member lacks access.
 	var count int
@@ -796,16 +739,7 @@ func TestCreateComment_SquadMentionTriggersLeader(t *testing.T) {
 	}
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, "Mention Trigger Squad", leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Mention Trigger Squad", "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	// Create an issue NOT assigned to the squad (assigned to nobody).
 	var issueID string
@@ -834,15 +768,12 @@ func TestCreateComment_SquadMentionTriggersLeader(t *testing.T) {
 	}
 
 	// Post a comment that @mentions the squad.
-	w := httptest.NewRecorder()
+
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "[@Squad](mention://squad/" + squadID + ") please handle this",
 	})
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	// The squad's leader should have a queued task.
 	if got := countQueued(leaderID); got != 1 {

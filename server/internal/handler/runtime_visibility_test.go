@@ -125,20 +125,7 @@ func runtimeVisibilityFixture(t *testing.T) (runtimeID, runtimeOwnerID, plainMem
 		t.Fatalf("add plain member: %v", err)
 	}
 
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (
-			workspace_id, daemon_id, name, runtime_mode, provider, status,
-			device_info, metadata, owner_id, visibility, last_seen_at
-		)
-		VALUES ($1, NULL, 'Visibility Test Runtime', 'cloud', 'visibility_test_provider', 'online', 'visibility test', '{}'::jsonb, $2, 'private', now())
-		RETURNING id
-	`, testWorkspaceID, runtimeOwnerID).Scan(&runtimeID); err != nil {
-		t.Fatalf("create runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
-	})
+	runtimeID = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("NULL"), "name": testutil.Raw("'Visibility Test Runtime'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'visibility_test_provider'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'visibility test'"), "metadata": testutil.Raw("'{}'::jsonb"), "owner_id": runtimeOwnerID, "visibility": testutil.Raw("'private'"), "last_seen_at": testutil.Raw("now()")})
 
 	return runtimeID, runtimeOwnerID, plainMemberID
 }
@@ -176,23 +163,17 @@ func TestCreateAgent_RejectsPrivateRuntimeForNonOwner(t *testing.T) {
 	// needs the machine flips its visibility to public instead.
 	w := httptest.NewRecorder()
 	testHandler.CreateAgent(w, newRequest(http.MethodPost, "/api/agents", body("runtime-visibility-test-admin")))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateAgent as workspace owner on another member's private runtime: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 
 	// Runtime owner: allowed because they own the runtime.
 	w = httptest.NewRecorder()
 	testHandler.CreateAgent(w, newRequestAs(runtimeOwnerID, http.MethodPost, "/api/agents", body("runtime-visibility-test-runtime-owner")))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAgent as runtime owner: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Plain member: this is the hole MUL-2062 closes — must be 403.
 	w = httptest.NewRecorder()
 	testHandler.CreateAgent(w, newRequestAs(plainMemberID, http.MethodPost, "/api/agents", body("runtime-visibility-test-plain-member")))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("CreateAgent as plain member on private runtime: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 }
 
 // TestCreateAgent_AllowsPublicRuntimeForPlainMember verifies the "public"
@@ -224,11 +205,7 @@ func TestCreateAgent_AllowsPublicRuntimeForPlainMember(t *testing.T) {
 		"visibility":           "private",
 		"max_concurrent_tasks": 1,
 	}
-	w := httptest.NewRecorder()
-	testHandler.CreateAgent(w, newRequestAs(plainMemberID, http.MethodPost, "/api/agents", body))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateAgent as plain member on public runtime: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateAgent, newRequestAs(plainMemberID, http.MethodPost, "/api/agents", body)).Want(http.StatusCreated)
 }
 
 func TestListAgentRuntimes_HidesOtherMembersPrivateRuntimes(t *testing.T) {
@@ -321,24 +298,18 @@ func TestPrivateRuntimeReadEndpointsHideKnownRuntimeFromNonOwners(t *testing.T) 
 
 	for _, tc := range tests {
 		t.Run("plain member/"+tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := withURLParams(newRequestAs(plainMemberID, tc.method, tc.path, nil), tc.params...)
-			tc.handle(w, req)
-			if w.Code != http.StatusNotFound {
-				t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.handle, req).Want(http.StatusNotFound)
 		})
 	}
 
 	promoteRuntimeTestMemberToAdmin(t, plainMemberID)
 	for _, tc := range tests {
 		t.Run("workspace admin/"+tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := withURLParams(newRequestAs(plainMemberID, tc.method, tc.path, nil), tc.params...)
-			tc.handle(w, req)
-			if w.Code != http.StatusNotFound {
-				t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Call(t, tc.handle, req).Want(http.StatusNotFound)
 		})
 	}
 
@@ -346,9 +317,7 @@ func TestPrivateRuntimeReadEndpointsHideKnownRuntimeFromNonOwners(t *testing.T) 
 	w := httptest.NewRecorder()
 	req := withURLParam(newRequestAs(runtimeOwnerID, http.MethodPost, "/api/runtimes/"+runtimeID+"/models", nil), "runtimeId", runtimeID)
 	testHandler.InitiateListModels(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("owner model discovery: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	if _, err := testPool.Exec(context.Background(), `UPDATE agent_runtime SET visibility = 'public' WHERE id = $1`, runtimeID); err != nil {
 		t.Fatalf("make runtime public: %v", err)
@@ -356,9 +325,7 @@ func TestPrivateRuntimeReadEndpointsHideKnownRuntimeFromNonOwners(t *testing.T) 
 	w = httptest.NewRecorder()
 	req = withURLParam(newRequestAs(plainMemberID, http.MethodPost, "/api/runtimes/"+runtimeID+"/models", nil), "runtimeId", runtimeID)
 	testHandler.InitiateListModels(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("public runtime model discovery: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 // TestUpdateAgent_RejectsRebindToPrivateRuntime is the regression for the
@@ -372,51 +339,21 @@ func TestUpdateAgent_RejectsRebindToPrivateRuntime(t *testing.T) {
 
 	privateRuntimeID, _, plainMemberID := runtimeVisibilityFixture(t)
 
-	ctx := context.Background()
 	// Create a public runtime that the plain member can legitimately own
 	// an agent on, then we try to move the agent onto the private runtime.
 	var publicRuntimeID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_runtime (
-			workspace_id, daemon_id, name, runtime_mode, provider, status,
-			device_info, metadata, owner_id, visibility, last_seen_at
-		)
-		VALUES ($1, NULL, 'Public Runtime', 'cloud', 'visibility_test_public_provider', 'online', 'public', '{}'::jsonb, $2, 'public', now())
-		RETURNING id
-	`, testWorkspaceID, plainMemberID).Scan(&publicRuntimeID); err != nil {
-		t.Fatalf("create public runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, publicRuntimeID)
-	})
+	publicRuntimeID = dbfx.Insert(t, "agent_runtime", testutil.Cols{"workspace_id": testWorkspaceID, "daemon_id": testutil.Raw("NULL"), "name": testutil.Raw("'Public Runtime'"), "runtime_mode": testutil.Raw("'cloud'"), "provider": testutil.Raw("'visibility_test_public_provider'"), "status": testutil.Raw("'online'"), "device_info": testutil.Raw("'public'"), "metadata": testutil.Raw("'{}'::jsonb"), "owner_id": plainMemberID, "visibility": testutil.Raw("'public'"), "last_seen_at": testutil.Raw("now()")})
 
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args
-		)
-		VALUES ($1, 'rebind-test-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id
-	`, testWorkspaceID, publicRuntimeID, plainMemberID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent on public runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'rebind-test-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": publicRuntimeID, "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": plainMemberID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 
 	body := map[string]any{
 		"runtime_id": privateRuntimeID,
 	}
-	w := httptest.NewRecorder()
+
 	req := newRequestAs(plainMemberID, http.MethodPut, "/api/agents/"+agentID, body)
 	req = withURLParam(req, "id", agentID)
-	testHandler.UpdateAgent(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("UpdateAgent rebinding to private runtime: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgent, req).Want(http.StatusForbidden)
 }
 
 // TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime walks the
@@ -433,25 +370,10 @@ func TestUpdateAgent_WorkspaceAdminCannotRebindToMemberPrivateRuntime(t *testing
 
 	memberPrivateRuntimeID, runtimeOwnerID, _ := runtimeVisibilityFixture(t)
 
-	ctx := context.Background()
 	// The admin's own agent, on the fixture runtime they own — so the only
 	// thing this update can trip over is the runtime gate.
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args
-		)
-		VALUES ($1, 'admin-rebind-test-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id
-	`, testWorkspaceID, testRuntimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent on the workspace owner's runtime: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'admin-rebind-test-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": testRuntimeID, "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 
 	rebind := func() *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -544,19 +466,13 @@ func TestUpdateAgentRuntime_VisibilityPatchApplies(t *testing.T) {
 
 	runtimeID, runtimeOwnerID, _ := runtimeVisibilityFixture(t)
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(runtimeOwnerID, http.MethodPatch, "/api/runtimes/"+runtimeID, map[string]any{
 		"visibility": "public",
 	})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UpdateAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH visibility: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgentRuntime, req).Want(http.StatusOK)
 	var resp AgentRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.Visibility != "public" {
 		t.Fatalf("visibility patch: got %q, want public", resp.Visibility)
 	}
@@ -574,7 +490,6 @@ func TestUpdateAgentRuntime_IgnoresTimezoneField(t *testing.T) {
 
 	runtimeID, runtimeOwnerID, _ := runtimeVisibilityFixture(t)
 
-	w := httptest.NewRecorder()
 	// NOTE: visibility is "public" (not "workspace"): the runtime visibility
 	// enum is private|public — "workspace" would 400 before any mutation,
 	// which would not exercise the "visibility still applied" assertion.
@@ -583,25 +498,18 @@ func TestUpdateAgentRuntime_IgnoresTimezoneField(t *testing.T) {
 		"visibility": "public",
 	})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UpdateAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PATCH with stray timezone: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgentRuntime, req).Want(http.StatusOK)
 
 	// The response must carry no `timezone` key — runtimes have no such field.
 	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&raw)
 	if _, present := raw["timezone"]; present {
 		t.Errorf("response unexpectedly contains a timezone key: %s", w.Body.String())
 	}
 
 	// `visibility` was still applied.
 	var resp AgentRuntimeResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Visibility != "public" {
 		t.Errorf("visibility patch: got %q, want public", resp.Visibility)
 	}
@@ -616,15 +524,11 @@ func TestUpdateAgentRuntime_InvalidVisibilityReturns400(t *testing.T) {
 
 	runtimeID, runtimeOwnerID, _ := runtimeVisibilityFixture(t)
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(runtimeOwnerID, http.MethodPatch, "/api/runtimes/"+runtimeID, map[string]any{
 		"visibility": "everyone",
 	})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UpdateAgentRuntime(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("PATCH with invalid visibility: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateAgentRuntime, req).Want(http.StatusBadRequest)
 }
 
 // TestUpdateAgentRuntime_VisibilityToggle covers the PATCH endpoint: the
@@ -696,21 +600,15 @@ func TestUpdateAgentRuntime_AdminMayEchoUnchangedVisibility(t *testing.T) {
 
 	runtimeID, _, _ := runtimeVisibilityFixture(t)
 
-	w := httptest.NewRecorder()
 	req := newRequest(http.MethodPatch, "/api/runtimes/"+runtimeID, map[string]any{
 		"visibility":  "private", // unchanged — the fixture runtime is private
 		"custom_name": "Renamed By Admin",
 	})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UpdateAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("admin rename echoing unchanged visibility: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateAgentRuntime, req).Want(http.StatusOK)
 
 	var resp AgentRuntimeResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.CustomName == nil || *resp.CustomName != "Renamed By Admin" {
 		t.Errorf("custom name was not applied: %v", resp.CustomName)
 	}

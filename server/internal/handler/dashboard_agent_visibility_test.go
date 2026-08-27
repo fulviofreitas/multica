@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // dashboardAgentPresence is the expected membership of the three agent ids that
@@ -46,31 +47,8 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 	// Second agent, public_to the whole workspace: the plain member CAN see
 	// this one, so its rows must survive with their real UUID.
 	var publicAgentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args
-		)
-		VALUES ($1, 'dashboard-visibility-public-agent', '', 'cloud', '{}'::jsonb,
-		        $2, 'workspace', 'public_to', 1, $3, '', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id
-	`, testWorkspaceID, runtimeID, testUserID).Scan(&publicAgentID); err != nil {
-		t.Fatalf("create public agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, publicAgentID)
-	})
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO agent_invocation_target (agent_id, target_type, target_id)
-		VALUES ($1, 'workspace', $2)
-	`, publicAgentID, testWorkspaceID); err != nil {
-		t.Fatalf("grant workspace invocation target: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM agent_invocation_target WHERE agent_id = $1`, publicAgentID)
-	})
+	publicAgentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'dashboard-visibility-public-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'workspace'"), "permission_mode": testutil.Raw("'public_to'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
+	dbfx.InsertNoID(t, "agent_invocation_target", testutil.Cols{"agent_id": publicAgentID, "target_type": testutil.Raw("'workspace'"), "target_id": testWorkspaceID}, "agent_id = $1", publicAgentID)
 
 	var issueID string
 	if err := testPool.QueryRow(ctx, `
@@ -138,8 +116,7 @@ func TestDashboardPerAgentRollupsFoldRestrictedAgents(t *testing.T) {
 		out any,
 	) string {
 		t.Helper()
-		w := httptest.NewRecorder()
-		handler(w, newRequestAs(userID, "GET", path, nil))
+		w := testutil.Call(t, handler, newRequestAs(userID, "GET", path, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s as %s: expected 200, got %d: %s", name, userID, w.Code, w.Body.String())
 		}
@@ -343,8 +320,7 @@ func TestDashboardPerAgentRollupsFoldSystemAgentCarriers(t *testing.T) {
 		var out totals
 		var bodies []string
 		read := func(name string, handler func(http.ResponseWriter, *http.Request), path string, decode func([]byte)) {
-			w := httptest.NewRecorder()
-			handler(w, newRequestAs(userID, "GET", path, nil))
+			w := testutil.Call(t, handler, newRequestAs(userID, "GET", path, nil))
 			if w.Code != http.StatusOK {
 				t.Fatalf("%s as %s: expected 200, got %d: %s", name, userID, w.Code, w.Body.String())
 			}
@@ -401,22 +377,7 @@ func TestDashboardPerAgentRollupsFoldSystemAgentCarriers(t *testing.T) {
 	// A builder carrier, shaped exactly like CreateAgentBuilder writes one:
 	// kind=system, permission_mode=private, owned by the workspace owner.
 	var carrierID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
-			visibility, permission_mode, max_concurrent_tasks, owner_id, instructions,
-			custom_env, custom_args, kind, system_key
-		)
-		VALUES ($1, 'agent-builder-carrier', '', 'cloud', '{}'::jsonb, $2,
-		        'private', 'private', 1, $3, '', '{}'::jsonb, '[]'::jsonb,
-		        'system', 'agent_builder:' || gen_random_uuid()::text)
-		RETURNING id
-	`, testWorkspaceID, runtimeID, testUserID).Scan(&carrierID); err != nil {
-		t.Fatalf("create builder carrier: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, carrierID)
-	})
+	carrierID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'agent-builder-carrier'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'private'"), "permission_mode": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb"), "kind": testutil.Raw("'system'"), "system_key": testutil.Raw("'agent_builder:' || gen_random_uuid()::text")})
 
 	started := time.Now().UTC().Add(-30 * time.Minute)
 	completed := started.Add(10 * time.Minute) // 600s per run

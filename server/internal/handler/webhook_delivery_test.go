@@ -9,11 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -23,15 +23,12 @@ const testSigningSecret = "this-is-a-test-secret-32-chars-x"
 
 func setSigningSecretViaHandler(t *testing.T, apID, triggerID, secret string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("PUT", fmt.Sprintf("/api/autopilots/%s/triggers/%s/signing-secret", apID, triggerID), map[string]any{
 		"signing_secret": secret,
 	})
 	req = withURLParams(req, "id", apID, "triggerId", triggerID)
-	testHandler.SetAutopilotTriggerSigningSecret(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("set signing secret: %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SetAutopilotTriggerSigningSecret, req).Want(http.StatusOK)
 }
 
 func setTriggerProvider(t *testing.T, triggerID, provider string) {
@@ -83,19 +80,14 @@ FOR EACH ROW EXECUTE FUNCTION %s();
 // listDeliveries calls ListAutopilotDeliveries and decodes the body.
 func listDeliveries(t *testing.T, apID string) []map[string]any {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/autopilots/"+apID+"/deliveries", nil)
 	req = withURLParam(req, "id", apID)
-	testHandler.ListAutopilotDeliveries(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list deliveries: %d body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListAutopilotDeliveries, req).Want(http.StatusOK)
 	var resp struct {
 		Deliveries []map[string]any `json:"deliveries"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	return resp.Deliveries
 }
 
@@ -177,9 +169,7 @@ func TestWebhookHandler_DedupeViaIdempotencyKey(t *testing.T) {
 	// Retry before the worker processes the queued delivery. The admitted run
 	// must already be discoverable so the duplicate returns the same run_id.
 	w2 := postWebhook(t, *trig.WebhookToken, body, headers)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("second: %d body=%s", w2.Code, w2.Body.String())
-	}
+	testutil.Equal(t, w2.Code, http.StatusOK, "HTTP status")
 	var r2 map[string]any
 	json.Unmarshal(w2.Body.Bytes(), &r2)
 	if r2["status"] != "duplicate" {
@@ -247,9 +237,7 @@ func TestWebhookHandler_InvalidSignatureReturns401AndPersistsRejected(t *testing
 	w := postWebhook(t, *trig.WebhookToken, body, map[string]string{
 		"X-Hub-Signature-256": "sha256=deadbeef",
 	})
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnauthorized, "HTTP status")
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["status"] != "rejected" {
@@ -281,9 +269,7 @@ func TestWebhookHandler_MissingSignatureReturns401WhenSecretSet(t *testing.T) {
 	setSigningSecretViaHandler(t, apID, trig.ID, testSigningSecret)
 
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{"hello": "world"}, nil)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnauthorized, "HTTP status")
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp["reason"] != "missing_signature" {
@@ -324,13 +310,10 @@ func TestSigningSecretNotEchoedInTriggerResponse(t *testing.T) {
 	setSigningSecretViaHandler(t, apID, trig.ID, testSigningSecret)
 
 	// GET the autopilot — trigger response embedded.
-	w := httptest.NewRecorder()
+
 	req := newRequest("GET", "/api/autopilots/"+apID, nil)
 	req = withURLParam(req, "id", apID)
-	testHandler.GetAutopilot(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("get autopilot: %d", w.Code)
-	}
+	w := testutil.Call(t, testHandler.GetAutopilot, req).Want(http.StatusOK)
 	if bytes.Contains(w.Body.Bytes(), []byte(testSigningSecret)) {
 		t.Fatalf("signing secret leaked in trigger response: %s", w.Body.String())
 	}
@@ -347,15 +330,11 @@ func TestSigningSecret_MinLengthEnforced(t *testing.T) {
 	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
 	trig := createWebhookTriggerViaHandler(t, apID)
 
-	w := httptest.NewRecorder()
 	req := newRequest("PUT", "/api/autopilots/"+apID+"/triggers/"+trig.ID+"/signing-secret", map[string]any{
 		"signing_secret": "short",
 	})
 	req = withURLParams(req, "id", apID, "triggerId", trig.ID)
-	testHandler.SetAutopilotTriggerSigningSecret(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for short secret, got %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SetAutopilotTriggerSigningSecret, req).Want(http.StatusBadRequest)
 }
 
 func TestSigningSecret_EmptyClearsSecret(t *testing.T) {
@@ -365,15 +344,12 @@ func TestSigningSecret_EmptyClearsSecret(t *testing.T) {
 	setSigningSecretViaHandler(t, apID, trig.ID, testSigningSecret)
 
 	// Now clear with empty string.
-	w := httptest.NewRecorder()
+
 	req := newRequest("PUT", "/api/autopilots/"+apID+"/triggers/"+trig.ID+"/signing-secret", map[string]any{
 		"signing_secret": "",
 	})
 	req = withURLParams(req, "id", apID, "triggerId", trig.ID)
-	testHandler.SetAutopilotTriggerSigningSecret(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear secret: %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SetAutopilotTriggerSigningSecret, req).Want(http.StatusOK)
 	// Unsigned request should now go through (back to not_required).
 	post := postWebhook(t, *trig.WebhookToken, map[string]any{"x": 1}, nil)
 	requireAcceptedWebhookResponse(t, post)
@@ -393,14 +369,11 @@ func TestReplay_QueuesIdempotentDeliveryForDurableWorker(t *testing.T) {
 	originalRunID := uuidToString(originalDelivery.AutopilotRunID)
 
 	// Replay the original.
-	wr := httptest.NewRecorder()
+
 	req := newRequest("POST", fmt.Sprintf("/api/autopilots/%s/deliveries/%s/replay", apID, originalID), nil)
 	req.Header.Set("Idempotency-Key", "replay-request")
 	req = withURLParams(req, "id", apID, "deliveryId", originalID)
-	testHandler.ReplayAutopilotDelivery(wr, req)
-	if wr.Code != http.StatusAccepted {
-		t.Fatalf("replay: %d body=%s", wr.Code, wr.Body.String())
-	}
+	wr := testutil.Call(t, testHandler.ReplayAutopilotDelivery, req).Want(http.StatusAccepted)
 	var replay map[string]any
 	json.Unmarshal(wr.Body.Bytes(), &replay)
 	if replay["id"] == originalID {
@@ -423,14 +396,11 @@ func TestReplay_QueuesIdempotentDeliveryForDurableWorker(t *testing.T) {
 
 	// Retrying the replay request with the same key returns the same delivery
 	// and cannot enqueue or reserve a second run.
-	retryRecorder := httptest.NewRecorder()
+
 	retryReq := newRequest("POST", fmt.Sprintf("/api/autopilots/%s/deliveries/%s/replay", apID, originalID), nil)
 	retryReq.Header.Set("Idempotency-Key", "replay-request")
 	retryReq = withURLParams(retryReq, "id", apID, "deliveryId", originalID)
-	testHandler.ReplayAutopilotDelivery(retryRecorder, retryReq)
-	if retryRecorder.Code != http.StatusAccepted {
-		t.Fatalf("replay retry: %d body=%s", retryRecorder.Code, retryRecorder.Body.String())
-	}
+	retryRecorder := testutil.Call(t, testHandler.ReplayAutopilotDelivery, retryReq).Want(http.StatusAccepted)
 	var retried map[string]any
 	json.Unmarshal(retryRecorder.Body.Bytes(), &retried)
 	if retried["id"] != replayID {
@@ -453,21 +423,16 @@ func TestReplay_RejectsInvalidSignatureDelivery(t *testing.T) {
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{"x": 1}, map[string]string{
 		"X-Hub-Signature-256": "sha256=baadf00d",
 	})
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("setup: expected 401, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusUnauthorized, "HTTP status")
 	var rej map[string]any
 	json.Unmarshal(w.Body.Bytes(), &rej)
 	rejectedID := rej["delivery_id"].(string)
 
 	// Replay the rejected delivery → 400.
-	wr := httptest.NewRecorder()
+
 	req := newRequest("POST", fmt.Sprintf("/api/autopilots/%s/deliveries/%s/replay", apID, rejectedID), nil)
 	req = withURLParams(req, "id", apID, "deliveryId", rejectedID)
-	testHandler.ReplayAutopilotDelivery(wr, req)
-	if wr.Code != http.StatusBadRequest {
-		t.Fatalf("replay of rejected: expected 400, got %d body=%s", wr.Code, wr.Body.String())
-	}
+	testutil.Call(t, testHandler.ReplayAutopilotDelivery, req).Want(http.StatusBadRequest)
 }
 
 func TestGetDelivery_ReturnsFullPayload(t *testing.T) {
@@ -479,22 +444,19 @@ func TestGetDelivery_ReturnsFullPayload(t *testing.T) {
 	deliveryID := requireAcceptedWebhookResponse(t, w)
 
 	// List response should NOT include raw_body / selected_headers.
-	wList := httptest.NewRecorder()
+
 	reqList := newRequest("GET", "/api/autopilots/"+apID+"/deliveries", nil)
 	reqList = withURLParam(reqList, "id", apID)
-	testHandler.ListAutopilotDeliveries(wList, reqList)
+	wList := testutil.Call(t, testHandler.ListAutopilotDeliveries, reqList)
 	if bytes.Contains(wList.Body.Bytes(), []byte(`"raw_body"`)) {
 		t.Fatalf("list response should not include raw_body, body=%s", wList.Body.String())
 	}
 
 	// Detail response SHOULD include raw_body and selected_headers.
-	wDetail := httptest.NewRecorder()
+
 	reqDetail := newRequest("GET", "/api/autopilots/"+apID+"/deliveries/"+deliveryID, nil)
 	reqDetail = withURLParams(reqDetail, "id", apID, "deliveryId", deliveryID)
-	testHandler.GetAutopilotDelivery(wDetail, reqDetail)
-	if wDetail.Code != http.StatusOK {
-		t.Fatalf("detail: %d body=%s", wDetail.Code, wDetail.Body.String())
-	}
+	wDetail := testutil.Call(t, testHandler.GetAutopilotDelivery, reqDetail).Want(http.StatusOK)
 	// raw_body is serialised as a JSON string (escaped); decode the response
 	// and assert against the decoded payload so we don't rely on a brittle
 	// substring search against the escaped form.
@@ -533,45 +495,34 @@ func TestGetDelivery_CrossAutopilotReturns404(t *testing.T) {
 	deliveryID := seed["delivery_id"].(string)
 
 	// Try reading via the OTHER autopilot's URL.
-	wDetail := httptest.NewRecorder()
+
 	reqDetail := newRequest("GET", "/api/autopilots/"+apB+"/deliveries/"+deliveryID, nil)
 	reqDetail = withURLParams(reqDetail, "id", apB, "deliveryId", deliveryID)
-	testHandler.GetAutopilotDelivery(wDetail, reqDetail)
-	if wDetail.Code != http.StatusNotFound {
-		t.Fatalf("cross-autopilot GET: expected 404, got %d", wDetail.Code)
-	}
+	testutil.Call(t, testHandler.GetAutopilotDelivery, reqDetail).Want(http.StatusNotFound)
 }
 
 func TestCreateAutopilotTrigger_RejectsUnknownProvider(t *testing.T) {
 	agentID := createWebhookTestAgent(t, "ProviderInvalid Agent")
 	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/autopilots/"+apID+"/triggers", map[string]any{
 		"kind":     "webhook",
 		"provider": "stripe",
 	})
 	req = withURLParam(req, "id", apID)
-	testHandler.CreateAutopilotTrigger(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for unknown provider, got %d body=%s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateAutopilotTrigger, req).Want(http.StatusBadRequest)
 }
 
 func TestCreateAutopilotTrigger_AcceptsGitHubProvider(t *testing.T) {
 	agentID := createWebhookTestAgent(t, "ProviderGH Agent")
 	apID := createWebhookTestAutopilot(t, agentID, "active", "run_only")
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/autopilots/"+apID+"/triggers", map[string]any{
 		"kind":     "webhook",
 		"provider": "github",
 	})
 	req = withURLParam(req, "id", apID)
-	testHandler.CreateAutopilotTrigger(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateAutopilotTrigger, req).Want(http.StatusCreated)
 	var resp AutopilotTriggerResponse
 	json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Provider == nil || *resp.Provider != "github" {
@@ -889,9 +840,7 @@ func TestWebhookHandler_InvalidSignatureCountsAgainstRateLimit(t *testing.T) {
 		}
 	}
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{"i": "third"}, bad)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("third request expected 429 (rate-limited despite bad sig), got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusTooManyRequests, "HTTP status")
 	if w.Header().Get("Retry-After") == "" {
 		t.Fatal("429 must include Retry-After")
 	}
@@ -905,9 +854,7 @@ func TestWebhookHandler_IgnoredPathStillPersistsDelivery(t *testing.T) {
 	trig := createWebhookTriggerViaHandler(t, apID)
 
 	w := postWebhook(t, *trig.WebhookToken, map[string]any{"x": 1}, nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	deliveries := listDeliveries(t, apID)
 	if len(deliveries) != 1 {
 		t.Fatalf("expected 1 delivery on paused autopilot, got %d", len(deliveries))

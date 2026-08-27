@@ -91,6 +91,14 @@ func TestCallRecordsStatusAndDecodesBody(t *testing.T) {
 	}](t, h, JSONRequest("POST", "/api/issues", nil), http.StatusCreated); got.ID != "issue-1" {
 		t.Fatalf("Decode id = %q, want issue-1", got.ID)
 	}
+
+	var streamed map[string]any
+	Call(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"first":true}{"second":true}`)
+	}, JSONRequest("GET", "/api/stream", nil)).Decode(&streamed)
+	if streamed["first"] != true {
+		t.Fatalf("streamed first value = %#v, want true", streamed["first"])
+	}
 }
 
 // TestWantReportsTheBodyOnMismatch pins the one thing the shared assertion has

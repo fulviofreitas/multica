@@ -25,6 +25,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/storage"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -35,18 +36,7 @@ func createHandlerTestChatSession(t *testing.T, agentID string) string {
 	t.Helper()
 
 	var sessionID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO chat_session (
-			workspace_id, agent_id, creator_id, title, status, explicitly_created_at
-		)
-		VALUES ($1, $2, $3, $4, 'active', now())
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID, "Handler Test Chat Session").Scan(&sessionID); err != nil {
-		t.Fatalf("failed to create handler test chat session: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
-	})
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": "Handler Test Chat Session", "status": testutil.Raw("'active'"), "explicitly_created_at": testutil.Raw("now()")})
 	return sessionID
 }
 
@@ -247,11 +237,7 @@ func TestUploadFileForeignWorkspace(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req.Header.Set("X-Workspace-ID", foreignWorkspaceID)
 
-	w := httptest.NewRecorder()
-	testHandler.UploadFile(w, req)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("UploadFile with foreign workspace: expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UploadFile, req).Want(http.StatusForbidden)
 }
 
 // TestUploadFileResolvesWorkspaceViaSlugHeader is a regression test for the
@@ -282,11 +268,7 @@ func TestUploadFileResolvesWorkspaceViaSlugHeader(t *testing.T) {
 	// Intentionally NOT setting X-Workspace-ID — post-v2 clients only send slug.
 	req.Header.Set("X-Workspace-Slug", handlerTestWorkspaceSlug)
 
-	w := httptest.NewRecorder()
-	testHandler.UploadFile(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UploadFile with slug header: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UploadFile, req).Want(http.StatusOK)
 
 	// The workspace-aware branch returns the full AttachmentResponse (with
 	// id, workspace_id, uploader, etc.). The no-workspace-context branch
@@ -349,11 +331,7 @@ func TestUploadFileResolvesWorkspaceViaIDHeaderStill(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req.Header.Set("X-Workspace-ID", testWorkspaceID)
 
-	w := httptest.NewRecorder()
-	testHandler.UploadFile(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UploadFile with UUID header: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UploadFile, req).Want(http.StatusOK)
 
 	// Clean up.
 	if _, err := testPool.Exec(
@@ -395,11 +373,7 @@ func TestUploadFile_AttachesToChatSession(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req.Header.Set("X-Workspace-ID", testWorkspaceID)
 
-	w := httptest.NewRecorder()
-	testHandler.UploadFile(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UploadFile with chat_session_id: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UploadFile, req).Want(http.StatusOK)
 
 	var resp AttachmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
@@ -460,8 +434,7 @@ func TestUploadFile_RejectsForeignChatSession(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req.Header.Set("X-Workspace-ID", testWorkspaceID)
 
-	w := httptest.NewRecorder()
-	testHandler.UploadFile(w, req)
+	w := testutil.Call(t, testHandler.UploadFile, req)
 	if w.Code != http.StatusNotFound && w.Code != http.StatusForbidden && w.Code != http.StatusBadRequest {
 		t.Fatalf("UploadFile with unknown chat_session_id: expected 4xx, got %d: %s", w.Code, w.Body.String())
 	}
@@ -699,13 +672,7 @@ func TestGetAttachmentByID_AutoPublicEndpointReturnsPresignedDownloadURL(t *test
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.GetAttachmentByID(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAttachmentByID, req).Want(http.StatusOK)
 	var resp AttachmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
@@ -777,13 +744,7 @@ func TestGetAttachmentByID_CloudFrontModeSignsForcedAttachmentDownloadURL(t *tes
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("id", id)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
-	w := httptest.NewRecorder()
-
-	testHandler.GetAttachmentByID(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.GetAttachmentByID, req).Want(http.StatusOK)
 	var resp AttachmentResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode response: %v; body=%s", err, w.Body.String())
@@ -839,9 +800,7 @@ func TestDownloadAttachment_CloudFrontRedirectSignsAttachmentDisposition(t *test
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	loc := w.Header().Get("Location")
 	parsed, err := url.Parse(loc)
 	if err != nil {
@@ -877,13 +836,7 @@ func TestDownloadAttachment_BareNavigationWithWorkspaceSlugQueryPassesMiddleware
 
 	req := httptest.NewRequest("GET", "/api/attachments/"+id+"/download?workspace_slug="+url.QueryEscape(handlerTestWorkspaceSlug), nil)
 	req.Header.Set("X-User-ID", testUserID)
-	w := httptest.NewRecorder()
-
-	newDownloadRouter().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, newDownloadRouter().ServeHTTP, req).Want(http.StatusOK)
 	if got := w.Body.String(); got != string(body) {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
@@ -922,13 +875,7 @@ func TestDownloadAttachment_BareNavigationServesMemberWithoutWorkspaceHeaders(t 
 	// when the markdown stores `/api/attachments/<id>/download`.
 	req := httptest.NewRequest("GET", "/api/attachments/"+id+"/download", nil)
 	req.Header.Set("X-User-ID", testUserID)
-	w := httptest.NewRecorder()
-
-	newDownloadRouter().ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, newDownloadRouter().ServeHTTP, req).Want(http.StatusOK)
 	if got := w.Body.String(); got != string(body) {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
@@ -988,13 +935,7 @@ func TestDownloadAttachment_BareNavigationDeniesNonMemberWith404(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/api/attachments/"+id+"/download", nil)
 	req.Header.Set("X-User-ID", testUserID)
-	w := httptest.NewRecorder()
-
-	newDownloadRouter().ServeHTTP(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 for non-member; body=%s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, newDownloadRouter().ServeHTTP, req).Want(http.StatusNotFound)
 	if strings.Contains(w.Body.String(), "foreign-body") {
 		t.Fatalf("response body leaked file contents: %q", w.Body.String())
 	}
@@ -1024,9 +965,7 @@ func TestDownloadAttachment_AutoInternalEndpointProxies(t *testing.T) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Body.String(); got != string(body) {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
@@ -1070,9 +1009,7 @@ func TestDownloadAttachment_AutoPublicEndpointPresigns(t *testing.T) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	loc := w.Header().Get("Location")
 	if !strings.Contains(loc, "X-Amz-Signature=mock") {
 		t.Fatalf("Location = %q, want fake S3 signature", loc)
@@ -1115,9 +1052,7 @@ func TestDownloadAttachment_ExplicitProxyStreamsPublicEndpoint(t *testing.T) {
 	req, w := newDownloadRequest(t, id, testWorkspaceID)
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Body.Bytes(); !bytes.Equal(got, body) {
 		t.Fatalf("body mismatch: got %q want %q", got, body)
 	}
@@ -1180,9 +1115,7 @@ func runProxyRangeMatrix(t *testing.T, newStore func() storage.Storage) {
 		req.Header.Set("Range", "bytes=0-1023")
 		testHandler.DownloadAttachment(w, req)
 
-		if w.Code != http.StatusPartialContent {
-			t.Fatalf("status = %d, want 206; body=%s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusPartialContent, "HTTP status")
 		if got, want := w.Header().Get("Accept-Ranges"), "bytes"; got != want {
 			t.Fatalf("Accept-Ranges = %q, want %q", got, want)
 		}
@@ -1204,9 +1137,7 @@ func runProxyRangeMatrix(t *testing.T, newStore func() storage.Storage) {
 		req.Header.Set("Range", "bytes=1000-1999")
 		testHandler.DownloadAttachment(w, req)
 
-		if w.Code != http.StatusPartialContent {
-			t.Fatalf("status = %d, want 206; body=%s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusPartialContent, "HTTP status")
 		if got, want := w.Header().Get("Content-Range"), fmt.Sprintf("bytes 1000-1999/%d", len(body)); got != want {
 			t.Fatalf("Content-Range = %q, want %q", got, want)
 		}
@@ -1221,9 +1152,7 @@ func runProxyRangeMatrix(t *testing.T, newStore func() storage.Storage) {
 		req.Header.Set("Range", "bytes=-500")
 		testHandler.DownloadAttachment(w, req)
 
-		if w.Code != http.StatusPartialContent {
-			t.Fatalf("status = %d, want 206; body=%s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusPartialContent, "HTTP status")
 		start := len(body) - 500
 		if got, want := w.Header().Get("Content-Range"), fmt.Sprintf("bytes %d-%d/%d", start, len(body)-1, len(body)); got != want {
 			t.Fatalf("Content-Range = %q, want %q", got, want)
@@ -1239,9 +1168,7 @@ func runProxyRangeMatrix(t *testing.T, newStore func() storage.Storage) {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", len(body)+10, len(body)+20))
 		testHandler.DownloadAttachment(w, req)
 
-		if w.Code != http.StatusRequestedRangeNotSatisfiable {
-			t.Fatalf("status = %d, want 416; body=%s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusRequestedRangeNotSatisfiable, "HTTP status")
 		if got, want := w.Header().Get("Content-Range"), fmt.Sprintf("bytes */%d", len(body)); got != want {
 			t.Fatalf("Content-Range = %q, want %q", got, want)
 		}
@@ -1252,9 +1179,7 @@ func runProxyRangeMatrix(t *testing.T, newStore func() storage.Storage) {
 		req, w := newDownloadRequest(t, id, testWorkspaceID)
 		testHandler.DownloadAttachment(w, req)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 		if got, want := w.Header().Get("Accept-Ranges"), "bytes"; got != want {
 			t.Fatalf("Accept-Ranges = %q, want %q", got, want)
 		}
@@ -1295,9 +1220,7 @@ func TestDownloadAttachment_NonSeekableRangeSkipFailureReturns502(t *testing.T) 
 	req.Header.Set("Range", "bytes=1000-1999")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadGateway, "HTTP status")
 	if !strings.Contains(w.Body.String(), "failed to read attachment range") {
 		t.Fatalf("502 body should carry the honest error, got %q", w.Body.String())
 	}
@@ -1319,9 +1242,7 @@ func TestDownloadAttachment_NonSeekableMultiRangeServesFull200(t *testing.T) {
 	req.Header.Set("Range", "bytes=0-10,20-30")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (multi-range ignored); body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Body.Bytes(); !bytes.Equal(got, body) {
 		t.Fatalf("multi-range should serve full body: len(got)=%d, want %d", len(got), len(body))
 	}
@@ -1347,9 +1268,7 @@ func TestDownloadAttachment_SeekableMultiRangeServes206(t *testing.T) {
 	req.Header.Set("Range", "bytes=0-10,20-30")
 	testHandler.DownloadAttachment(w, req)
 
-	if w.Code != http.StatusPartialContent {
-		t.Fatalf("status = %d, want 206 (multipart); body len=%d", w.Code, w.Body.Len())
-	}
+	testutil.Equal(t, w.Code, http.StatusPartialContent, "HTTP status")
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "multipart/byteranges") {
 		t.Fatalf("Content-Type = %q, want multipart/byteranges", ct)
 	}
@@ -1375,9 +1294,7 @@ func TestDownloadAttachment_NonSeekableEmptyObjectRangeServesFull200(t *testing.
 			req.Header.Set("Range", rangeHeader)
 			testHandler.DownloadAttachment(w, req)
 
-			if w.Code != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (Range ignored on empty object); body=%s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 			if got := w.Body.Len(); got != 0 {
 				t.Fatalf("empty object must serve an empty body, got %d bytes", got)
 			}
@@ -1411,9 +1328,7 @@ func TestDownloadAttachment_NonSeekableEmptyObjectMalformedRangeReturns416(t *te
 			req.Header.Set("Range", rangeHeader)
 			testHandler.DownloadAttachment(w, req)
 
-			if w.Code != http.StatusRequestedRangeNotSatisfiable {
-				t.Fatalf("status = %d, want 416 for malformed range on empty object; body=%s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusRequestedRangeNotSatisfiable, "HTTP status")
 		})
 	}
 }
@@ -1520,9 +1435,7 @@ func TestGetAttachmentContent_HappyPath_Markdown(t *testing.T) {
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'")
 	testHandler.GetAttachmentContent(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Body.String(); got != string(body) {
 		t.Errorf("body = %q, want %q", got, body)
 	}
@@ -1551,9 +1464,7 @@ func TestGetAttachmentContent_AcceptsByExtensionWhenContentTypeIsGeneric(t *test
 
 	req, w := newPreviewRequest(t, id, testWorkspaceID)
 	testHandler.GetAttachmentContent(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 func TestGetAttachmentContent_Unsupported_PDF(t *testing.T) {
@@ -1566,9 +1477,7 @@ func TestGetAttachmentContent_Unsupported_PDF(t *testing.T) {
 
 	req, w := newPreviewRequest(t, id, testWorkspaceID)
 	testHandler.GetAttachmentContent(w, req)
-	if w.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("status = %d, want 415; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnsupportedMediaType, "HTTP status")
 }
 
 func TestGetAttachmentContent_TooLarge(t *testing.T) {
@@ -1583,9 +1492,7 @@ func TestGetAttachmentContent_TooLarge(t *testing.T) {
 
 	req, w := newPreviewRequest(t, id, testWorkspaceID)
 	testHandler.GetAttachmentContent(w, req)
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want 413; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusRequestEntityTooLarge, "HTTP status")
 }
 
 func TestGetAttachmentContent_ForeignWorkspace(t *testing.T) {
@@ -1600,9 +1507,7 @@ func TestGetAttachmentContent_ForeignWorkspace(t *testing.T) {
 	foreign := "00000000-0000-0000-0000-000000000099"
 	req, w := newPreviewRequest(t, id, foreign)
 	testHandler.GetAttachmentContent(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 func TestGetAttachmentContent_NotFound(t *testing.T) {
@@ -1613,9 +1518,7 @@ func TestGetAttachmentContent_NotFound(t *testing.T) {
 
 	req, w := newPreviewRequest(t, "00000000-0000-0000-0000-000000000abc", testWorkspaceID)
 	testHandler.GetAttachmentContent(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404; body=%s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // isTextPreviewable is the whitelist linkpin between the proxy and the
@@ -1926,9 +1829,7 @@ func TestServeLocalUpload_RelaxesFrameAncestorsForPreview(t *testing.T) {
 
 	h.ServeLocalUpload(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body=%q", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if got := w.Body.String(); got != body {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
@@ -1941,9 +1842,5 @@ func TestServeLocalUpload_RelaxesFrameAncestorsForPreview(t *testing.T) {
 func TestServeLocalUpload_NonLocalStorage404(t *testing.T) {
 	h := &Handler{Storage: &mockStorage{}}
 	req := httptest.NewRequest(http.MethodGet, "/uploads/workspaces/ws-1/x.png", nil)
-	w := httptest.NewRecorder()
-	h.ServeLocalUpload(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", w.Code)
-	}
+	testutil.Call(t, h.ServeLocalUpload, req).Want(http.StatusNotFound)
 }

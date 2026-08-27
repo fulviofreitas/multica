@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -181,18 +180,12 @@ func TestIssueWriteAcceptsCustomStatusAndRejectsUnknown(t *testing.T) {
 			"title":  "custom status write",
 			"status": "human_review_w",
 		})
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, req)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-		}
+		rec := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 		var created struct {
 			ID     string `json:"id"`
 			Status string `json:"status"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
+		rec.JSON(&created)
 		if created.Status != "human_review_w" {
 			t.Errorf("issue.status = %q, want the custom key stored verbatim", created.Status)
 		}
@@ -206,11 +199,7 @@ func TestIssueWriteAcceptsCustomStatusAndRejectsUnknown(t *testing.T) {
 			"title":  "unknown status write",
 			"status": "not_a_status",
 		})
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for an unknown status, got %d: %s", rec.Code, rec.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusBadRequest)
 	})
 
 	t.Run("archived status is rejected", func(t *testing.T) {
@@ -225,11 +214,7 @@ func TestIssueWriteAcceptsCustomStatusAndRejectsUnknown(t *testing.T) {
 			"title":  "archived status write",
 			"status": "retired_w",
 		})
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, req)
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400 for an archived status, got %d: %s", rec.Code, rec.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusBadRequest)
 	})
 }
 
@@ -251,22 +236,14 @@ func TestBuiltInStatusesAreImmutable(t *testing.T) {
 		req := withURLParam(
 			newRequest(http.MethodPatch, "/api/issue-statuses/"+uuidToString(builtIn.ID), map[string]any{"name": "Renamed"}),
 			"id", uuidToString(builtIn.ID))
-		rec := httptest.NewRecorder()
-		testHandler.UpdateIssueStatus(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 renaming a built-in, got %d: %s", rec.Code, rec.Body.String())
-		}
+		testutil.Call(t, testHandler.UpdateIssueStatus, req).Want(http.StatusForbidden)
 	})
 
 	t.Run("archive is refused at the API", func(t *testing.T) {
 		req := withURLParam(
 			newRequest(http.MethodDelete, "/api/issue-statuses/"+uuidToString(builtIn.ID), nil),
 			"id", uuidToString(builtIn.ID))
-		rec := httptest.NewRecorder()
-		testHandler.ArchiveIssueStatus(rec, req)
-		if rec.Code != http.StatusForbidden {
-			t.Fatalf("expected 403 archiving a built-in, got %d: %s", rec.Code, rec.Body.String())
-		}
+		testutil.Call(t, testHandler.ArchiveIssueStatus, req).Want(http.StatusForbidden)
 	})
 
 	// Defense in depth: even a direct query cannot rename or archive a
@@ -317,13 +294,9 @@ func TestArchiveRetiresStatusWithoutTouchingExistingIssues(t *testing.T) {
 	}
 
 	// But nothing NEW can be assigned to it.
-	rec := httptest.NewRecorder()
-	testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+	testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 		"title": "should be refused", "status": "in_use_a",
-	}))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 assigning an archived status to a new issue, got %d: %s", rec.Code, rec.Body.String())
-	}
+	})).Want(http.StatusBadRequest)
 }
 
 // TestCreateIssueStatusValidation covers the reserved-key and category rules.
@@ -344,11 +317,7 @@ func TestCreateIssueStatusValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			testHandler.CreateIssueStatus(rec, newRequest(http.MethodPost, "/api/issue-statuses", tc.body))
-			if rec.Code != tc.want {
-				t.Fatalf("expected %d, got %d: %s", tc.want, rec.Code, rec.Body.String())
-			}
+			testutil.Call(t, testHandler.CreateIssueStatus, newRequest(http.MethodPost, "/api/issue-statuses", tc.body)).Want(tc.want)
 		})
 	}
 }
@@ -377,8 +346,7 @@ func TestIssueWriteStoresCanonicalStatusKey(t *testing.T) {
 
 	for _, input := range []string{"HUMAN_REVIEW_C", "  human_review_c  ", "Human_Review_C"} {
 		t.Run(input, func(t *testing.T) {
-			rec := httptest.NewRecorder()
-			testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+			rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 				"title": "canonical key " + input, "status": input,
 			}))
 			if rec.Code != http.StatusCreated {
@@ -421,8 +389,7 @@ func TestCustomTerminalStatusCountsAsTerminalInSQL(t *testing.T) {
 
 	mkIssue := func(title, status string) pgtype.UUID {
 		t.Helper()
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+		rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 			"title": title, "status": status,
 		}))
 		if rec.Code != http.StatusCreated {
@@ -510,8 +477,7 @@ func TestCustomTerminalStatusCountsAsTerminalInSQL(t *testing.T) {
 // archiveStatusVia runs the real archive endpoint and returns its status code.
 func archiveStatusVia(t *testing.T, entry db.IssueStatus) int {
 	t.Helper()
-	rec := httptest.NewRecorder()
-	testHandler.ArchiveIssueStatus(rec, withURLParam(
+	rec := testutil.Call(t, testHandler.ArchiveIssueStatus, withURLParam(
 		newRequest(http.MethodDelete, "/api/issue-statuses/"+uuidToString(entry.ID), nil),
 		"id", uuidToString(entry.ID)))
 	return rec.Code
@@ -557,24 +523,21 @@ func TestWritesRejectAnArchivedStatus(t *testing.T) {
 		write func(t *testing.T, key string) int
 	}{
 		{"create", "race_a_create", func(t *testing.T, key string) int {
-			rec := httptest.NewRecorder()
-			testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+			rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 				"title": "race create " + key, "status": key,
 			}))
 			return rec.Code
 		}},
 		{"update", "race_a_update", func(t *testing.T, key string) int {
 			seed := mustCreateIssue(t, "race update seed "+key, "todo")
-			rec := httptest.NewRecorder()
-			testHandler.UpdateIssue(rec, withURLParam(
+			rec := testutil.Call(t, testHandler.UpdateIssue, withURLParam(
 				newRequest(http.MethodPatch, "/api/issues/"+uuidToString(seed), map[string]any{"status": key}),
 				"id", uuidToString(seed)))
 			return rec.Code
 		}},
 		{"update with description merge", "race_a_upd_merge", func(t *testing.T, key string) int {
 			seed := mustCreateIssue(t, "race merge seed "+key, "todo")
-			rec := httptest.NewRecorder()
-			testHandler.UpdateIssue(rec, withURLParam(
+			rec := testutil.Call(t, testHandler.UpdateIssue, withURLParam(
 				newRequest(http.MethodPatch, "/api/issues/"+uuidToString(seed), map[string]any{
 					"status": key, "description": "merged body",
 				}),
@@ -583,8 +546,7 @@ func TestWritesRejectAnArchivedStatus(t *testing.T) {
 		}},
 		{"batch", "race_a_batch", func(t *testing.T, key string) int {
 			seed := mustCreateIssue(t, "race batch seed "+key, "todo")
-			rec := httptest.NewRecorder()
-			testHandler.BatchUpdateIssues(rec, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
+			rec := testutil.Call(t, testHandler.BatchUpdateIssues, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 				"issue_ids": []string{uuidToString(seed)},
 				"updates":   map[string]any{"status": key},
 			}))
@@ -592,8 +554,7 @@ func TestWritesRejectAnArchivedStatus(t *testing.T) {
 		}},
 		{"batch with description merge", "race_a_batch_merge", func(t *testing.T, key string) int {
 			seed := mustCreateIssue(t, "race batch merge seed "+key, "todo")
-			rec := httptest.NewRecorder()
-			testHandler.BatchUpdateIssues(rec, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
+			rec := testutil.Call(t, testHandler.BatchUpdateIssues, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 				"issue_ids": []string{uuidToString(seed)},
 				"updates":   map[string]any{"status": key, "description": "merged body"},
 			}))
@@ -637,13 +598,9 @@ func TestArchiveSucceedsAfterACommittedWrite(t *testing.T) {
 	t.Run("writer wins: archive still succeeds and leaves the issue alone", func(t *testing.T) {
 		entry := createTestCustomStatus(t, "race_b_writer", issuestatus.InProgress)
 
-		rec := httptest.NewRecorder()
-		testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+		rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 			"title": "race writer wins", "status": "race_b_writer",
-		}))
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("create on custom status: %d %s", rec.Code, rec.Body.String())
-		}
+		})).Want(http.StatusCreated)
 		var created struct {
 			ID string `json:"id"`
 		}
@@ -673,8 +630,7 @@ func TestArchiveSucceedsAfterACommittedWrite(t *testing.T) {
 
 		done := make(chan int, 1)
 		go func() {
-			rec := httptest.NewRecorder()
-			testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+			rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 				"title": "race blocked writer", "status": "race_block",
 			}))
 			done <- rec.Code
@@ -724,8 +680,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 			name: "create",
 			key:  "win_create",
 			write: func(t *testing.T, key string, _ pgtype.UUID) int {
-				rec := httptest.NewRecorder()
-				testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+				rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 					"title": "race window create", "status": key,
 				}))
 				return rec.Code
@@ -738,8 +693,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 				return mustCreateIssue(t, "race window update "+key, "todo")
 			},
 			write: func(t *testing.T, key string, seed pgtype.UUID) int {
-				rec := httptest.NewRecorder()
-				testHandler.UpdateIssue(rec, withURLParam(
+				rec := testutil.Call(t, testHandler.UpdateIssue, withURLParam(
 					newRequest(http.MethodPatch, "/api/issues/"+uuidToString(seed), map[string]any{"status": key}),
 					"id", uuidToString(seed)))
 				return rec.Code
@@ -752,8 +706,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 				return mustCreateIssue(t, "race window merge "+key, "todo")
 			},
 			write: func(t *testing.T, key string, seed pgtype.UUID) int {
-				rec := httptest.NewRecorder()
-				testHandler.UpdateIssue(rec, withURLParam(
+				rec := testutil.Call(t, testHandler.UpdateIssue, withURLParam(
 					newRequest(http.MethodPatch, "/api/issues/"+uuidToString(seed), map[string]any{
 						"status": key, "description": "merged body",
 					}),
@@ -768,8 +721,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 				return mustCreateIssue(t, "race window batch "+key, "todo")
 			},
 			write: func(t *testing.T, key string, seed pgtype.UUID) int {
-				rec := httptest.NewRecorder()
-				testHandler.BatchUpdateIssues(rec, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
+				rec := testutil.Call(t, testHandler.BatchUpdateIssues, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 					"issue_ids": []string{uuidToString(seed)},
 					"updates":   map[string]any{"status": key},
 				}))
@@ -783,8 +735,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 				return mustCreateIssue(t, "race window batch merge "+key, "todo")
 			},
 			write: func(t *testing.T, key string, seed pgtype.UUID) int {
-				rec := httptest.NewRecorder()
-				testHandler.BatchUpdateIssues(rec, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
+				rec := testutil.Call(t, testHandler.BatchUpdateIssues, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 					"issue_ids": []string{uuidToString(seed)},
 					"updates":   map[string]any{"status": key, "description": "merged body"},
 				}))
@@ -863,8 +814,7 @@ func TestArchiveCommitsInsideTheWriteRaceWindow(t *testing.T) {
 // mustCreateIssue creates an issue through the real endpoint and returns its id.
 func mustCreateIssue(t *testing.T, title, status string) pgtype.UUID {
 	t.Helper()
-	rec := httptest.NewRecorder()
-	testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+	rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 		"title": title, "status": status,
 	}))
 	if rec.Code != http.StatusCreated {
@@ -894,14 +844,10 @@ func TestBatchCustomTerminalStatusEntersStageBarrier(t *testing.T) {
 		t.Fatalf("attach child: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	testHandler.BatchUpdateIssues(rec, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
+	testutil.Call(t, testHandler.BatchUpdateIssues, newRequest(http.MethodPatch, "/api/issues/batch", map[string]any{
 		"issue_ids": []string{uuidToString(child)},
 		"updates":   map[string]any{"status": "batch_done_s"},
-	}))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("batch update: %d %s", rec.Code, rec.Body.String())
-	}
+	})).Want(http.StatusOK)
 
 	// The observable effect of entering the barrier is the system comment on
 	// the parent. Without the fix the batch is silent.
@@ -928,13 +874,9 @@ func TestChildrenResponseCarriesStatusCategory(t *testing.T) {
 		t.Fatalf("attach child: %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	testHandler.ListChildIssues(rec, withURLParam(
+	rec := testutil.Call(t, testHandler.ListChildIssues, withURLParam(
 		newRequest(http.MethodGet, "/api/issues/"+uuidToString(parent)+"/children", nil),
-		"id", uuidToString(parent)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list children: %d %s", rec.Code, rec.Body.String())
-	}
+		"id", uuidToString(parent))).Want(http.StatusOK)
 
 	var payload struct {
 		Issues []struct {
@@ -942,9 +884,7 @@ func TestChildrenResponseCarriesStatusCategory(t *testing.T) {
 			StatusCategory string `json:"status_category"`
 		} `json:"issues"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	rec.JSON(&payload)
 	if len(payload.Issues) != 1 {
 		t.Fatalf("expected 1 child, got %d: %s", len(payload.Issues), rec.Body.String())
 	}
@@ -1030,11 +970,7 @@ func TestListFilterByCategoryReturnsCustomStatusIssues(t *testing.T) {
 	otherID := mustCreateIssue(t, "unrelated todo", "todo")
 	_ = ctx
 
-	rec := httptest.NewRecorder()
-	testHandler.ListIssues(rec, newRequest(http.MethodGet, "/api/issues?status_category=in_review&limit=100", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, testHandler.ListIssues, newRequest(http.MethodGet, "/api/issues?status_category=in_review&limit=100", nil)).Want(http.StatusOK)
 	var payload struct {
 		Issues []struct {
 			ID             string `json:"id"`
@@ -1042,9 +978,7 @@ func TestListFilterByCategoryReturnsCustomStatusIssues(t *testing.T) {
 			StatusCategory string `json:"status_category"`
 		} `json:"issues"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	rec.JSON(&payload)
 	got := map[string]string{}
 	for _, i := range payload.Issues {
 		got[i.ID] = i.StatusCategory
@@ -1080,13 +1014,9 @@ func TestCreateEventCarriesCustomStatusCategory(t *testing.T) {
 		}
 	})
 
-	rec := httptest.NewRecorder()
-	testHandler.CreateIssue(rec, newRequest(http.MethodPost, "/api/issues", map[string]any{
+	rec := testutil.Call(t, testHandler.CreateIssue, newRequest(http.MethodPost, "/api/issues", map[string]any{
 		"title": "custom status event", "status": "human_review_ev",
-	}))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
-	}
+	})).Want(http.StatusCreated)
 	var created struct {
 		ID             string `json:"id"`
 		StatusCategory string `json:"status_category"`
@@ -1129,11 +1059,7 @@ func TestListEndpointsCarryStatusCategory(t *testing.T) {
 	}
 
 	t.Run("list carries category for every custom row", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		testHandler.ListIssues(rec, newRequest(http.MethodGet, "/api/issues?status_category=in_review&limit=100", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
-		}
+		rec := testutil.Call(t, testHandler.ListIssues, newRequest(http.MethodGet, "/api/issues?status_category=in_review&limit=100", nil)).Want(http.StatusOK)
 		var payload struct {
 			Issues []struct {
 				Status         string `json:"status"`
@@ -1178,12 +1104,8 @@ func TestListEndpointsCarryStatusCategory(t *testing.T) {
 
 	t.Run("get carries category", func(t *testing.T) {
 		id := mustCreateIssue(t, "get carries category", "human_review_n")
-		rec := httptest.NewRecorder()
-		testHandler.GetIssue(rec, withURLParam(
-			newRequest(http.MethodGet, "/api/issues/"+uuidToString(id), nil), "id", uuidToString(id)))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("get: %d %s", rec.Code, rec.Body.String())
-		}
+		rec := testutil.Call(t, testHandler.GetIssue, withURLParam(
+			newRequest(http.MethodGet, "/api/issues/"+uuidToString(id), nil), "id", uuidToString(id))).Want(http.StatusOK)
 		var got struct {
 			StatusCategory string `json:"status_category"`
 		}

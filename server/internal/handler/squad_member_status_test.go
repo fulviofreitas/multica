@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestDeriveSquadMemberStatus(t *testing.T) {
@@ -65,27 +64,10 @@ func TestListSquadMemberStatusRetainsWaiterIssueWithoutWorkingStatus(t *testing.
 	squadID := createCommentTriggerPreviewSquad(t, "Squad Status Local Directory Waiter", agentID)
 	issueID := createCommentTriggerPreviewIssue(t, "Directory waiter remains visible", "agent", agentID)
 
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO squad_member (squad_id, member_type, member_id)
-		VALUES ($1, 'agent', $2)
-	`, squadID, agentID); err != nil {
-		t.Fatalf("insert squad member: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad_member WHERE squad_id = $1 AND member_id = $2`, squadID, agentID)
-	})
+	dbfx.InsertNoID(t, "squad_member", testutil.Cols{"squad_id": squadID, "member_type": testutil.Raw("'agent'"), "member_id": agentID}, "squad_id = $1 AND member_id = $2", squadID, agentID)
 
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, dispatched_at)
-		VALUES ($1, $2, $3, 'waiting_local_directory', 0, now())
-		RETURNING id
-	`, agentID, handlerTestRuntimeID(t), issueID).Scan(&taskID); err != nil {
-		t.Fatalf("insert local-directory waiter: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": handlerTestRuntimeID(t), "issue_id": issueID, "status": testutil.Raw("'waiting_local_directory'"), "priority": testutil.Raw("0"), "dispatched_at": testutil.Raw("now()")})
 
 	rows, err := testHandler.Queries.ListSquadMemberStatusRows(ctx, parseUUID(squadID))
 	if err != nil {
@@ -97,21 +79,15 @@ func TestListSquadMemberStatusRetainsWaiterIssueWithoutWorkingStatus(t *testing.
 
 	assertSquadMember := func(wantWorking bool) {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.ListSquadMemberStatus(w, squadScopeReq(
+		w := testutil.Call(t, testHandler.ListSquadMemberStatus, squadScopeReq(
 			"",
 			http.MethodGet,
 			"/api/squads/"+squadID+"/members/status",
 			nil,
 			map[string]string{"id": squadID},
-		))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListSquadMemberStatus: got %d: %s", w.Code, w.Body.String())
-		}
+		)).Want(http.StatusOK)
 		var resp SquadMemberStatusListResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode squad member status: %v", err)
-		}
+		w.Decode(&resp)
 		if len(resp.Members) != 1 {
 			t.Fatalf("squad members = %+v, want one member", resp.Members)
 		}

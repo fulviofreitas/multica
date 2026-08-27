@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
 )
@@ -180,16 +181,12 @@ func withLocalPluginSourceIn(t *testing.T, root string, manifest string) string 
 func publishLocalPlugin(t *testing.T, name string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"name": name})
-	recorder := httptest.NewRecorder()
-	testHandler.PublishLocalPluginPackage(recorder,
-		pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID}))
+	recorder := testutil.Call(t, testHandler.PublishLocalPluginPackage, pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID}))
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("publish %s: status=%d body=%s", name, recorder.Code, recorder.Body.String())
 	}
 	var published service.PluginPackageSummary
-	if err := json.Unmarshal(recorder.Body.Bytes(), &published); err != nil {
-		t.Fatalf("decode published package: %v", err)
-	}
+	recorder.JSON(&published)
 	if len(published.Versions) == 0 {
 		t.Fatalf("publish %s returned no versions", name)
 	}
@@ -226,9 +223,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	var installed struct {
 		ID string `json:"id"`
 	}
@@ -256,9 +251,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	testHandler.DisablePlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/disable", nil, params))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("disable status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 	enabled, generationDisabled, _ := loadSchedule()
 	if enabled || generationDisabled != generation1 {
 		t.Fatalf("disabled schedule enabled=%v generation=%q, want disabled generation %q", enabled, generationDisabled, generation1)
@@ -275,9 +268,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	testHandler.EnablePlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/enable", nil, params))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("enable status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 	enabled, generation2, _ := loadSchedule()
 	if !enabled || generation2 == generation1 {
 		t.Fatalf("reactivated schedule enabled=%v generation=%q, previous %q", enabled, generation2, generation1)
@@ -292,9 +283,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 	upgrade, _ := json.Marshal(map[string]any{"version_id": upgradeVersionID, "granted_scopes": []string{"net:example.com"}})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", upgrade, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("unchanged upgrade status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	_, generationUnchanged, _ := loadSchedule()
 	if generationUnchanged != generation2 {
 		t.Fatalf("code-only upgrade rotated generation: got %q want %q", generationUnchanged, generation2)
@@ -307,9 +296,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 	upgrade, _ = json.Marshal(map[string]any{"version_id": changedVersionID, "granted_scopes": []string{"net:example.com"}})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", upgrade, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("changed upgrade status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	_, generation3, cron := loadSchedule()
 	if generation3 == generation2 || cron != "*/10 * * * *" {
 		t.Fatalf("changed schedule generation=%q cron=%q, previous generation %q", generation3, cron, generation2)
@@ -323,9 +310,7 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 	upgrade, _ = json.Marshal(map[string]any{"version_id": removedVersionID, "granted_scopes": []string{"net:example.com"}})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", upgrade, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("schedule-removing upgrade status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	var remaining int
 	if err := testPool.QueryRow(context.Background(), `SELECT COUNT(*) FROM plugin_hook_schedule WHERE installation_id = $1`, installed.ID).Scan(&remaining); err != nil {
 		t.Fatalf("count removed schedules: %v", err)
@@ -342,16 +327,12 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 	upgrade, _ = json.Marshal(map[string]any{"version_id": restoredVersionID, "granted_scopes": []string{"net:example.com"}})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", upgrade, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("schedule-restoring upgrade status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	loadSchedule()
 
 	recorder = httptest.NewRecorder()
 	testHandler.UninstallPlugin(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, params))
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("uninstall status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusNoContent, "HTTP status")
 	if err := testPool.QueryRow(context.Background(), `SELECT COUNT(*) FROM plugin_hook_schedule WHERE installation_id = $1`, installed.ID).Scan(&remaining); err != nil {
 		t.Fatalf("count schedules after uninstall: %v", err)
 	}
@@ -372,11 +353,7 @@ func TestPluginManagementRequiresPluginsV1(t *testing.T) {
 		"uninstall": testHandler.UninstallPlugin,
 	} {
 		t.Run(name, func(t *testing.T) {
-			recorder := httptest.NewRecorder()
-			handler(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", []byte(`{}`), map[string]string{"id": testWorkspaceID}))
-			if recorder.Code != http.StatusServiceUnavailable {
-				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-			}
+			testutil.Call(t, handler, pluginHandlerRequest(http.MethodPost, "/plugins", []byte(`{}`), map[string]string{"id": testWorkspaceID})).Want(http.StatusServiceUnavailable)
 		})
 	}
 }
@@ -386,17 +363,11 @@ func TestPluginPreviewShowsScopesWithoutInstalling(t *testing.T) {
 	cleanupPluginInstallations(t)
 	versionID := withLocalPluginSource(t, handlerTestManifest)
 
-	recorder := httptest.NewRecorder()
 	body, _ := json.Marshal(map[string]string{"version_id": versionID})
-	testHandler.PreviewPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/preview", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("preview status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.PreviewPlugin, pluginHandlerRequest(http.MethodPost, "/plugins/preview", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusOK)
 
 	var preview service.PluginPreview
-	if err := json.Unmarshal(recorder.Body.Bytes(), &preview); err != nil {
-		t.Fatalf("decode preview: %v", err)
-	}
+	recorder.JSON(&preview)
 	if len(preview.Scopes) != 3 || preview.Installed {
 		t.Fatalf("unexpected preview: %+v", preview)
 	}
@@ -406,17 +377,11 @@ func TestPluginPreviewShowsScopesWithoutInstalling(t *testing.T) {
 
 	// Preview must be side-effect free: the consent screen has to be able to
 	// show scopes before anything exists to revoke.
-	listRecorder := httptest.NewRecorder()
-	testHandler.ListPlugins(listRecorder, pluginHandlerRequest(http.MethodGet, "/plugins", nil, map[string]string{"id": testWorkspaceID}))
-	if listRecorder.Code != http.StatusOK {
-		t.Fatalf("list status=%d body=%s", listRecorder.Code, listRecorder.Body.String())
-	}
+	listRecorder := testutil.Call(t, testHandler.ListPlugins, pluginHandlerRequest(http.MethodGet, "/plugins", nil, map[string]string{"id": testWorkspaceID})).Want(http.StatusOK)
 	var list struct {
 		Plugins []map[string]any `json:"plugins"`
 	}
-	if err := json.Unmarshal(listRecorder.Body.Bytes(), &list); err != nil {
-		t.Fatalf("decode list: %v", err)
-	}
+	listRecorder.JSON(&list)
 	if len(list.Plugins) != 0 {
 		t.Fatalf("preview created an installation: %v", list.Plugins)
 	}
@@ -430,9 +395,7 @@ func TestPluginInstallRequiresExactConsent(t *testing.T) {
 	partial, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": []string{"issues:read"}})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", partial, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("partial consent status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusConflict, "HTTP status")
 
 	extra, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
@@ -440,9 +403,7 @@ func TestPluginInstallRequiresExactConsent(t *testing.T) {
 	})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", extra, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("over-consent status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusConflict, "HTTP status")
 }
 
 func TestPluginInstallConfigureAndUninstall(t *testing.T) {
@@ -456,9 +417,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	var installed struct {
 		ID                string         `json:"id"`
 		PluginKey         string         `json:"plugin_key"`
@@ -477,9 +436,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 	configure, _ := json.Marshal(map[string]any{"values": map[string]any{"repo": "multica-ai/multica", "token": "sk-super-secret"}})
 	recorder = httptest.NewRecorder()
 	testHandler.ConfigurePlugin(recorder, pluginHandlerRequest(http.MethodPut, "/plugins/config", configure, params))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("configure status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 	// The secret must not come back in any form: not in `config`, not masked,
 	// not anywhere else in the payload.
 	if strings.Contains(recorder.Body.String(), "sk-super-secret") {
@@ -511,9 +468,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 	unknown, _ := json.Marshal(map[string]any{"values": map[string]any{"nope": "x"}})
 	recorder = httptest.NewRecorder()
 	testHandler.ConfigurePlugin(recorder, pluginHandlerRequest(http.MethodPut, "/plugins/config", unknown, params))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("unknown config field status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusBadRequest, "HTTP status")
 
 	recorder = httptest.NewRecorder()
 	testHandler.DisablePlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/disable", nil, params))
@@ -523,9 +478,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	testHandler.UninstallPlugin(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, params))
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("uninstall status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusNoContent, "HTTP status")
 
 	// Uninstall must take the plugin's own state with it, or a reinstall would
 	// silently inherit rows nobody can audit.
@@ -555,12 +508,7 @@ func TestPluginPublishRejectsMalformedManifest(t *testing.T) {
 	t.Cleanup(func() { testHandler.PluginService.LocalDir = previousDir })
 
 	body, _ := json.Marshal(map[string]string{"name": "hello"})
-	recorder := httptest.NewRecorder()
-	testHandler.PublishLocalPluginPackage(recorder,
-		pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("malformed manifest status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.PublishLocalPluginPackage, pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusBadRequest)
 	if !strings.Contains(recorder.Body.String(), "manifest") {
 		t.Fatalf("malformed manifest error is not actionable: %s", recorder.Body.String())
 	}
@@ -586,12 +534,7 @@ func TestPluginPublishRejectsMissingSurfaceEntry(t *testing.T) {
 	t.Cleanup(func() { testHandler.PluginService.LocalDir = previousDir })
 
 	body, _ := json.Marshal(map[string]string{"name": "hello"})
-	recorder := httptest.NewRecorder()
-	testHandler.PublishLocalPluginPackage(recorder,
-		pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("missing surface entry status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.PublishLocalPluginPackage, pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusBadRequest)
 	if !strings.Contains(recorder.Body.String(), "ui/main.js") {
 		t.Fatalf("error does not name the missing file: %s", recorder.Body.String())
 	}
@@ -621,11 +564,7 @@ func TestPluginInstallRejectsUnshippedCapabilities(t *testing.T) {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "net:example.com"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("unshipped capability status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusUnprocessableEntity)
 	// A declared-but-unrunnable contribution must fail the install outright and
 	// name what is missing: silently dropping it would look installed and never
 	// fire.
@@ -647,13 +586,10 @@ func TestPluginInstallAcceptsEveryCapabilityThisHostShips(t *testing.T) {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "net:example.com"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
 	// hookOnlyTestManifest declares ui + http, both shipped by the hook engine.
 	// If this starts failing, the gate is refusing something the host can run.
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("a manifest declaring only shipped capabilities was refused: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 }
 
 func TestPluginInstallAcceptsAShippedSurface(t *testing.T) {
@@ -669,23 +605,15 @@ func TestPluginInstallAcceptsAShippedSurface(t *testing.T) {
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("shipped surface was refused: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 }
 
 func TestPluginInstallationFromAnotherWorkspaceIsNotFound(t *testing.T) {
 	withPluginsV1Flag(t, testHandler, true)
-	recorder := httptest.NewRecorder()
-	testHandler.EnablePlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/enable", nil, map[string]string{
+	testutil.Call(t, testHandler.EnablePlugin, pluginHandlerRequest(http.MethodPost, "/plugins/enable", nil, map[string]string{
 		"id":             testWorkspaceID,
 		"installationId": "11111111-1111-1111-1111-111111111111",
-	}))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusNotFound)
 }
 
 func TestPluginUpgradePrunesSecretsTheNewManifestDropped(t *testing.T) {
@@ -700,9 +628,7 @@ func TestPluginUpgradePrunesSecretsTheNewManifestDropped(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	var installed struct {
 		ID string `json:"id"`
 	}
@@ -733,9 +659,7 @@ func TestPluginUpgradePrunesSecretsTheNewManifestDropped(t *testing.T) {
 	})
 	recorder = httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", upgrade, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("upgrade status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	if !strings.Contains(recorder.Body.String(), `"configured_secrets":[]`) {
 		t.Fatalf("upgrade left an unreachable secret: %s", recorder.Body.String())
 	}
@@ -792,19 +716,11 @@ func TestPluginRoutesRequireWorkspaceAdmin(t *testing.T) {
 		t.Run(route.method+" "+route.path, func(t *testing.T) {
 			request := newRequest(route.method, route.path, map[string]any{})
 			request.Header.Set("X-User-ID", memberID)
-			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, request)
-			if recorder.Code != http.StatusForbidden {
-				t.Fatalf("plain member reached an admin route: status=%d body=%s", recorder.Code, recorder.Body.String())
-			}
+			testutil.Call(t, router.ServeHTTP, request).Want(http.StatusForbidden)
 		})
 	}
 
 	request := newRequest(http.MethodGet, base+"/plugins", nil)
 	request.Header.Set("X-User-ID", memberID)
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("plain member could not list Plugins: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, router.ServeHTTP, request).Want(http.StatusOK)
 }

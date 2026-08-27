@@ -624,7 +624,7 @@ func TestClaimTaskByRuntime_SkillBundleRefsAndResolve(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, taskID)
 	req = newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/"+taskID+"/skill-bundles/resolve", resolveBody, testWorkspaceID, "skill-refs-daemon")
 	req = withURLParams(req, "runtimeId", runtimeID, "taskId", taskID)
-	w = testutil.Call(t, testHandler.ResolveTaskSkillBundles, req).Want(http.StatusConflict)
+	testutil.Call(t, testHandler.ResolveTaskSkillBundles, req).Want(http.StatusConflict)
 }
 
 // TestClaimTaskByRuntime_PopulatesWorkspaceContext verifies the claim
@@ -869,7 +869,6 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	w := httptest.NewRecorder()
 	// Daemon token is for a different workspace than the request body.
 	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
 		"workspace_id": testWorkspaceID,
@@ -880,10 +879,7 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 		},
 	}, "00000000-0000-0000-0000-000000000000", "test-daemon-mdt")
 
-	testHandler.DaemonRegister(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("DaemonRegister with mismatched workspace: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusNotFound)
 }
 
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
@@ -911,7 +907,7 @@ func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	req = newDaemonTokenRequest("POST", "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
 	}, "00000000-0000-0000-0000-000000000000", "attacker-daemon")
-	w = testutil.Call(t, testHandler.DaemonHeartbeat, req).Want(http.StatusNotFound)
+	testutil.Call(t, testHandler.DaemonHeartbeat, req).Want(http.StatusNotFound)
 }
 
 // TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError pins the fix for
@@ -1017,18 +1013,15 @@ func TestDaemonHeartbeat_SlowProbeDoesNotWedge(t *testing.T) {
 		testHandler.LocalSkillImportStore = origImport
 	})
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
 		"runtime_id": runtimeID,
 	}, testWorkspaceID, "runtime-local-skills-daemon")
 
 	start := time.Now()
-	testHandler.DaemonHeartbeat(w, req)
+	w := testutil.Call(t, testHandler.DaemonHeartbeat, req)
 	elapsed := time.Since(start)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("DaemonHeartbeat with slow probes: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	// Two bounded probes at 1s each + a small fixed slack.
 	if elapsed > 3*time.Second {
 		t.Fatalf("DaemonHeartbeat took %s; expected fast return despite slow probes", elapsed)
@@ -1114,9 +1107,7 @@ func TestGetTaskStatus_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	testHandler.GetTaskStatus(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("GetTaskStatus with cross-workspace token: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	// Same request with the CORRECT workspace should succeed.
 	w = httptest.NewRecorder()
@@ -1127,9 +1118,7 @@ func TestGetTaskStatus_WithDaemonToken_CrossWorkspace(t *testing.T) {
 		chi.RouteCtxKey, rctx))
 
 	testHandler.GetTaskStatus(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetTaskStatus with correct workspace token: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }
 
 // TestGetTaskStatus_TransientDBError_Returns500 verifies that a transient DB
@@ -1256,7 +1245,7 @@ func TestBatchIssueGCCheck_WithDaemonToken(t *testing.T) {
 		"issue_ids": []string{issueID},
 	}, "00000000-0000-0000-0000-000000000000", "attacker-daemon")
 	req = withURLParam(req, "workspaceId", testWorkspaceID)
-	w = testutil.Call(t, testHandler.BatchIssueGCCheck, req).Want(http.StatusNotFound)
+	testutil.Call(t, testHandler.BatchIssueGCCheck, req).Want(http.StatusNotFound)
 }
 
 // withURLParams merges the given chi URL parameters into the request context.
@@ -1276,15 +1265,11 @@ func withURLParams(req *http.Request, kv ...string) *http.Request {
 }
 
 func TestListTaskMessagesByUser_InvalidTaskIDReturnsBadRequest(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := httptest.NewRequest(http.MethodGet, "/api/tasks/optimistic-optimistic-1778739487737/messages", nil)
 	req = withURLParams(req, "taskId", "optimistic-optimistic-1778739487737")
 
-	(&Handler{}).ListTaskMessagesByUser(w, req)
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid task id, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, (&Handler{}).ListTaskMessagesByUser, req).Want(http.StatusBadRequest)
 	if !strings.Contains(w.Body.String(), "task_id") {
 		t.Fatalf("expected task_id validation error, got %s", w.Body.String())
 	}
@@ -1957,9 +1942,7 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	testHandler.StartTask(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("StartTask with cross-workspace token: expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 
 	// Same-workspace daemon token must succeed — this is the bug in #1224.
 	w = httptest.NewRecorder()
@@ -1968,9 +1951,7 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	testHandler.StartTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("StartTask for run_only autopilot task: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	var status string
 	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
@@ -2258,17 +2239,13 @@ func TestClaimTask_AutopilotRunOnly_PopulatesWorkspaceAndProjectContext(t *testi
 	})
 	defer testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil,
 		testWorkspaceID, "test-daemon-claim")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("runtimeId", runtimeID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
 	var resp struct {
 		Task *struct {
@@ -2281,9 +2258,7 @@ func TestClaimTask_AutopilotRunOnly_PopulatesWorkspaceAndProjectContext(t *testi
 			ProjectResources   []ProjectResourceData `json:"project_resources"`
 		} `json:"task"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.Task == nil {
 		t.Fatal("expected a task in response, got nil")
 	}
@@ -2379,17 +2354,13 @@ func TestClaimTaskByRuntime_TaskWorkspaceMismatch_CancelsAndRejects(t *testing.T
 		"priority":   2,
 	})
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+localRuntimeID+"/claim", nil,
 		testWorkspaceID, "legit-daemon")
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("runtimeId", localRuntimeID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("ClaimTaskByRuntime (mismatch): expected 500, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusInternalServerError)
 
 	// Task must NOT remain dispatched — it has to be cancelled so the agent
 	// is released immediately rather than stuck until the sweeper fires.
@@ -2444,7 +2415,6 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 		issueID,
 	)
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": agentFinalOutput},
 		testWorkspaceID, "legit-daemon")
@@ -2452,10 +2422,7 @@ func TestCompleteTask_CommentTriggered_SynthesizesCommentWhenAgentSilent(t *test
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	// Exactly one agent comment on the issue, threaded under the trigger,
 	// carrying the agent's final output.
@@ -2529,7 +2496,6 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 		VALUES ($1, $2, 'agent', $3, 'done, see PR', 'comment', $4)
 	`, issueID, testWorkspaceID, agentID, triggerCommentID)
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": "final terminal text that must NOT become a comment"},
 		testWorkspaceID, "legit-daemon")
@@ -2537,10 +2503,7 @@ func TestCompleteTask_CommentTriggered_SkipsSynthesisWhenAgentAlreadyCommented(t
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	var count int
 	dbfx.QueryRow(t, `
@@ -2577,7 +2540,6 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 		"started_at":         testutil.Raw("now()"),
 	})
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": "Done."},
 		testWorkspaceID, "legit-daemon")
@@ -2585,10 +2547,7 @@ func TestCompleteTask_CommentTriggered_SuppressesTrivialDoneOutput(t *testing.T)
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	var count int
 	dbfx.QueryRow(t, `
@@ -2622,7 +2581,6 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 		"started_at": testutil.Raw("now()"),
 	})
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/tasks/"+taskID+"/complete",
 		map[string]any{"output": "Done."},
 		testWorkspaceID, "legit-daemon")
@@ -2630,10 +2588,7 @@ func TestCompleteTask_AssignmentTriggered_DoesNotSuppressTrivialDoneOutput(t *te
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.CompleteTask(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("CompleteTask: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CompleteTask, req).Want(http.StatusOK)
 
 	var content string
 	dbfx.QueryRow(t, `
@@ -2685,24 +2640,18 @@ type claimRuntimeGuardTask struct {
 func claimTaskForRuntimeGuard(t *testing.T, runtimeID, daemonID string) *claimRuntimeGuardTask {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil,
 		testWorkspaceID, daemonID)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("runtimeId", runtimeID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
 	var resp struct {
 		Task *claimRuntimeGuardTask `json:"task"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.Task == nil {
 		t.Fatal("expected a task in response, got nil")
 	}
@@ -3642,7 +3591,7 @@ func TestGetChatSessionGCCheck(t *testing.T) {
 	req = newDaemonTokenRequest("GET", "/api/daemon/chat-sessions/"+sessionID+"/gc-check", nil,
 		testWorkspaceID, "legit-daemon")
 	req = withURLParam(req, "sessionId", sessionID)
-	w = testutil.Call(t, testHandler.GetChatSessionGCCheck, req).Want(http.StatusNotFound)
+	testutil.Call(t, testHandler.GetChatSessionGCCheck, req).Want(http.StatusNotFound)
 }
 
 // TestGetAutopilotRunGCCheck verifies the autopilot-run gc-check endpoint:

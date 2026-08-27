@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func setRuntimeTestMemberRole(t *testing.T, userID, role string) {
@@ -54,7 +54,6 @@ func TestInitiateUpdateRequiresRuntimeManager(t *testing.T) {
 				actorID = plainMemberID
 			}
 
-			w := httptest.NewRecorder()
 			req := withURLParam(
 				newRequestAs(actorID, http.MethodPost, "/api/runtimes/"+runtimeID+"/update", map[string]any{
 					"target_version": "v9.9.9",
@@ -62,11 +61,7 @@ func TestInitiateUpdateRequiresRuntimeManager(t *testing.T) {
 				"runtimeId",
 				runtimeID,
 			)
-			testHandler.InitiateUpdate(w, req)
-
-			if w.Code != tc.wantStatus {
-				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.InitiateUpdate, req).Want(tc.wantStatus)
 
 			hasPending, err := testHandler.UpdateStore.HasPending(context.Background(), runtimeID)
 			if err != nil {
@@ -112,17 +107,12 @@ func TestGetUpdateRequiresRuntimeManager(t *testing.T) {
 				t.Fatalf("create update request: %v", err)
 			}
 
-			w := httptest.NewRecorder()
 			req := withURLParams(
 				newRequestAs(actorID, http.MethodGet, "/api/runtimes/"+runtimeID+"/update/"+update.ID, nil),
 				"runtimeId", runtimeID,
 				"updateId", update.ID,
 			)
-			testHandler.GetUpdate(w, req)
-
-			if w.Code != tc.wantStatus {
-				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, w.Code, w.Body.String())
-			}
+			testutil.Call(t, testHandler.GetUpdate, req).Want(tc.wantStatus)
 		})
 	}
 }
@@ -142,7 +132,6 @@ func TestGetUpdateAllowsInitiatorAfterAdminDemotionOnPublicRuntime(t *testing.T)
 	}
 	promoteRuntimeTestMemberToAdmin(t, adminID)
 
-	initRecorder := httptest.NewRecorder()
 	initRequest := withURLParam(
 		newRequestAs(adminID, http.MethodPost, "/api/runtimes/"+runtimeID+"/update", map[string]any{
 			"target_version": "v9.9.9",
@@ -150,28 +139,19 @@ func TestGetUpdateAllowsInitiatorAfterAdminDemotionOnPublicRuntime(t *testing.T)
 		"runtimeId",
 		runtimeID,
 	)
-	testHandler.InitiateUpdate(initRecorder, initRequest)
-	if initRecorder.Code != http.StatusOK {
-		t.Fatalf("initiate update: expected 200, got %d: %s", initRecorder.Code, initRecorder.Body.String())
-	}
+	initRecorder := testutil.Call(t, testHandler.InitiateUpdate, initRequest).Want(http.StatusOK)
 
 	var update UpdateRequest
-	if err := json.Unmarshal(initRecorder.Body.Bytes(), &update); err != nil {
-		t.Fatalf("decode initiated update: %v", err)
-	}
+	initRecorder.JSON(&update)
 	if update.InitiatorUserID != "" {
 		t.Fatalf("initiator user ID leaked in API response: %q", update.InitiatorUserID)
 	}
 	setRuntimeTestMemberRole(t, adminID, "member")
 
-	pollRecorder := httptest.NewRecorder()
 	pollRequest := withURLParams(
 		newRequestAs(adminID, http.MethodGet, "/api/runtimes/"+runtimeID+"/update/"+update.ID, nil),
 		"runtimeId", runtimeID,
 		"updateId", update.ID,
 	)
-	testHandler.GetUpdate(pollRecorder, pollRequest)
-	if pollRecorder.Code != http.StatusOK {
-		t.Fatalf("poll after admin demotion: expected 200, got %d: %s", pollRecorder.Code, pollRecorder.Body.String())
-	}
+	testutil.Call(t, testHandler.GetUpdate, pollRequest).Want(http.StatusOK)
 }

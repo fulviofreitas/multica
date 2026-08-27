@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Backs the workspace Members/Agents tabs: assignee_types on ListIssues must
@@ -21,25 +21,10 @@ func TestListIssues_AssigneeTypesFilter(t *testing.T) {
 	// Dedicated project so counts aren't polluted by other tests sharing the
 	// workspace.
 	var projectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("Assignee Types %d", suffix)).Scan(&projectID); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID) })
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": fmt.Sprintf("Assignee Types %d", suffix)})
 
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'workspace', 1, $4)
-		RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("Assignee Types Agent %d", suffix), testRuntimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": fmt.Sprintf("Assignee Types Agent %d", suffix), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": testRuntimeID, "visibility": testutil.Raw("'workspace'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 
 	insertIssue := func(title string, assigneeType, assigneeID *string) string {
 		var number int
@@ -69,18 +54,12 @@ func TestListIssues_AssigneeTypesFilter(t *testing.T) {
 	list := func(query string) (ids []string, total int64) {
 		path := fmt.Sprintf("/api/issues?workspace_id=%s&project_id=%s&limit=500%s",
 			testWorkspaceID, projectID, query)
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var resp struct {
 			Issues []IssueResponse `json:"issues"`
 			Total  int64           `json:"total"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode list response: %v", err)
-		}
+		w.Decode(&resp)
 		for _, iss := range resp.Issues {
 			ids = append(ids, iss.ID)
 		}
@@ -124,10 +103,6 @@ func TestListIssues_AssigneeTypesFilter(t *testing.T) {
 	}
 
 	// Unknown actor kinds are a client bug — reject, don't coerce.
-	bad := httptest.NewRecorder()
-	testHandler.ListIssues(bad, newRequest("GET", fmt.Sprintf(
-		"/api/issues?workspace_id=%s&assignee_types=bogus", testWorkspaceID), nil))
-	if bad.Code != http.StatusBadRequest {
-		t.Fatalf("invalid assignee_types: expected 400, got %d: %s", bad.Code, bad.Body.String())
-	}
+	testutil.Call(t, testHandler.ListIssues, newRequest("GET", fmt.Sprintf(
+		"/api/issues?workspace_id=%s&assignee_types=bogus", testWorkspaceID), nil)).Want(http.StatusBadRequest)
 }

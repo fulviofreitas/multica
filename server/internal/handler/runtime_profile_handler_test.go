@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -16,16 +16,7 @@ import (
 func insertRuntimeProfileFixture(t *testing.T, ctx context.Context, displayName, protocolFamily, commandName string) string {
 	t.Helper()
 	var profileID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO runtime_profile (workspace_id, display_name, protocol_family, command_name, created_by)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id
-	`, testWorkspaceID, displayName, protocolFamily, commandName, testUserID).Scan(&profileID); err != nil {
-		t.Fatalf("insert runtime_profile fixture: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, profileID)
-	})
+	profileID = dbfx.Insert(t, "runtime_profile", testutil.Cols{"workspace_id": testWorkspaceID, "display_name": displayName, "protocol_family": protocolFamily, "command_name": commandName, "created_by": testUserID})
 	return profileID
 }
 
@@ -102,14 +93,9 @@ VALUES ($1, $2, 'feishu', 'oc_rp', 'p2p')`, rpChat, rpInstallID); err != nil {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM channel_chat_session_binding WHERE chat_session_id = $1`, rpChat)
 	})
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "profileId", profileID)
-	testHandler.DeleteRuntimeProfile(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusNoContent)
 
 	var profileRows, rtRows, agentRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM runtime_profile WHERE id = $1`, profileID).Scan(&profileRows); err != nil {
@@ -167,14 +153,9 @@ func TestDeleteRuntimeProfile_ActiveAgentBlocks(t *testing.T) {
 	runtimeID := insertProfileRuntimeFixture(t, ctx, profileID, "Cascade Profile Active Runtime", "codex")
 	_ = createCascadeFixtureAgent(t, ctx, runtimeID, "Cascade Profile Active Agent")
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "profileId", profileID)
-	testHandler.DeleteRuntimeProfile(w, req)
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusConflict)
 
 	var profileRows, rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM runtime_profile WHERE id = $1`, profileID).Scan(&profileRows); err != nil {
@@ -203,14 +184,9 @@ func TestDeleteRuntimeProfile_MissingProfileWithOrphanRuntimesCleansUp(t *testin
 		t.Fatalf("delete profile row: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "profileId", profileID)
-	testHandler.DeleteRuntimeProfile(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusNoContent)
 
 	var rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {
@@ -227,14 +203,10 @@ func TestDeleteRuntimeProfile_MissingProfileNoOrphansStillReturns404(t *testing.
 	}
 
 	missingProfileID := "00000000-0000-0000-0000-000000415800"
-	w := httptest.NewRecorder()
+
 	req := newRequest("DELETE", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+missingProfileID, nil)
 	req = withURLParams(req, "id", testWorkspaceID, "profileId", missingProfileID)
-	testHandler.DeleteRuntimeProfile(w, req)
-
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteRuntimeProfile, req).Want(http.StatusNotFound)
 }
 
 func TestRuntimeProfileDeleteLockSerializesRegistration(t *testing.T) {
@@ -293,7 +265,6 @@ func TestCreateRuntimeProfile_ForcesWorkspaceVisibility(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles", map[string]any{
 		"display_name":    "Visibility Forced Profile",
 		"protocol_family": "codex",
@@ -301,15 +272,9 @@ func TestCreateRuntimeProfile_ForcesWorkspaceVisibility(t *testing.T) {
 		"visibility":      "private", // must be ignored
 	})
 	req = withURLParam(req, "id", testWorkspaceID)
-	testHandler.CreateRuntimeProfile(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateRuntimeProfile, req).Want(http.StatusCreated)
 	var resp RuntimeProfileResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM runtime_profile WHERE id = $1`, resp.ID)
 	})
@@ -356,7 +321,7 @@ func TestCreateRuntimeProfile_ValidatesCommandAndFixedArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest("POST", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles", map[string]any{
 				"display_name":    "Validation " + tc.name,
 				"protocol_family": "codex",
@@ -364,10 +329,7 @@ func TestCreateRuntimeProfile_ValidatesCommandAndFixedArgs(t *testing.T) {
 				"fixed_args":      tc.fixedArgs,
 			})
 			req = withURLParam(req, "id", testWorkspaceID)
-			testHandler.CreateRuntimeProfile(w, req)
-			if w.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", w.Code, tc.wantStatus, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.CreateRuntimeProfile, req).Want(tc.wantStatus)
 			if w.Code == http.StatusCreated {
 				var resp RuntimeProfileResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {

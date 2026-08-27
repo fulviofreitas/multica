@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -77,9 +78,7 @@ func TestStartMikaOnboarding_WritesTheOpeningWithoutRunningAnAgent(t *testing.T)
 	cleanupSessionTasks(t, sessionID)
 
 	w := startMikaOnboarding(t, sessionID, map[string]any{"language": "en"})
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	resp := decodeStartMikaOnboarding(t, w)
 	if !resp.Started || resp.MessageID == "" {
 		t.Fatalf("expected a started opening with a message id, got %+v", resp)
@@ -149,15 +148,9 @@ func TestStartMikaOnboarding_WritesTheOpeningWithoutRunningAnAgent(t *testing.T)
 		newRequest("GET", "/api/chat/sessions/"+sessionID+"/messages", nil),
 		"sessionId", sessionID,
 	))
-	listW := httptest.NewRecorder()
-	testHandler.ListChatMessages(listW, listReq)
-	if listW.Code != http.StatusOK {
-		t.Fatalf("list messages: expected 200, got %d: %s", listW.Code, listW.Body.String())
-	}
+	listW := testutil.Call(t, testHandler.ListChatMessages, listReq).Want(http.StatusOK)
 	var visible []ChatMessageResponse
-	if err := json.Unmarshal(listW.Body.Bytes(), &visible); err != nil {
-		t.Fatalf("decode visible messages: %v", err)
-	}
+	listW.JSON(&visible)
 	if len(visible) != 1 {
 		t.Fatalf("expected only the opening to be visible, got %d message(s)", len(visible))
 	}
@@ -199,14 +192,10 @@ func TestStartMikaOnboarding_IsIdempotent(t *testing.T) {
 	cleanupSessionTasks(t, sessionID)
 
 	first := startMikaOnboarding(t, sessionID, map[string]any{"language": "zh"})
-	if first.Code != http.StatusCreated {
-		t.Fatalf("first call: expected 201, got %d: %s", first.Code, first.Body.String())
-	}
+	testutil.Equal(t, first.Code, http.StatusCreated, "HTTP status")
 
 	second := startMikaOnboarding(t, sessionID, map[string]any{"language": "zh"})
-	if second.Code != http.StatusOK {
-		t.Fatalf("second call: expected 200, got %d: %s", second.Code, second.Body.String())
-	}
+	testutil.Equal(t, second.Code, http.StatusOK, "HTTP status")
 	if resp := decodeStartMikaOnboarding(t, second); resp.Started {
 		t.Fatalf("second call must report started=false, got %+v", resp)
 	}
@@ -246,9 +235,7 @@ func TestStartMikaOnboarding_RejectsBadInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			w := startMikaOnboarding(t, tc.sessionID, tc.body)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-			}
+			testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 		})
 	}
 

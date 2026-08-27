@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -63,16 +63,7 @@ func TestSendChatMessage_InvokeRevokedAfterSessionCreate(t *testing.T) {
 	// public_to agent owned by someone else, with testUserID on its member
 	// allow-list — so testUserID may invoke it while it is public_to.
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id,
-			instructions, custom_env, custom_args)
-		VALUES ($1, 'chat-revoke-agent', '', 'cloud', '{}'::jsonb, $2, 'private', 'public_to', 1, $3,
-			'', '{}'::jsonb, '[]'::jsonb)
-		RETURNING id`, testWorkspaceID, handlerTestRuntimeID(t), ownerID).Scan(&agentID); err != nil {
-		t.Fatalf("seed agent: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID) })
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": testutil.Raw("'chat-revoke-agent'"), "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": handlerTestRuntimeID(t), "visibility": testutil.Raw("'private'"), "permission_mode": testutil.Raw("'public_to'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": ownerID, "instructions": testutil.Raw("''"), "custom_env": testutil.Raw("'{}'::jsonb"), "custom_args": testutil.Raw("'[]'::jsonb")})
 	if _, err := testPool.Exec(ctx, `
 		INSERT INTO agent_invocation_target (agent_id, target_type, target_id)
 		VALUES ($1, 'member', $2)`, agentID, testUserID); err != nil {
@@ -80,21 +71,16 @@ func TestSendChatMessage_InvokeRevokedAfterSessionCreate(t *testing.T) {
 	}
 
 	// Create the session as testUserID while they can still invoke the agent.
-	createW := httptest.NewRecorder()
+
 	createReq := withChatTestWorkspaceCtx(t, newRequest("POST", "/api/chat/sessions", map[string]any{
 		"agent_id": agentID,
 		"title":    "revoke test",
 	}))
-	testHandler.CreateChatSession(createW, createReq)
-	if createW.Code != http.StatusCreated {
-		t.Fatalf("CreateChatSession while invokable: expected 201, got %d: %s", createW.Code, createW.Body.String())
-	}
+	createW := testutil.Call(t, testHandler.CreateChatSession, createReq).Want(http.StatusCreated)
 	var session struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(createW.Body.Bytes(), &session); err != nil {
-		t.Fatalf("decode session: %v", err)
-	}
+	createW.JSON(&session)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, session.ID) })
 
 	// Revoke invoke permission: flip the agent to private. testUserID keeps VIEW
@@ -109,13 +95,7 @@ func TestSendChatMessage_InvokeRevokedAfterSessionCreate(t *testing.T) {
 	// gate runs BEFORE attachment binding, so this guards against anyone later
 	// moving the binding ahead of the permission gate.
 	var attachmentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO attachment (workspace_id, uploader_type, uploader_id, filename, url, content_type, size_bytes)
-		VALUES ($1, 'member', $2, 'unbound.png', 'https://cdn.test/unbound.png', 'image/png', 10)
-		RETURNING id`, testWorkspaceID, testUserID).Scan(&attachmentID); err != nil {
-		t.Fatalf("seed unbound attachment: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID) })
+	attachmentID = dbfx.Insert(t, "attachment", testutil.Cols{"workspace_id": testWorkspaceID, "uploader_type": testutil.Raw("'member'"), "uploader_id": testUserID, "filename": testutil.Raw("'unbound.png'"), "url": testutil.Raw("'https://cdn.test/unbound.png'"), "content_type": testutil.Raw("'image/png'"), "size_bytes": testutil.Raw("10")})
 
 	countMessages := func() int {
 		var n int
@@ -137,17 +117,13 @@ func TestSendChatMessage_InvokeRevokedAfterSessionCreate(t *testing.T) {
 
 	// The send must be refused before anything is written — including the
 	// attachment binding.
-	sendW := httptest.NewRecorder()
+
 	sendReq := withChatTestWorkspaceCtx(t, newRequest("POST", "/api/chat/sessions/"+session.ID+"/messages", map[string]any{
 		"content":        "are you still there?",
 		"attachment_ids": []string{attachmentID},
 	}))
 	sendReq = withURLParam(sendReq, "sessionId", session.ID)
-	testHandler.SendChatMessage(sendW, sendReq)
-
-	if sendW.Code != http.StatusForbidden {
-		t.Fatalf("SendChatMessage after revoke: expected 403, got %d: %s", sendW.Code, sendW.Body.String())
-	}
+	sendW := testutil.Call(t, testHandler.SendChatMessage, sendReq).Want(http.StatusForbidden)
 	if code := readReasonCode(t, sendW.Body.Bytes()); code != string(dispatch.ReasonInvocationNotAllowed) {
 		t.Errorf("reason_code = %q, want invocation_not_allowed", code)
 	}
@@ -240,12 +216,9 @@ func TestRerunIssue_PrivateHistoricalAgent(t *testing.T) {
 	// DENY: testUserID (workspace owner) can view the issue AND can invoke the
 	// current assignee, but cannot invoke the HISTORICAL private agent named by
 	// task_id → structured 403, and nothing is cancelled or created.
-	denyW := httptest.NewRecorder()
+
 	denyReq := withURLParam(newRequest("POST", "/api/issues/"+issueID+"/rerun", map[string]any{"task_id": origID}), "id", issueID)
-	testHandler.RerunIssue(denyW, denyReq)
-	if denyW.Code != http.StatusForbidden {
-		t.Fatalf("RerunIssue as non-invoker of historical agent: expected 403, got %d: %s", denyW.Code, denyW.Body.String())
-	}
+	denyW := testutil.Call(t, testHandler.RerunIssue, denyReq).Want(http.StatusForbidden)
 	if code := readReasonCode(t, denyW.Body.Bytes()); code != string(dispatch.ReasonInvocationNotAllowed) {
 		t.Errorf("reason_code = %q, want invocation_not_allowed", code)
 	}
@@ -258,19 +231,14 @@ func TestRerunIssue_PrivateHistoricalAgent(t *testing.T) {
 
 	// ALLOW: the HISTORICAL agent's owner may rerun it, and the new task must
 	// target the historical agent — not the issue's current assignee.
-	allowW := httptest.NewRecorder()
+
 	allowReq := withURLParam(newRequestAs(ownerID, "POST", "/api/issues/"+issueID+"/rerun", map[string]any{"task_id": origID}), "id", issueID)
-	testHandler.RerunIssue(allowW, allowReq)
-	if allowW.Code != http.StatusAccepted {
-		t.Fatalf("RerunIssue as historical agent owner: expected 202, got %d: %s", allowW.Code, allowW.Body.String())
-	}
+	allowW := testutil.Call(t, testHandler.RerunIssue, allowReq).Want(http.StatusAccepted)
 	var reran struct {
 		ID      string `json:"id"`
 		AgentID string `json:"agent_id"`
 	}
-	if err := json.Unmarshal(allowW.Body.Bytes(), &reran); err != nil {
-		t.Fatalf("decode rerun response: %v", err)
-	}
+	allowW.JSON(&reran)
 	if reran.AgentID != agentID {
 		t.Errorf("reran task agent_id = %q, want historical agent %q (not current assignee %q)", reran.AgentID, agentID, currentAgentID)
 	}

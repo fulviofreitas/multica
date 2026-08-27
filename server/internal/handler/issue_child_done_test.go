@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // childDoneFixture creates a parent + child pair so the parent-notification
@@ -27,9 +29,7 @@ func newChildDoneFixture(t *testing.T, parentStatus string) childDoneFixture {
 		"status": parentStatus,
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create parent: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var parent IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&parent); err != nil {
 		t.Fatalf("decode parent: %v", err)
@@ -42,9 +42,7 @@ func newChildDoneFixture(t *testing.T, parentStatus string) childDoneFixture {
 		"parent_issue_id": parent.ID,
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create child: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var child IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&child); err != nil {
 		t.Fatalf("decode child: %v", err)
@@ -64,10 +62,9 @@ func newChildDoneFixture(t *testing.T, parentStatus string) childDoneFixture {
 func updateChildStatus(t *testing.T, childID, status string) {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newRequest("PUT", "/api/issues/"+childID, map[string]any{"status": status})
 	req = withURLParam(req, "id", childID)
-	testHandler.UpdateIssue(w, req)
+	w := testutil.Call(t, testHandler.UpdateIssue, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("UpdateIssue child status=%q: expected 200, got %d: %s", status, w.Code, w.Body.String())
 	}
@@ -231,15 +228,12 @@ func TestChildDoneSkippedWhenParentBacklog(t *testing.T) {
 // TestChildDoneSkippedWhenNoParent — an issue with no parent_issue_id must
 // not produce any system comment on anything.
 func TestChildDoneSkippedWhenNoParent(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "orphan child-done " + time.Now().Format(time.RFC3339Nano),
 		"status": "in_progress",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create orphan: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var orphan IssueResponse
 	json.NewDecoder(w.Body).Decode(&orphan)
 	t.Cleanup(func() {
@@ -492,19 +486,9 @@ func TestChildDoneWakesLeaderWhenParentAndChildSquadsShareLeader(t *testing.T) {
 	parentSquad := newSquadCommentTriggerFixture(t)
 
 	// Spin up a SECOND squad that reuses the same leader as parentSquad.
-	ctx := context.Background()
+
 	var childSquadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, "Child Done Shared Leader Squad", parentSquad.LeaderID, testUserID).
-		Scan(&childSquadID); err != nil {
-		t.Fatalf("create second squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, childSquadID)
-	})
+	childSquadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Child Done Shared Leader Squad", "description": testutil.Raw("''"), "leader_id": parentSquad.LeaderID, "creator_id": testUserID})
 
 	setIssueAssigneeDirect(t, fx.parent.ID, "squad", parentSquad.SquadID)
 	setIssueAssigneeDirect(t, fx.child.ID, "squad", childSquadID)
@@ -585,9 +569,7 @@ func TestStageLeaderPrepareTimeoutRetryCanAdvanceNextStage(t *testing.T) {
 		"assignee_id":     sq.SquadID,
 	})
 	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create stage 2: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var stage2 IssueResponse
 	if err := json.NewDecoder(w.Body).Decode(&stage2); err != nil {
 		t.Fatalf("decode stage 2: %v", err)
@@ -661,9 +643,7 @@ func TestStageLeaderPrepareTimeoutRetryCanAdvanceNextStage(t *testing.T) {
 	req.Header.Set("X-Task-ID", retryID)
 	req = withURLParam(req, "id", stage2.ID)
 	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("retry leader promote Stage 2: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var stage2Status string
 	if err := testPool.QueryRow(ctx, `SELECT status FROM issue WHERE id = $1`, stage2.ID).Scan(&stage2Status); err != nil {
 		t.Fatalf("load promoted Stage 2: %v", err)

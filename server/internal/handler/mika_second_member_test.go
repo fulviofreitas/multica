@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // addSecondWorkspaceMember creates another member of the handler test
@@ -71,9 +72,7 @@ func TestStartMikaOnboarding_AllowsAnyMemberNotJustTheOwner(t *testing.T) {
 		"runtime_id": handlerTestRuntimeID(t),
 		"language":   "en",
 	})
-	if owner.Code != http.StatusCreated {
-		t.Fatalf("provision mika: expected 201, got %d: %s", owner.Code, owner.Body.String())
-	}
+	testutil.Equal(t, owner.Code, http.StatusCreated, "HTTP status")
 
 	second := addSecondWorkspaceMember(t, "mika-second-member@multica.test")
 	joined := createMikaAs(t, second, map[string]any{
@@ -81,9 +80,7 @@ func TestStartMikaOnboarding_AllowsAnyMemberNotJustTheOwner(t *testing.T) {
 		"language":      "en",
 		"session_title": "Getting started with Mika",
 	})
-	if joined.Code != http.StatusOK {
-		t.Fatalf("second member: expected the existing Mika (200), got %d: %s", joined.Code, joined.Body.String())
-	}
+	testutil.Equal(t, joined.Code, http.StatusOK, "HTTP status")
 	resp := decodeMika(t, joined)
 	if resp.SystemKey != service.MikaSystemKey {
 		t.Fatalf("second member did not get the workspace Mika: %+v", resp)
@@ -99,12 +96,7 @@ func TestStartMikaOnboarding_AllowsAnyMemberNotJustTheOwner(t *testing.T) {
 			map[string]any{"language": "en"}),
 		"sessionId", sessionID,
 	))
-	w := httptest.NewRecorder()
-	testHandler.StartMikaOnboarding(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("non-owner member must be able to start onboarding, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.StartMikaOnboarding, req).Want(http.StatusCreated)
 }
 
 // TestCreateMikaAgent_RecoversFromAPartialBootstrap is the retry path for the
@@ -137,9 +129,7 @@ func TestCreateMikaAgent_RecoversFromAPartialBootstrap(t *testing.T) {
 	retry := createMika(t, map[string]any{
 		"runtime_id": runtimeID, "language": "en", "session_title": "Getting started with Mika",
 	})
-	if retry.Code != http.StatusOK {
-		t.Fatalf("retry: expected 200, got %d: %s", retry.Code, retry.Body.String())
-	}
+	testutil.Equal(t, retry.Code, http.StatusOK, "HTTP status")
 	retryResp := decodeMika(t, retry)
 	if retryResp.OnboardingSession == nil {
 		t.Fatal("retry must rebuild the missing session, got none")
@@ -166,9 +156,7 @@ func TestCreateMikaAgent_SessionIsPerMemberAndStable(t *testing.T) {
 	first := createMika(t, map[string]any{
 		"runtime_id": runtimeID, "language": "en", "session_title": "Getting started with Mika",
 	})
-	if first.Code != http.StatusCreated {
-		t.Fatalf("first call: expected 201, got %d: %s", first.Code, first.Body.String())
-	}
+	testutil.Equal(t, first.Code, http.StatusCreated, "HTTP status")
 	firstResp := decodeMika(t, first)
 	if firstResp.OnboardingSession == nil {
 		t.Fatal("first call returned no onboarding session")
@@ -193,9 +181,7 @@ func TestCreateMikaAgent_SessionIsPerMemberAndStable(t *testing.T) {
 	second := createMika(t, map[string]any{
 		"runtime_id": runtimeID, "language": "zh", "session_title": "开始使用 Mika",
 	})
-	if second.Code != http.StatusOK {
-		t.Fatalf("second call: expected 200, got %d: %s", second.Code, second.Body.String())
-	}
+	testutil.Equal(t, second.Code, http.StatusOK, "HTTP status")
 	secondResp := decodeMika(t, second)
 	if secondResp.OnboardingSession == nil {
 		t.Fatal("second call returned no onboarding session")

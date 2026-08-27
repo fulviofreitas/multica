@@ -7,52 +7,43 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // An unknown project status must fail fast with a 400 and the valid list, not
 // surface the DB CHECK violation as a 500 (#3925: `--status active`).
 func TestCreateProjectInvalidStatusReturns400(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "invalid status project",
 		"status": "active",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid status, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusBadRequest)
 	if body := w.Body.String(); !strings.Contains(body, "planned") {
 		t.Errorf("expected error to list valid statuses, got: %s", body)
 	}
 }
 
 func TestCreateProjectInvalidPriorityReturns400(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    "invalid priority project",
 		"priority": "critical",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid priority, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusBadRequest)
 }
 
 // A valid status still creates the project (the validation does not over-reject).
 func TestCreateProjectValidStatusReturns201(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "valid status project",
 		"status": "in_progress",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201 for valid status, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	t.Cleanup(func() {
 		req := newRequest("DELETE", "/api/projects/"+project.ID, nil)
 		req = withURLParam(req, "id", project.ID)
@@ -71,9 +62,7 @@ func TestUpdateProjectInvalidStatusReturns400(t *testing.T) {
 		"title": "update validation project",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("seed CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -88,23 +77,16 @@ func TestUpdateProjectInvalidStatusReturns400(t *testing.T) {
 	req = newRequest("PUT", "/api/projects/"+project.ID, map[string]any{"status": "active"})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.UpdateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid update status, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }
 
 func TestDeleteProjectRequiresAdminOrOwner(t *testing.T) {
 	memberUserID := createProjectPermissionTestMember(t, "member")
 	project := createProjectPermissionTestProject(t, "delete permission denied project")
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(memberUserID, "DELETE", "/api/projects/"+project.ID, nil)
 	req = withURLParam(req, "id", project.ID)
-	testHandler.DeleteProject(w, req)
-
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403 for plain member project delete, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteProject, req).Want(http.StatusForbidden)
 
 	var exists bool
 	if err := testPool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM project WHERE id = $1)`, project.ID).Scan(&exists); err != nil {
@@ -119,14 +101,9 @@ func TestDeleteProjectAllowsAdmin(t *testing.T) {
 	adminUserID := createProjectPermissionTestMember(t, "admin")
 	project := createProjectPermissionTestProject(t, "delete permission admin project")
 
-	w := httptest.NewRecorder()
 	req := newRequestAs(adminUserID, "DELETE", "/api/projects/"+project.ID, nil)
 	req = withURLParam(req, "id", project.ID)
-	testHandler.DeleteProject(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204 for admin project delete, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteProject, req).Want(http.StatusNoContent)
 
 	var exists bool
 	if err := testPool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM project WHERE id = $1)`, project.ID).Scan(&exists); err != nil {
@@ -175,18 +152,12 @@ VALUES ($1, $2, $3)
 func createProjectPermissionTestProject(t *testing.T, title string) ProjectResponse {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": title,
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	t.Cleanup(func() {
 		_, _ = testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, project.ID)
 	})

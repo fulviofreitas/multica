@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func createChatProjectTestProject(t *testing.T, workspaceID, title, description string) string {
@@ -31,18 +32,7 @@ func createChatSessionWithProjectForTest(t *testing.T, agentID, projectID string
 	t.Helper()
 
 	var sessionID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO chat_session (
-			workspace_id, agent_id, creator_id, title, status, project_id, explicitly_created_at
-		)
-		VALUES ($1, $2, $3, 'Project context chat', 'active', $4, now())
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID, projectID).Scan(&sessionID); err != nil {
-		t.Fatalf("create chat session: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, sessionID)
-	})
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": testutil.Raw("'Project context chat'"), "status": testutil.Raw("'active'"), "project_id": projectID, "explicitly_created_at": testutil.Raw("now()")})
 	return sessionID
 }
 
@@ -55,21 +45,16 @@ func TestCreateChatSession_ProjectContext(t *testing.T) {
 	projectID := createChatProjectTestProject(t, testWorkspaceID, "Chat project", "Durable context")
 
 	t.Run("persists a workspace project", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/chat/sessions", map[string]any{
 			"agent_id":   agentID,
 			"title":      "with project",
 			"project_id": projectID,
 		}))
-		testHandler.CreateChatSession(w, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateChatSession: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateChatSession, req).Want(http.StatusCreated)
 
 		var response ChatSessionResponse
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&response)
 		t.Cleanup(func() {
 			testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, response.ID)
 		})
@@ -87,16 +72,10 @@ func TestCreateChatSession_ProjectContext(t *testing.T) {
 			t.Fatalf("stored project_id = %v, want %s", storedProjectID, projectID)
 		}
 
-		listW := httptest.NewRecorder()
 		listReq := withChatTestWorkspaceCtx(t, newRequest(http.MethodGet, "/api/chat/sessions", nil))
-		testHandler.ListChatSessions(listW, listReq)
-		if listW.Code != http.StatusOK {
-			t.Fatalf("ListChatSessions: expected 200, got %d: %s", listW.Code, listW.Body.String())
-		}
+		listW := testutil.Call(t, testHandler.ListChatSessions, listReq).Want(http.StatusOK)
 		var sessions []ChatSessionResponse
-		if err := json.NewDecoder(listW.Body).Decode(&sessions); err != nil {
-			t.Fatalf("decode session list: %v", err)
-		}
+		listW.Decode(&sessions)
 		found := false
 		for _, session := range sessions {
 			if session.ID != response.ID {
@@ -113,54 +92,35 @@ func TestCreateChatSession_ProjectContext(t *testing.T) {
 	})
 
 	t.Run("rejects malformed project id", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/chat/sessions", map[string]any{
 			"agent_id":   agentID,
 			"project_id": "not-a-uuid",
 		}))
-		testHandler.CreateChatSession(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateChatSession, req).Want(http.StatusBadRequest)
 	})
 
 	t.Run("rejects a project from another workspace", func(t *testing.T) {
 		var foreignWorkspaceID string
-		if err := testPool.QueryRow(context.Background(), `
-			INSERT INTO workspace (name, slug) VALUES ('Foreign chat context', $1) RETURNING id
-		`, "chat-context-"+uuid.NewString()).Scan(&foreignWorkspaceID); err != nil {
-			t.Fatalf("create foreign workspace: %v", err)
-		}
-		t.Cleanup(func() {
-			testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-		})
+		foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": testutil.Raw("'Foreign chat context'"), "slug": "chat-context-" + uuid.NewString()})
 		foreignProjectID := createChatProjectTestProject(t, foreignWorkspaceID, "Foreign project", "")
 
-		w := httptest.NewRecorder()
 		req := withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/chat/sessions", map[string]any{
 			"agent_id":   agentID,
 			"project_id": foreignProjectID,
 		}))
-		testHandler.CreateChatSession(w, req)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Call(t, testHandler.CreateChatSession, req).Want(http.StatusNotFound)
 	})
 
 	t.Run("keeps project optional", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := withChatTestWorkspaceCtx(t, newRequest(http.MethodPost, "/api/chat/sessions", map[string]any{
 			"agent_id": agentID,
 			"title":    "workspace context only",
 		}))
-		testHandler.CreateChatSession(w, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateChatSession: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateChatSession, req).Want(http.StatusCreated)
 		var response ChatSessionResponse
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&response)
 		t.Cleanup(func() {
 			testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE id = $1`, response.ID)
 		})
@@ -195,9 +155,7 @@ func TestUpdateChatSession_UpdatesProjectContext(t *testing.T) {
 	}
 
 	w := updateProject(replacementProjectID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("replace project: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var response ChatSessionResponse
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -210,24 +168,13 @@ func TestUpdateChatSession_UpdatesProjectContext(t *testing.T) {
 	}
 
 	var foreignWorkspaceID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO workspace (name, slug) VALUES ('Foreign chat update', $1) RETURNING id
-	`, "chat-update-"+uuid.NewString()).Scan(&foreignWorkspaceID); err != nil {
-		t.Fatalf("create foreign workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-	})
+	foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": testutil.Raw("'Foreign chat update'"), "slug": "chat-update-" + uuid.NewString()})
 	foreignProjectID := createChatProjectTestProject(t, foreignWorkspaceID, "Foreign replacement", "")
 	foreignW := updateProject(foreignProjectID)
-	if foreignW.Code != http.StatusNotFound {
-		t.Fatalf("foreign project: expected 404, got %d: %s", foreignW.Code, foreignW.Body.String())
-	}
+	testutil.Equal(t, foreignW.Code, http.StatusNotFound, "HTTP status")
 
 	w = updateProject(nil)
-	if w.Code != http.StatusOK {
-		t.Fatalf("remove project: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	response = ChatSessionResponse{}
 	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
 		t.Fatalf("decode remove response: %v", err)
@@ -256,16 +203,12 @@ func TestDeleteProject_ClearsChatSessionContext(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "DeletedChatProjectAgent", []byte("[]"))
 	sessionID := createChatSessionWithProjectForTest(t, agentID, projectID)
 
-	w := httptest.NewRecorder()
 	req := withURLParam(
 		newRequest(http.MethodDelete, "/api/projects/"+projectID, nil),
 		"id",
 		projectID,
 	)
-	testHandler.DeleteProject(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteProject: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteProject, req).Want(http.StatusNoContent)
 
 	var storedProjectID *string
 	if err := testPool.QueryRow(context.Background(), `
@@ -314,19 +257,8 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 	}
 
 	var taskID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent_task_queue (
-			agent_id, runtime_id, status, priority, chat_session_id
-		) VALUES ($1, $2, 'queued', 1000, $3)
-		RETURNING id
-	`, agentID, runtimeID, sessionID).Scan(&taskID); err != nil {
-		t.Fatalf("create chat task: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
-	})
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "status": testutil.Raw("'queued'"), "priority": testutil.Raw("1000"), "chat_session_id": sessionID})
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest(
 		http.MethodPost,
 		"/api/daemon/runtimes/"+runtimeID+"/claim",
@@ -335,10 +267,7 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 		"chat-project-context-test",
 	)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
 
 	var response struct {
 		Task *struct {
@@ -350,9 +279,7 @@ func TestClaimTaskByRuntime_ChatProjectContext(t *testing.T) {
 			Repos              []RepoData            `json:"repos"`
 		} `json:"task"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&response)
 	if response.Task == nil || response.Task.ID != taskID {
 		t.Fatalf("claimed task = %+v, want %s", response.Task, taskID)
 	}

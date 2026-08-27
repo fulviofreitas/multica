@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestListIssuesSortsByStatusAndUpdatedAt(t *testing.T) {
@@ -15,14 +15,7 @@ func TestListIssuesSortsByStatusAndUpdatedAt(t *testing.T) {
 	suffix := time.Now().UnixNano()
 
 	var projectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title) VALUES ($1, $2) RETURNING id
-	`, testWorkspaceID, fmt.Sprintf("Issue table sort %d", suffix)).Scan(&projectID); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID)
-	})
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": fmt.Sprintf("Issue table sort %d", suffix)})
 
 	type fixture struct {
 		title      string
@@ -66,17 +59,11 @@ func TestListIssuesSortsByStatusAndUpdatedAt(t *testing.T) {
 		if direction != "" {
 			path += "&direction=" + direction
 		}
-		w := httptest.NewRecorder()
-		testHandler.ListIssues(w, newRequest("GET", path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var response struct {
 			Issues []IssueResponse `json:"issues"`
 		}
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&response)
 		titles := make([]string, 0, len(response.Issues))
 		for _, issue := range response.Issues {
 			titles = append(titles, issue.Title)
@@ -94,15 +81,9 @@ func TestListIssuesSortsByStatusAndUpdatedAt(t *testing.T) {
 		if direction != "" {
 			path += "&direction=" + direction
 		}
-		w := httptest.NewRecorder()
-		testHandler.ListGroupedIssues(w, newRequest("GET", path, nil))
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListGroupedIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListGroupedIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var response GroupedIssuesResponse
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode grouped response: %v", err)
-		}
+		w.Decode(&response)
 		if len(response.Groups) != 1 {
 			t.Fatalf("ListGroupedIssues groups = %d, want 1", len(response.Groups))
 		}

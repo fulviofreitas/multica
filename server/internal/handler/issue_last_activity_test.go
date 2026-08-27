@@ -2,12 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -25,16 +24,11 @@ func TestUpdateIssueActivityExcludesPositionOnlyWrites(t *testing.T) {
 
 	update := func(body map[string]any) IssueResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		r := withURLParam(newRequest(http.MethodPut, "/api/issues/"+created.ID, body), "id", created.ID)
-		testHandler.UpdateIssue(w, r)
-		if w.Code != http.StatusOK {
-			t.Fatalf("UpdateIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateIssue, r).Want(http.StatusOK)
 		var response IssueResponse
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode UpdateIssue: %v", err)
-		}
+		w.Decode(&response)
 		return response
 	}
 

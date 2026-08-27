@@ -2,12 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestListGroupedIssuesAssigneePaginatesPerGroup(t *testing.T) {
@@ -34,19 +34,7 @@ func TestListGroupedIssuesAssigneePaginatesPerGroup(t *testing.T) {
 	}
 
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'workspace', 1, $4)
-		RETURNING id
-	`, testWorkspaceID, "Grouped Issues Test Agent", testRuntimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("create agent: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Grouped Issues Test Agent", "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": testRuntimeID, "visibility": testutil.Raw("'workspace'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 
 	createIssue := func(title, assigneeType, assigneeID string, position float64, startDate *time.Time, stage *int32) string {
 		t.Helper()
@@ -94,16 +82,10 @@ func TestListGroupedIssuesAssigneePaginatesPerGroup(t *testing.T) {
 		assigneeID,
 		agentID,
 	)
-	w := httptest.NewRecorder()
-	testHandler.ListGroupedIssues(w, newRequest("GET", path, nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListGroupedIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListGroupedIssues, newRequest("GET", path, nil)).Want(http.StatusOK)
 
 	var resp GroupedIssuesResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode grouped response: %v", err)
-	}
+	w.Decode(&resp)
 
 	memberGroupID := "assignee:member:" + assigneeID
 	agentGroupID := "assignee:agent:" + agentID
@@ -142,16 +124,10 @@ func TestListGroupedIssuesAssigneePaginatesPerGroup(t *testing.T) {
 		testWorkspaceID,
 		assigneeID,
 	)
-	next := httptest.NewRecorder()
-	testHandler.ListGroupedIssues(next, newRequest("GET", nextPath, nil))
-	if next.Code != http.StatusOK {
-		t.Fatalf("ListGroupedIssues next page: expected 200, got %d: %s", next.Code, next.Body.String())
-	}
+	next := testutil.Call(t, testHandler.ListGroupedIssues, newRequest("GET", nextPath, nil)).Want(http.StatusOK)
 
 	var nextResp GroupedIssuesResponse
-	if err := json.NewDecoder(next.Body).Decode(&nextResp); err != nil {
-		t.Fatalf("decode next grouped response: %v", err)
-	}
+	next.Decode(&nextResp)
 	if len(nextResp.Groups) != 1 {
 		t.Fatalf("expected one next-page group, got %#v", nextResp.Groups)
 	}

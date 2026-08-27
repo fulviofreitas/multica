@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 type issueTableEnrichmentFailTxStarter struct {
@@ -338,22 +339,9 @@ func TestIssueTableWorkingIssueProjectionMatchesTaskIssuesNotAssignees(t *testin
 	createHandlerTestTaskForAgentOnIssue(t, workingAgentID, editedIssueID)
 	createHandlerTestTaskForAgentOnIssue(t, otherAgentID, otherAgentIssueID)
 
-	workingRecorder := httptest.NewRecorder()
-	testHandler.ListWorkspaceWorkingAgents(
-		workingRecorder,
-		newRequest(http.MethodGet, "/api/working-agents?type=issue", nil),
-	)
-	if workingRecorder.Code != http.StatusOK {
-		t.Fatalf(
-			"list working agents status = %d: %s",
-			workingRecorder.Code,
-			workingRecorder.Body.String(),
-		)
-	}
+	workingRecorder := testutil.Call(t, testHandler.ListWorkspaceWorkingAgents, newRequest(http.MethodGet, "/api/working-agents?type=issue", nil)).Want(http.StatusOK)
 	var workingAgents []WorkspaceWorkingAgent
-	if err := json.NewDecoder(workingRecorder.Body).Decode(&workingAgents); err != nil {
-		t.Fatalf("decode working agents: %v", err)
-	}
+	workingRecorder.Decode(&workingAgents)
 	workingIssueIDs := make([]string, 0, 2)
 	for _, agent := range workingAgents {
 		if agent.ID == workingAgentID || agent.ID == otherAgentID {
@@ -363,35 +351,26 @@ func TestIssueTableWorkingIssueProjectionMatchesTaskIssuesNotAssignees(t *testin
 
 	listRows := func(issueIDs []string) issueTableRowsResponse {
 		t.Helper()
-		recorder := httptest.NewRecorder()
-		testHandler.ListIssueTableRows(
-			recorder,
-			newRequest(http.MethodPost, "/api/issues/table/rows", map[string]any{
-				"query": map[string]any{
-					"scope": map[string]any{"kind": "workspace"},
-					"filters": map[string]any{
-						// A map intentionally preserves [] in JSON. Marshaling
-						// issueTableFiltersRequest directly would apply its
-						// omitempty tag and turn the match-none case into no filter.
-						"working_issue_ids": issueIDs,
-					},
-					"sort": map[string]any{
-						"field":     "position",
-						"direction": "asc",
-					},
+		recorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest(http.MethodPost, "/api/issues/table/rows", map[string]any{
+			"query": map[string]any{
+				"scope": map[string]any{"kind": "workspace"},
+				"filters": map[string]any{
+					// A map intentionally preserves [] in JSON. Marshaling
+					// issueTableFiltersRequest directly would apply its
+					// omitempty tag and turn the match-none case into no filter.
+					"working_issue_ids": issueIDs,
 				},
-				"group":     map[string]any{"kind": "none"},
-				"hierarchy": map[string]any{"enabled": false},
-				"page":      map[string]any{"limit": 10},
-			}),
-		)
-		if recorder.Code != http.StatusOK {
-			t.Fatalf("list rows status = %d: %s", recorder.Code, recorder.Body.String())
-		}
+				"sort": map[string]any{
+					"field":     "position",
+					"direction": "asc",
+				},
+			},
+			"group":     map[string]any{"kind": "none"},
+			"hierarchy": map[string]any{"enabled": false},
+			"page":      map[string]any{"limit": 10},
+		})).Want(http.StatusOK)
 		var response issueTableRowsResponse
-		if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-			t.Fatalf("decode rows: %v", err)
-		}
+		recorder.Decode(&response)
 		return response
 	}
 
@@ -430,9 +409,7 @@ func TestIssueTableCursorRejectsAnotherQuery(t *testing.T) {
 	if issueTableCursorMatches(w, &cursor, "sha256:new", &groupKey, nil) {
 		t.Fatal("cursor from another query unexpectedly matched")
 	}
-	if w.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
-	}
+	testutil.Equal(t, w.Code, http.StatusConflict, "HTTP status")
 }
 
 func TestIssueTablePositionCursorIncludesIndexableLowerBound(t *testing.T) {
@@ -585,8 +562,7 @@ func TestIssueTableRowsCommitsBeforeBestEffortEnrichment(t *testing.T) {
 		tableQueryCalls: &tableQueryCalls,
 		rowQuerySQL:     &rowQuerySQL,
 	}
-	recorder := httptest.NewRecorder()
-	handler.ListIssueTableRows(recorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+	recorder := testutil.Call(t, handler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 		Query: issueTableQuerySpec{
 			Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 			Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
@@ -594,18 +570,12 @@ func TestIssueTableRowsCommitsBeforeBestEffortEnrichment(t *testing.T) {
 		Group:     issueTableGroupSpec{Kind: "none"},
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 10},
-	}))
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("rows status = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	if labelCalls != 0 {
 		t.Fatalf("best-effort labels ran inside snapshot transaction %d times", labelCalls)
 	}
 	var response issueTableRowsResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode rows: %v", err)
-	}
+	recorder.Decode(&response)
 	if len(response.Rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(response.Rows))
 	}
@@ -670,19 +640,13 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		Filters: issueTableFiltersRequest{},
 		Sort:    issueTableSortRequest{Field: "title", Direction: "asc"},
 	}
-	w := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(w, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	w := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: query,
 		Group: issueTableGroupSpec{Kind: "status"},
 		Page:  issueTablePageRequest{Limit: 100},
-	}))
-	if w.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var groups issueTableGroupsResponse
-	if err := json.NewDecoder(w.Body).Decode(&groups); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	w.Decode(&groups)
 	if groups.Total != 1001 {
 		t.Fatalf("total = %d, want 1001", groups.Total)
 	}
@@ -693,35 +657,25 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 	if counts["status:todo"] != 501 || counts["status:done"] != 500 {
 		t.Fatalf("unexpected group counts: %#v", counts)
 	}
-	firstGroupPageRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(firstGroupPageRecorder, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	firstGroupPageRecorder := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: query,
 		Group: issueTableGroupSpec{Kind: "status"},
 		Page:  issueTablePageRequest{Limit: 1},
 	}))
 	var firstGroupPage issueTableGroupsResponse
-	if firstGroupPageRecorder.Code != http.StatusOK {
-		t.Fatalf("first group page status = %d: %s", firstGroupPageRecorder.Code, firstGroupPageRecorder.Body.String())
-	}
-	if err := json.NewDecoder(firstGroupPageRecorder.Body).Decode(&firstGroupPage); err != nil {
-		t.Fatalf("decode first group page: %v", err)
-	}
+	testutil.Equal(t, firstGroupPageRecorder.Code, http.StatusOK, "HTTP status")
+	firstGroupPageRecorder.Decode(&firstGroupPage)
 	if len(firstGroupPage.Groups) != 1 || firstGroupPage.NextCursor == nil {
 		t.Fatalf("unexpected first group page: %#v", firstGroupPage)
 	}
-	secondGroupPageRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(secondGroupPageRecorder, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	secondGroupPageRecorder := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: query,
 		Group: issueTableGroupSpec{Kind: "status"},
 		Page:  issueTablePageRequest{Limit: 1, Cursor: firstGroupPage.NextCursor},
 	}))
 	var secondGroupPage issueTableGroupsResponse
-	if secondGroupPageRecorder.Code != http.StatusOK {
-		t.Fatalf("second group page status = %d: %s", secondGroupPageRecorder.Code, secondGroupPageRecorder.Body.String())
-	}
-	if err := json.NewDecoder(secondGroupPageRecorder.Body).Decode(&secondGroupPage); err != nil {
-		t.Fatalf("decode second group page: %v", err)
-	}
+	testutil.Equal(t, secondGroupPageRecorder.Code, http.StatusOK, "HTTP status")
+	secondGroupPageRecorder.Decode(&secondGroupPage)
 	if len(secondGroupPage.Groups) != 1 || secondGroupPage.Groups[0].Key == firstGroupPage.Groups[0].Key || secondGroupPage.Total != 1001 {
 		t.Fatalf("group keyset pagination mismatch: first=%#v second=%#v", firstGroupPage, secondGroupPage)
 	}
@@ -735,21 +689,15 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		labelCalls:      &labelCalls,
 		tableQueryCalls: &tableQueryCalls,
 	}
-	rowsRecorder := httptest.NewRecorder()
-	rowsHandler.ListIssueTableRows(rowsRecorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+	rowsRecorder := testutil.Call(t, rowsHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 		Query:     query,
 		Group:     issueTableGroupSpec{Kind: "status"},
 		GroupKey:  &groupKey,
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 50},
-	}))
-	if rowsRecorder.Code != http.StatusOK {
-		t.Fatalf("rows status = %d: %s", rowsRecorder.Code, rowsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var rows issueTableRowsResponse
-	if err := json.NewDecoder(rowsRecorder.Body).Decode(&rows); err != nil {
-		t.Fatalf("decode rows: %v", err)
-	}
+	rowsRecorder.Decode(&rows)
 	if rows.Total != 0 || rows.BranchTotal != 50 || len(rows.Rows) != 50 || rows.NextCursor == nil {
 		t.Fatalf("unexpected rows page: total=%d branch_total=%d rows=%d cursor=%v", rows.Total, rows.BranchTotal, len(rows.Rows), rows.NextCursor)
 	}
@@ -760,21 +708,15 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 	for _, row := range rows.Rows {
 		firstPageIDs[row.Issue.ID] = struct{}{}
 	}
-	secondRowsRecorder := httptest.NewRecorder()
-	rowsHandler.ListIssueTableRows(secondRowsRecorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+	secondRowsRecorder := testutil.Call(t, rowsHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 		Query:     query,
 		Group:     issueTableGroupSpec{Kind: "status"},
 		GroupKey:  &groupKey,
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 50, Cursor: rows.NextCursor},
-	}))
-	if secondRowsRecorder.Code != http.StatusOK {
-		t.Fatalf("second rows status = %d: %s", secondRowsRecorder.Code, secondRowsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var secondRows issueTableRowsResponse
-	if err := json.NewDecoder(secondRowsRecorder.Body).Decode(&secondRows); err != nil {
-		t.Fatalf("decode second rows: %v", err)
-	}
+	secondRowsRecorder.Decode(&secondRows)
 	if secondRows.Total != 0 || secondRows.BranchTotal != 50 || len(secondRows.Rows) != 50 {
 		t.Fatalf("unexpected grouped continuation: total=%d branch_total=%d rows=%d", secondRows.Total, secondRows.BranchTotal, len(secondRows.Rows))
 	}
@@ -787,20 +729,14 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		}
 	}
 
-	ungroupedRecorder := httptest.NewRecorder()
-	rowsHandler.ListIssueTableRows(ungroupedRecorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+	ungroupedRecorder := testutil.Call(t, rowsHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 		Query:     query,
 		Group:     issueTableGroupSpec{Kind: "none"},
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 50},
-	}))
-	if ungroupedRecorder.Code != http.StatusOK {
-		t.Fatalf("ungrouped rows status = %d: %s", ungroupedRecorder.Code, ungroupedRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var ungroupedRows issueTableRowsResponse
-	if err := json.NewDecoder(ungroupedRecorder.Body).Decode(&ungroupedRows); err != nil {
-		t.Fatalf("decode ungrouped rows: %v", err)
-	}
+	ungroupedRecorder.Decode(&ungroupedRows)
 	if ungroupedRows.Total != 1001 || ungroupedRows.BranchTotal != 50 || len(ungroupedRows.Rows) != 50 || ungroupedRows.NextCursor == nil {
 		t.Fatalf("unexpected ungrouped root head: total=%d branch_total=%d rows=%d cursor=%v", ungroupedRows.Total, ungroupedRows.BranchTotal, len(ungroupedRows.Rows), ungroupedRows.NextCursor)
 	}
@@ -808,20 +744,14 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		t.Fatalf("ungrouped root head executed %d cumulative table queries, want 4", tableQueryCalls)
 	}
 
-	ungroupedNextRecorder := httptest.NewRecorder()
-	rowsHandler.ListIssueTableRows(ungroupedNextRecorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+	ungroupedNextRecorder := testutil.Call(t, rowsHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 		Query:     query,
 		Group:     issueTableGroupSpec{Kind: "none"},
 		Hierarchy: issueTableHierarchyRequest{Enabled: false},
 		Page:      issueTablePageRequest{Limit: 50, Cursor: ungroupedRows.NextCursor},
-	}))
-	if ungroupedNextRecorder.Code != http.StatusOK {
-		t.Fatalf("ungrouped continuation status = %d: %s", ungroupedNextRecorder.Code, ungroupedNextRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var ungroupedNext issueTableRowsResponse
-	if err := json.NewDecoder(ungroupedNextRecorder.Body).Decode(&ungroupedNext); err != nil {
-		t.Fatalf("decode ungrouped continuation: %v", err)
-	}
+	ungroupedNextRecorder.Decode(&ungroupedNext)
 	if ungroupedNext.Total != 0 || ungroupedNext.BranchTotal != 50 || len(ungroupedNext.Rows) != 50 {
 		t.Fatalf("unexpected ungrouped continuation: total=%d branch_total=%d rows=%d", ungroupedNext.Total, ungroupedNext.BranchTotal, len(ungroupedNext.Rows))
 	}
@@ -838,8 +768,7 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		sortQuery.Sort = sortCase
 		fetchPage := func(cursor *string) issueTableRowsResponse {
 			t.Helper()
-			recorder := httptest.NewRecorder()
-			testHandler.ListIssueTableRows(recorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+			recorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 				Query:     sortQuery,
 				Group:     issueTableGroupSpec{Kind: "status"},
 				GroupKey:  &groupKey,
@@ -876,18 +805,12 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 
 	filteredQuery := query
 	filteredQuery.Filters.Statuses = []string{"todo"}
-	facetsRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableFacets(facetsRecorder, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
+	facetsRecorder := testutil.Call(t, testHandler.ListIssueTableFacets, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
 		Query:  filteredQuery,
 		Facets: []issueTableFacetSpec{{Kind: "status"}},
-	}))
-	if facetsRecorder.Code != http.StatusOK {
-		t.Fatalf("facets status = %d: %s", facetsRecorder.Code, facetsRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var facets issueTableFacetsResponse
-	if err := json.NewDecoder(facetsRecorder.Body).Decode(&facets); err != nil {
-		t.Fatalf("decode facets: %v", err)
-	}
+	facetsRecorder.Decode(&facets)
 	if facets.Total != 501 || len(facets.Facets) != 1 {
 		t.Fatalf("unexpected filtered facet response: total=%d facets=%d", facets.Total, len(facets.Facets))
 	}
@@ -906,19 +829,13 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		inner:           testHandler.TxStarter,
 		tableQueryCalls: &facetCountQueries,
 	}
-	noTotalRecorder := httptest.NewRecorder()
-	facetsHandler.ListIssueTableFacets(noTotalRecorder, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
+	noTotalRecorder := testutil.Call(t, facetsHandler.ListIssueTableFacets, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
 		Query:        filteredQuery,
 		Facets:       []issueTableFacetSpec{{Kind: "status"}},
 		IncludeTotal: &includeTotal,
-	}))
-	if noTotalRecorder.Code != http.StatusOK {
-		t.Fatalf("facets without total status = %d: %s", noTotalRecorder.Code, noTotalRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var noTotal issueTableFacetsResponse
-	if err := json.NewDecoder(noTotalRecorder.Body).Decode(&noTotal); err != nil {
-		t.Fatalf("decode facets without total: %v", err)
-	}
+	noTotalRecorder.Decode(&noTotal)
 	if noTotal.Total != 0 || len(noTotal.Facets) != 1 {
 		t.Fatalf("unexpected facets without total: %#v", noTotal)
 	}
@@ -934,8 +851,7 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		facetQueryCalls: &batchFacetQueries,
 		tableQueryCalls: &batchTotalQueries,
 	}
-	batchRecorder := httptest.NewRecorder()
-	batchHandler.ListIssueTableFacets(batchRecorder, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
+	batchRecorder := testutil.Call(t, batchHandler.ListIssueTableFacets, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
 		Query: query,
 		Facets: []issueTableFacetSpec{
 			{Kind: "status"},
@@ -944,14 +860,9 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 			{Kind: "creator"},
 			{Kind: "project"},
 		},
-	}))
-	if batchRecorder.Code != http.StatusOK {
-		t.Fatalf("batch facets status = %d: %s", batchRecorder.Code, batchRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var batchResponse issueTableFacetsResponse
-	if err := json.NewDecoder(batchRecorder.Body).Decode(&batchResponse); err != nil {
-		t.Fatalf("decode batch facets: %v", err)
-	}
+	batchRecorder.Decode(&batchResponse)
 	if batchResponse.Total != 1001 || len(batchResponse.Facets) != 5 {
 		t.Fatalf("unexpected batch facets response: total=%d facets=%d", batchResponse.Total, len(batchResponse.Facets))
 	}
@@ -974,18 +885,12 @@ func TestIssueTableStatusGroupingOverOneThousandRows(t *testing.T) {
 		t.Fatalf("unexpected batched facet counts: %#v", batchCounts)
 	}
 
-	mixedRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableFacets(mixedRecorder, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
+	mixedRecorder := testutil.Call(t, testHandler.ListIssueTableFacets, newRequest("POST", "/api/issues/table/facets", issueTableFacetsRequest{
 		Query:  filteredQuery,
 		Facets: []issueTableFacetSpec{{Kind: "status"}, {Kind: "priority"}},
-	}))
-	if mixedRecorder.Code != http.StatusOK {
-		t.Fatalf("mixed facets status = %d: %s", mixedRecorder.Code, mixedRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var mixedResponse issueTableFacetsResponse
-	if err := json.NewDecoder(mixedRecorder.Body).Decode(&mixedResponse); err != nil {
-		t.Fatalf("decode mixed facets: %v", err)
-	}
+	mixedRecorder.Decode(&mixedResponse)
 	if mixedResponse.Total != 501 || len(mixedResponse.Facets) != 2 ||
 		mixedResponse.Facets[0].Kind != "status" || mixedResponse.Facets[1].Kind != "priority" {
 		t.Fatalf("unexpected mixed facets response: %#v", mixedResponse)
@@ -1049,22 +954,16 @@ func TestIssueTableAssigneeNamesResolveAfterGrouping(t *testing.T) {
 		inner:         testHandler.TxStarter,
 		groupQuerySQL: &groupQuerySQL,
 	}
-	recorder := httptest.NewRecorder()
-	handler.ListIssueTableGroups(recorder, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	recorder := testutil.Call(t, handler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: issueTableQuerySpec{
 			Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 			Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
 		},
 		Group: issueTableGroupSpec{Kind: "assignee"},
 		Page:  issueTablePageRequest{Limit: 10},
-	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("groups status = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var response issueTableGroupsResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode groups: %v", err)
-	}
+	recorder.Decode(&response)
 	counts := make(map[string]int64, len(response.Groups))
 	for _, group := range response.Groups {
 		counts[group.Key] = group.Count
@@ -1135,22 +1034,16 @@ func TestIssueTableCompoundParentGroupsReturnExactStatusCells(t *testing.T) {
 		t.Fatalf("seed grouped issues: %v", err)
 	}
 
-	recorder := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(recorder, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	recorder := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: issueTableQuerySpec{
 			Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 			Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
 		},
 		Group: issueTableGroupSpec{Kind: "compound", Primary: "parent", Secondary: "status"},
 		Page:  issueTablePageRequest{Limit: 10},
-	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("compound groups status = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var response issueTableGroupsResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode compound groups: %v", err)
-	}
+	recorder.Decode(&response)
 	if response.Total != 4 || len(response.Groups) != 2 {
 		t.Fatalf("unexpected compound group totals: %#v", response)
 	}
@@ -1219,22 +1112,16 @@ func TestIssueTableCompoundParentGroupsReturnExactStatusCells(t *testing.T) {
 		Secondary:       "status",
 		SecondaryValues: []string{"todo"},
 	}
-	filteredRecorder := httptest.NewRecorder()
-	testHandler.ListIssueTableGroups(filteredRecorder, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
+	filteredRecorder := testutil.Call(t, testHandler.ListIssueTableGroups, newRequest("POST", "/api/issues/table/groups", issueTableGroupsRequest{
 		Query: issueTableQuerySpec{
 			Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 			Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
 		},
 		Group: filteredGroup,
 		Page:  issueTablePageRequest{Limit: 10},
-	}))
-	if filteredRecorder.Code != http.StatusOK {
-		t.Fatalf("filtered compound groups status = %d: %s", filteredRecorder.Code, filteredRecorder.Body.String())
-	}
+	})).Want(http.StatusOK)
 	var filtered issueTableGroupsResponse
-	if err := json.NewDecoder(filteredRecorder.Body).Decode(&filtered); err != nil {
-		t.Fatalf("decode filtered compound groups: %v", err)
-	}
+	filteredRecorder.Decode(&filtered)
 	if filtered.Total != 3 || len(filtered.Groups) != 2 {
 		t.Fatalf("unexpected visible compound groups: %#v", filtered)
 	}
@@ -1263,8 +1150,7 @@ func TestIssueTableCompoundParentGroupsReturnExactStatusCells(t *testing.T) {
 	}
 	listCell := func(key string) issueTableRowsResponse {
 		t.Helper()
-		rowsRecorder := httptest.NewRecorder()
-		testHandler.ListIssueTableRows(rowsRecorder, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+		rowsRecorder := testutil.Call(t, testHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 			Query: issueTableQuerySpec{
 				Scope: issueTableScope{Kind: "project", ProjectID: projectID},
 				Sort:  issueTableSortRequest{Field: "position", Direction: "asc"},
@@ -1273,14 +1159,9 @@ func TestIssueTableCompoundParentGroupsReturnExactStatusCells(t *testing.T) {
 			GroupKey:  &key,
 			Hierarchy: issueTableHierarchyRequest{Enabled: false},
 			Page:      issueTablePageRequest{Limit: 10},
-		}))
-		if rowsRecorder.Code != http.StatusOK {
-			t.Fatalf("filtered compound rows status = %d: %s", rowsRecorder.Code, rowsRecorder.Body.String())
-		}
+		})).Want(http.StatusOK)
 		var result issueTableRowsResponse
-		if err := json.NewDecoder(rowsRecorder.Body).Decode(&result); err != nil {
-			t.Fatalf("decode filtered compound rows: %v", err)
-		}
+		rowsRecorder.Decode(&result)
 		return result
 	}
 	noParentTodo := listCell(cellKey(filteredNoParent, "todo"))
@@ -1363,8 +1244,7 @@ func TestIssueTableHierarchyDoesNotCrossGroups(t *testing.T) {
 	}
 	listGroup := func(groupKey string) issueTableRowsResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
-		rowsHandler.ListIssueTableRows(w, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+		w := testutil.Call(t, rowsHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 			Query:     query,
 			Group:     issueTableGroupSpec{Kind: "status"},
 			GroupKey:  &groupKey,
@@ -1463,20 +1343,14 @@ func TestIssueTableHierarchyRootKeysetPagination(t *testing.T) {
 	}
 	fetchPage := func(cursor *string) issueTableRowsResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
-		testHandler.ListIssueTableRows(w, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
+		w := testutil.Call(t, testHandler.ListIssueTableRows, newRequest("POST", "/api/issues/table/rows", issueTableRowsRequest{
 			Query:     query,
 			Group:     issueTableGroupSpec{Kind: "none"},
 			Hierarchy: issueTableHierarchyRequest{Enabled: true},
 			Page:      issueTablePageRequest{Limit: 2, Cursor: cursor},
-		}))
-		if w.Code != http.StatusOK {
-			t.Fatalf("list hierarchy roots: status=%d body=%s", w.Code, w.Body.String())
-		}
+		})).Want(http.StatusOK)
 		var response issueTableRowsResponse
-		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-			t.Fatalf("decode hierarchy roots: %v", err)
-		}
+		w.Decode(&response)
 		return response
 	}
 

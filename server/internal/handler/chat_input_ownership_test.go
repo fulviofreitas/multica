@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -19,14 +20,7 @@ import (
 func setupDirectChatSession(t *testing.T, ctx context.Context, title string) (agentID, sessionID, runtimeID, daemonID string) {
 	t.Helper()
 	agentID, runtimeID, daemonID = createRuntimeGuardAgent(t, ctx)
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, explicitly_created_at)
-		VALUES ($1, $2, $3, $4, now())
-		RETURNING id
-	`, testWorkspaceID, agentID, testUserID, title).Scan(&sessionID); err != nil {
-		t.Fatalf("setup: create chat session: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, sessionID) })
+	sessionID = dbfx.Insert(t, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": agentID, "creator_id": testUserID, "title": title, "explicitly_created_at": testutil.Raw("now()")})
 	return agentID, sessionID, runtimeID, daemonID
 }
 

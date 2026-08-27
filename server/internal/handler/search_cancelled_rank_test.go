@@ -2,13 +2,13 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // MUL-5824: cancelled work is abandoned work. It stays reachable, but it must
@@ -66,8 +66,7 @@ func searchTitles(t *testing.T, q string) []string {
 		"/api/issues/search?workspace_id=%s&q=%s&limit=50&include_closed=true",
 		testWorkspaceID, url.QueryEscape(q),
 	)
-	w := httptest.NewRecorder()
-	testHandler.SearchIssues(w, newRequest("GET", path, nil))
+	w := testutil.Call(t, testHandler.SearchIssues, newRequest("GET", path, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("SearchIssues(%q): expected 200, got %d: %s", q, w.Code, w.Body.String())
 	}
@@ -75,9 +74,7 @@ func searchTitles(t *testing.T, q string) []string {
 	var response struct {
 		Issues []SearchIssueResponse `json:"issues"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
-		t.Fatalf("decode search response: %v", err)
-	}
+	w.Decode(&response)
 
 	titles := make([]string, 0, len(response.Issues))
 	for _, issue := range response.Issues {

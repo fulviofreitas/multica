@@ -2,11 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // seededReadyAgentID returns a workspace agent that has a runtime bound (the
@@ -25,31 +26,21 @@ func seededReadyAgentID(t *testing.T) string {
 
 func previewIssueTrigger(t *testing.T, body map[string]any) IssueTriggerPreviewResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues/preview-trigger?workspace_id="+testWorkspaceID, body)
-	testHandler.PreviewIssueTrigger(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PreviewIssueTrigger: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.PreviewIssueTrigger, req).Want(http.StatusOK)
 	var resp IssueTriggerPreviewResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode preview: %v", err)
-	}
+	w.Decode(&resp)
 	return resp
 }
 
 func createIssueForTest(t *testing.T, body map[string]any) IssueResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body)
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var created IssueResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode issue: %v", err)
-	}
+	w.Decode(&created)
 	t.Cleanup(func() {
 		r := withURLParam(newRequest("DELETE", "/api/issues/"+created.ID, nil), "id", created.ID)
 		testHandler.DeleteIssue(httptest.NewRecorder(), r)
@@ -154,12 +145,9 @@ func TestPreviewIssueTrigger_MatchesWritePath(t *testing.T) {
 	if pv.TotalCount != 1 {
 		t.Fatalf("preview assign: expected 1, got %+v", pv)
 	}
-	w := httptest.NewRecorder()
+
 	req := withURLParam(newRequest("PUT", "/api/issues/"+issue.ID, map[string]any{"assignee_type": "agent", "assignee_id": agentID}), "id", issue.ID)
-	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue assign: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 	if got := taskCountFor(t, issue.ID, agentID); got == 0 {
 		t.Fatalf("preview promised a run but write path enqueued none")
 	}
@@ -175,12 +163,9 @@ func TestPreviewIssueTrigger_MatchesWritePath(t *testing.T) {
 	if pv2.TotalCount != 0 {
 		t.Fatalf("preview backlog assign: expected 0, got %+v", pv2)
 	}
-	w2 := httptest.NewRecorder()
+
 	req2 := withURLParam(newRequest("PUT", "/api/issues/"+issue2.ID, map[string]any{"assignee_type": "agent", "assignee_id": agentID}), "id", issue2.ID)
-	testHandler.UpdateIssue(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue backlog assign: %d %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req2).Want(http.StatusOK)
 	if got := taskCountFor(t, issue2.ID, agentID); got != 0 {
 		t.Fatalf("preview said no run for backlog assign but write path enqueued %d", got)
 	}
@@ -193,28 +178,22 @@ func TestUpdateIssueSuppressRunSkipsEnqueue(t *testing.T) {
 
 	// Suppressed assign: assignee set, no task.
 	suppressed := createIssueForTest(t, map[string]any{"title": "suppress on", "status": "todo"})
-	w := httptest.NewRecorder()
+
 	req := withURLParam(newRequest("PUT", "/api/issues/"+suppressed.ID, map[string]any{
 		"assignee_type": "agent", "assignee_id": agentID, "suppress_run": true,
 	}), "id", suppressed.ID)
-	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue suppressed: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 	if got := taskCountFor(t, suppressed.ID, agentID); got != 0 {
 		t.Fatalf("suppress_run=true should not enqueue, got %d tasks", got)
 	}
 
 	// Control: same write without suppress_run enqueues.
 	control := createIssueForTest(t, map[string]any{"title": "suppress off", "status": "todo"})
-	w2 := httptest.NewRecorder()
+
 	req2 := withURLParam(newRequest("PUT", "/api/issues/"+control.ID, map[string]any{
 		"assignee_type": "agent", "assignee_id": agentID,
 	}), "id", control.ID)
-	testHandler.UpdateIssue(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue control: %d %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req2).Want(http.StatusOK)
 	if got := taskCountFor(t, control.ID, agentID); got == 0 {
 		t.Fatalf("control (no suppress_run) should enqueue, got 0 tasks")
 	}
@@ -228,14 +207,11 @@ func TestUpdateIssueHandoffNotePersistsOnTask(t *testing.T) {
 	note := "Only touch the login flow."
 
 	issue := createIssueForTest(t, map[string]any{"title": "handoff persist", "status": "todo"})
-	w := httptest.NewRecorder()
+
 	req := withURLParam(newRequest("PUT", "/api/issues/"+issue.ID, map[string]any{
 		"assignee_type": "agent", "assignee_id": agentID, "handoff_note": note,
 	}), "id", issue.ID)
-	testHandler.UpdateIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue with handoff: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 
 	var stored string
 	if err := testPool.QueryRow(context.Background(), `
@@ -250,14 +226,11 @@ func TestUpdateIssueHandoffNotePersistsOnTask(t *testing.T) {
 
 	// Suppressed assign with a note: no task at all (no run to inject into).
 	suppressed := createIssueForTest(t, map[string]any{"title": "handoff suppressed", "status": "todo"})
-	w2 := httptest.NewRecorder()
+
 	req2 := withURLParam(newRequest("PUT", "/api/issues/"+suppressed.ID, map[string]any{
 		"assignee_type": "agent", "assignee_id": agentID, "handoff_note": note, "suppress_run": true,
 	}), "id", suppressed.ID)
-	testHandler.UpdateIssue(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("UpdateIssue suppressed handoff: %d %s", w2.Code, w2.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateIssue, req2).Want(http.StatusOK)
 	if got := taskCountFor(t, suppressed.ID, agentID); got != 0 {
 		t.Fatalf("suppressed handoff should enqueue no task, got %d", got)
 	}
@@ -266,13 +239,10 @@ func TestUpdateIssueHandoffNotePersistsOnTask(t *testing.T) {
 // TestPreviewIssueTrigger_MalformedBody verifies the endpoint rejects a
 // malformed body with 400 rather than a 500 or a silent empty result.
 func TestPreviewIssueTrigger_MalformedBody(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := httptest.NewRequest("POST", "/api/issues/preview-trigger?workspace_id="+testWorkspaceID, strings.NewReader("{not json"))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-User-ID", testUserID)
 	req.Header.Set("X-Workspace-ID", testWorkspaceID)
-	testHandler.PreviewIssueTrigger(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("malformed body: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.PreviewIssueTrigger, req).Want(http.StatusBadRequest)
 }

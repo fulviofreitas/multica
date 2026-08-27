@@ -3,7 +3,6 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/middleware"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -44,15 +44,9 @@ func TestSendChatMessage_ReportsPositionInsteadOfQueuedStatus(t *testing.T) {
 		})
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SendChatMessage(w, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("SendChatMessage: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.SendChatMessage, req).Want(http.StatusCreated)
 		var response SendChatMessageResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatalf("decode send response: %v", err)
-		}
+		w.JSON(&response)
 		return response
 	}
 
@@ -79,15 +73,9 @@ func TestSendChatMessage_DeferredPredecessorStaysHeadAcrossPromotion(t *testing.
 		})
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SendChatMessage(w, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("SendChatMessage: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.SendChatMessage, req).Want(http.StatusCreated)
 		var response SendChatMessageResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatalf("decode send response: %v", err)
-		}
+		w.JSON(&response)
 		return response
 	}
 
@@ -155,15 +143,9 @@ func TestSendChatMessage_LinksAttachments(t *testing.T) {
 	uploadReq.Header.Set("X-User-ID", testUserID)
 	uploadReq.Header.Set("X-Workspace-ID", testWorkspaceID)
 
-	uploadW := httptest.NewRecorder()
-	testHandler.UploadFile(uploadW, uploadReq)
-	if uploadW.Code != http.StatusOK {
-		t.Fatalf("upload precondition: %d %s", uploadW.Code, uploadW.Body.String())
-	}
+	uploadW := testutil.Call(t, testHandler.UploadFile, uploadReq).Want(http.StatusOK)
 	var uploadResp AttachmentResponse
-	if err := json.Unmarshal(uploadW.Body.Bytes(), &uploadResp); err != nil {
-		t.Fatalf("decode upload: %v", err)
-	}
+	uploadW.JSON(&uploadResp)
 	attachmentID := uploadResp.ID
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID)
@@ -176,16 +158,10 @@ func TestSendChatMessage_LinksAttachments(t *testing.T) {
 	})
 	sendReq = withURLParam(sendReq, "sessionId", sessionID)
 	sendReq = withChatTestWorkspaceCtx(t, sendReq)
-	sendW := httptest.NewRecorder()
-	testHandler.SendChatMessage(sendW, sendReq)
-	if sendW.Code != http.StatusCreated {
-		t.Fatalf("SendChatMessage: expected 201, got %d: %s", sendW.Code, sendW.Body.String())
-	}
+	sendW := testutil.Call(t, testHandler.SendChatMessage, sendReq).Want(http.StatusCreated)
 
 	var sendResp SendChatMessageResponse
-	if err := json.Unmarshal(sendW.Body.Bytes(), &sendResp); err != nil {
-		t.Fatalf("decode send: %v", err)
-	}
+	sendW.JSON(&sendResp)
 	if sendResp.MessageID == "" {
 		t.Fatal("expected non-empty message_id in send response")
 	}
@@ -245,12 +221,7 @@ func TestSendChatMessage_ArchivedAgent(t *testing.T) {
 	})
 	sendReq = withURLParam(sendReq, "sessionId", sessionID)
 	sendReq = withChatTestWorkspaceCtx(t, sendReq)
-	sendW := httptest.NewRecorder()
-	testHandler.SendChatMessage(sendW, sendReq)
-
-	if sendW.Code != http.StatusConflict {
-		t.Fatalf("SendChatMessage to archived agent: expected 409, got %d: %s", sendW.Code, sendW.Body.String())
-	}
+	testutil.Call(t, testHandler.SendChatMessage, sendReq).Want(http.StatusConflict)
 
 	// The rejected send must not have persisted an orphan user message.
 	var count int
@@ -288,15 +259,9 @@ func TestSendChatMessage_LinksUnattachedAttachments(t *testing.T) {
 	uploadReq.Header.Set("X-User-ID", testUserID)
 	uploadReq.Header.Set("X-Workspace-ID", testWorkspaceID)
 
-	uploadW := httptest.NewRecorder()
-	testHandler.UploadFile(uploadW, uploadReq)
-	if uploadW.Code != http.StatusOK {
-		t.Fatalf("upload precondition: %d %s", uploadW.Code, uploadW.Body.String())
-	}
+	uploadW := testutil.Call(t, testHandler.UploadFile, uploadReq).Want(http.StatusOK)
 	var uploadResp AttachmentResponse
-	if err := json.Unmarshal(uploadW.Body.Bytes(), &uploadResp); err != nil {
-		t.Fatalf("decode upload: %v", err)
-	}
+	uploadW.JSON(&uploadResp)
 	attachmentID := uploadResp.ID
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID)
@@ -314,16 +279,10 @@ func TestSendChatMessage_LinksUnattachedAttachments(t *testing.T) {
 	})
 	sendReq = withURLParam(sendReq, "sessionId", sessionID)
 	sendReq = withChatTestWorkspaceCtx(t, sendReq)
-	sendW := httptest.NewRecorder()
-	testHandler.SendChatMessage(sendW, sendReq)
-	if sendW.Code != http.StatusCreated {
-		t.Fatalf("SendChatMessage: expected 201, got %d: %s", sendW.Code, sendW.Body.String())
-	}
+	sendW := testutil.Call(t, testHandler.SendChatMessage, sendReq).Want(http.StatusCreated)
 
 	var sendResp SendChatMessageResponse
-	if err := json.Unmarshal(sendW.Body.Bytes(), &sendResp); err != nil {
-		t.Fatalf("decode send: %v", err)
-	}
+	sendW.JSON(&sendResp)
 
 	var dbSessionID, dbMessageID *string
 	if err := testPool.QueryRow(
@@ -352,16 +311,10 @@ func TestUpdateChatSession_RenamesTitle(t *testing.T) {
 	})
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.UpdateChatSession(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateChatSession: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateChatSession, req).Want(http.StatusOK)
 
 	var resp ChatSessionResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode update: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.Title != "Renamed Session" {
 		t.Fatalf("response title: want %q, got %q", "Renamed Session", resp.Title)
 	}
@@ -401,15 +354,12 @@ func TestSetChatSessionPinned_TogglesPin(t *testing.T) {
 		})
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SetChatSessionPinned(w, req)
+		w := testutil.Call(t, testHandler.SetChatSessionPinned, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("SetChatSessionPinned(%v): expected 200, got %d: %s", pinned, w.Code, w.Body.String())
 		}
 		var resp ChatSessionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode pin: %v", err)
-		}
+		w.JSON(&resp)
 		return resp
 	}
 
@@ -462,15 +412,12 @@ func TestSetChatSessionArchived_TogglesStatus(t *testing.T) {
 		})
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SetChatSessionArchived(w, req)
+		w := testutil.Call(t, testHandler.SetChatSessionArchived, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("SetChatSessionArchived(%v): expected 200, got %d: %s", archived, w.Code, w.Body.String())
 		}
 		var resp ChatSessionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode archive: %v", err)
-		}
+		w.JSON(&resp)
 		return resp
 	}
 
@@ -514,11 +461,7 @@ func TestUpdateChatSession_RejectsBlank(t *testing.T) {
 	})
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.UpdateChatSession(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("UpdateChatSession blank: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateChatSession, req).Want(http.StatusBadRequest)
 }
 
 // TestSendChatMessage_InvalidAttachmentIDs rejects malformed UUIDs in
@@ -533,11 +476,7 @@ func TestSendChatMessage_InvalidAttachmentIDs(t *testing.T) {
 	})
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.SendChatMessage(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("SendChatMessage with bad attachment id: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.SendChatMessage, req).Want(http.StatusBadRequest)
 
 	// Confirm no message row was created.
 	var count int
@@ -563,15 +502,9 @@ func fetchChatMessagesPageForTest(t *testing.T, sessionID string, params url.Val
 	req.Header.Set("X-User-ID", testUserID)
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.ListChatMessagesPage(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListChatMessagesPage: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListChatMessagesPage, req).Want(http.StatusOK)
 	var page ChatMessagesPageResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
-		t.Fatalf("decode page messages: %v", err)
-	}
+	w.JSON(&page)
 	return page
 }
 
@@ -597,15 +530,9 @@ func TestListChatMessagesPage_UsesCursorWithoutChangingLegacyList(t *testing.T) 
 	legacyReq.Header.Set("X-User-ID", testUserID)
 	legacyReq = withURLParam(legacyReq, "sessionId", sessionID)
 	legacyReq = withChatTestWorkspaceCtx(t, legacyReq)
-	legacyW := httptest.NewRecorder()
-	testHandler.ListChatMessages(legacyW, legacyReq)
-	if legacyW.Code != http.StatusOK {
-		t.Fatalf("ListChatMessages: expected 200, got %d: %s", legacyW.Code, legacyW.Body.String())
-	}
+	legacyW := testutil.Call(t, testHandler.ListChatMessages, legacyReq).Want(http.StatusOK)
 	var legacy []ChatMessageResponse
-	if err := json.Unmarshal(legacyW.Body.Bytes(), &legacy); err != nil {
-		t.Fatalf("decode legacy messages: %v", err)
-	}
+	legacyW.JSON(&legacy)
 	if len(legacy) != 3 || legacy[0].Content != "oldest" || legacy[2].Content != "newest" {
 		t.Fatalf("legacy messages = %#v", legacy)
 	}
@@ -705,11 +632,7 @@ func TestListChatMessagesPage_RejectsInvalidLimit(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.ListChatMessagesPage(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("ListChatMessagesPage invalid limit: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.ListChatMessagesPage, req).Want(http.StatusBadRequest)
 }
 
 // TestDeleteChatSession_PrunesChannelRows verifies the application-layer
@@ -768,12 +691,7 @@ VALUES ($1, 'feishu', $2, $3, 'final')
 	req.Header.Set("X-User-ID", testUserID)
 	req = withURLParam(req, "sessionId", sessionID)
 	req = withChatTestWorkspaceCtx(t, req)
-	w := httptest.NewRecorder()
-	testHandler.DeleteChatSession(w, req)
-
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteChatSession: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteChatSession, req).Want(http.StatusNoContent)
 
 	var bindingExists bool
 	if err := testPool.QueryRow(ctx,
@@ -846,8 +764,7 @@ VALUES ($1, $2, 'feishu', $3, 'p2p')
 		req.Header.Set("X-User-ID", testUserID)
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SetChatSessionArchived(w, req)
+		w := testutil.Call(t, testHandler.SetChatSessionArchived, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("SetChatSessionArchived(%v): expected 200, got %d: %s", archived, w.Code, w.Body.String())
 		}
@@ -915,15 +832,9 @@ func TestListChatSessions_ArchivedSessionReportsZeroUnread(t *testing.T) {
 		t.Helper()
 		req := newRequest("GET", "/api/chat/sessions?status=all", nil)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.ListChatSessions(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("ListChatSessions: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.ListChatSessions, req).Want(http.StatusOK)
 		var resp []ChatSessionResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode list: %v", err)
-		}
+		w.JSON(&resp)
 		for _, s := range resp {
 			if s.ID == sessionID {
 				return s.UnreadCount, s.HasUnread
@@ -938,8 +849,7 @@ func TestListChatSessions_ArchivedSessionReportsZeroUnread(t *testing.T) {
 		req := newRequest("PATCH", "/api/chat/sessions/"+sessionID+"/archive", map[string]any{"archived": archived})
 		req = withURLParam(req, "sessionId", sessionID)
 		req = withChatTestWorkspaceCtx(t, req)
-		w := httptest.NewRecorder()
-		testHandler.SetChatSessionArchived(w, req)
+		w := testutil.Call(t, testHandler.SetChatSessionArchived, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("SetChatSessionArchived(%v): expected 200, got %d: %s", archived, w.Code, w.Body.String())
 		}

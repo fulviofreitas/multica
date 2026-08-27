@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	sdk "github.com/multica-ai/multica/server/pkg/composio"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -168,8 +169,7 @@ func TestComposio_ServiceUnavailableWhenNil(t *testing.T) {
 	for _, hf := range []http.HandlerFunc{
 		h.ComposioConnectInit, h.ComposioCallback, h.ListComposioConnections, h.DeleteComposioConnection,
 	} {
-		w := httptest.NewRecorder()
-		hf(w, composioReq(http.MethodGet, "/", ""))
+		w := testutil.Call(t, hf, composioReq(http.MethodGet, "/", ""))
 		if w.Code != http.StatusServiceUnavailable {
 			t.Errorf("expected 503 when Composio nil, got %d", w.Code)
 		}
@@ -180,11 +180,7 @@ func TestComposio_ServiceUnavailableWhenFlagDisabled(t *testing.T) {
 	h := newComposioTestHandler(t, &composioFakeSDK{}, &composioFakeStore{})
 	withComposioMCPAppsFlag(t, h, false)
 
-	w := httptest.NewRecorder()
-	h.ListComposioToolkits(w, composioReq(http.MethodGet, "/toolkits", ""))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 when feature flag disabled, got %d", w.Code)
-	}
+	testutil.Call(t, h.ListComposioToolkits, composioReq(http.MethodGet, "/toolkits", "")).Want(http.StatusServiceUnavailable)
 }
 
 func TestComposio_ConnectInit(t *testing.T) {
@@ -193,9 +189,7 @@ func TestComposio_ConnectInit(t *testing.T) {
 	// success
 	w := httptest.NewRecorder()
 	h.ComposioConnectInit(w, composioReq(http.MethodPost, "/", `{"toolkit_slug":"notion"}`))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp ComposioConnectInitResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -222,15 +216,9 @@ func TestComposio_ConnectInit(t *testing.T) {
 func TestComposio_ListToolkits(t *testing.T) {
 	h := newComposioTestHandler(t, &composioFakeSDK{}, &composioFakeStore{})
 
-	w := httptest.NewRecorder()
-	h.ListComposioToolkits(w, composioReq(http.MethodGet, "/toolkits", ""))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, h.ListComposioToolkits, composioReq(http.MethodGet, "/toolkits", "")).Want(http.StatusOK)
 	var toolkits []ComposioToolkitResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &toolkits); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&toolkits)
 	// Only notion has an enabled auth config; github is filtered out server-side
 	// (MUL-4009), so a single connectable toolkit comes back.
 	if len(toolkits) != 1 {
@@ -257,11 +245,7 @@ func TestComposio_ListToolkits(t *testing.T) {
 func TestComposio_ListToolkits_ResolverErrorIs502(t *testing.T) {
 	h := newComposioTestHandler(t, &composioFakeSDK{listAuthErr: errors.New("auth_configs upstream blip")}, &composioFakeStore{})
 
-	w := httptest.NewRecorder()
-	h.ListComposioToolkits(w, composioReq(http.MethodGet, "/toolkits", ""))
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 on resolver error, got %d (%s)", w.Code, w.Body.String())
-	}
+	testutil.Call(t, h.ListComposioToolkits, composioReq(http.MethodGet, "/toolkits", "")).Want(http.StatusBadGateway)
 }
 
 func TestComposio_CallbackRedirects(t *testing.T) {
@@ -271,8 +255,7 @@ func TestComposio_CallbackRedirects(t *testing.T) {
 	// SDK, then replay it through the real callback handler.
 	capturing := &composioCapturingSDK{}
 	h2 := newComposioTestHandler(t, capturing, store)
-	bw := httptest.NewRecorder()
-	h2.ComposioConnectInit(bw, composioReq(http.MethodPost, "/", `{"toolkit_slug":"notion"}`))
+	testutil.Call(t, h2.ComposioConnectInit, composioReq(http.MethodPost, "/", `{"toolkit_slug":"notion"}`))
 	state := capturing.stateFromCallback()
 	if state == "" {
 		t.Fatal("could not capture signed state")
@@ -280,9 +263,7 @@ func TestComposio_CallbackRedirects(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	h2.ComposioCallback(w, composioReq(http.MethodGet, "/callback?state="+state+"&status=success&connected_account_id=ca_1", ""))
-	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	if loc := w.Header().Get("Location"); !strings.Contains(loc, "connected=notion") {
 		t.Errorf("success location = %q", loc)
 	}
@@ -290,9 +271,7 @@ func TestComposio_CallbackRedirects(t *testing.T) {
 	// failure path: bad state → error redirect
 	w = httptest.NewRecorder()
 	h2.ComposioCallback(w, composioReq(http.MethodGet, "/callback?state=bad&status=success&connected_account_id=ca_1", ""))
-	if w.Code != http.StatusFound {
-		t.Fatalf("expected 302 on bad state, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusFound, "HTTP status")
 	if loc := w.Header().Get("Location"); !strings.Contains(loc, "error=composio_connect_failed") {
 		t.Errorf("failure location = %q", loc)
 	}
@@ -313,9 +292,7 @@ func TestComposio_ListAndDelete(t *testing.T) {
 	// list
 	w := httptest.NewRecorder()
 	h.ListComposioConnections(w, composioReq(http.MethodGet, "/connections", ""))
-	if w.Code != http.StatusOK {
-		t.Fatalf("list: expected 200, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var conns []ComposioConnectionResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &conns); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -330,17 +307,13 @@ func TestComposio_ListAndDelete(t *testing.T) {
 	delReq := composioReq(http.MethodDelete, "/api/integrations/composio/connections/"+util.UUIDToString(row.ID), "")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, delReq)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("delete: expected 204, got %d (%s)", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 
 	// delete unknown id → 404
 	missing := "33333333-3333-3333-3333-333333333333"
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, composioReq(http.MethodDelete, "/api/integrations/composio/connections/"+missing, ""))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("delete missing: expected 404, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 // composioCapturingSDK records the callback URL so a test can replay the signed

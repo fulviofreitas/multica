@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -241,13 +241,9 @@ func TestDeleteWorkspace_CollectsTasksThroughEveryOwnershipPath(t *testing.T) {
 	}
 	f := newWorkspaceDeletePathFixture(t, "endtoend")
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+f.victimID, nil)
 	req = withURLParam(req, "id", f.victimID)
-	testHandler.DeleteWorkspace(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteWorkspace = %d, want 204: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteWorkspace, req).Want(http.StatusNoContent)
 
 	for name, id := range map[string]string{
 		"task reachable only via agent_id":   f.taskViaAgent,

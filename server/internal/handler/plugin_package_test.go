@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
 )
 
@@ -94,9 +95,7 @@ func uploadPluginBundle(t *testing.T, archive []byte) *httptest.ResponseRecorder
 func publishUploadedBundle(t *testing.T, manifest, script string) service.PluginPackageSummary {
 	t.Helper()
 	recorder := uploadPluginBundle(t, pluginBundleZip(t, manifest, script))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("publish: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusCreated, "HTTP status")
 	var published service.PluginPackageSummary
 	if err := json.Unmarshal(recorder.Body.Bytes(), &published); err != nil {
 		t.Fatalf("decode published package: %v", err)
@@ -107,17 +106,11 @@ func publishUploadedBundle(t *testing.T, manifest, script string) service.Plugin
 func installPublishedVersion(t *testing.T, versionID string) string {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": []string{"issues:read"}})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 	var installed struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
-		t.Fatalf("decode installation: %v", err)
-	}
+	recorder.JSON(&installed)
 	return installed.ID
 }
 
@@ -146,13 +139,10 @@ func surfaceScript(t *testing.T, installationID, surfaceKey string) (*httptest.R
 		t.Fatalf("decode surface launch: %v", err)
 	}
 	token := launch.URL[strings.LastIndex(launch.URL, "/")+1:]
-	documentRecorder := httptest.NewRecorder()
+
 	documentRequest := pluginHandlerRequest(http.MethodGet, "/plugin-surfaces/"+token, nil, map[string]string{"token": token})
 	documentRequest.Host = "plugin-content.example.test"
-	testHandler.ServePluginSurface(documentRecorder, documentRequest)
-	if documentRecorder.Code != http.StatusOK {
-		t.Fatalf("serve hosted surface: status=%d body=%s", documentRecorder.Code, documentRecorder.Body.String())
-	}
+	documentRecorder := testutil.Call(t, testHandler.ServePluginSurface, documentRequest).Want(http.StatusOK)
 	encoded := regexp.MustCompile(`id="multica-surface-code">([^<]+)</script>`).FindStringSubmatch(documentRecorder.Body.String())
 	if len(encoded) != 2 {
 		t.Fatal("hosted surface did not contain stored code")
@@ -182,9 +172,7 @@ func TestUploadedBundleInstallsAndServesItsOwnCode(t *testing.T) {
 
 	installationID := installPublishedVersion(t, published.Versions[0].ID)
 	recorder, script := surfaceScript(t, installationID, "hello")
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("surface script: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 	if !strings.Contains(script.Code, "console.log('v1')") {
 		t.Fatalf("the served code is not what was uploaded: %q", script.Code)
 	}
@@ -250,9 +238,7 @@ func TestPublishRefusesToOverwriteAnExistingVersion(t *testing.T) {
 
 	publishUploadedBundle(t, packageManifest("1.0.0"), "console.log('v1');\n")
 	recorder := uploadPluginBundle(t, pluginBundleZip(t, packageManifest("1.0.0"), "console.log('tampered');\n"))
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("republish status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusConflict, "HTTP status")
 	if !strings.Contains(recorder.Body.String(), "immutable") {
 		t.Fatalf("the conflict does not explain itself: %s", recorder.Body.String())
 	}
@@ -269,23 +255,15 @@ func TestDeletePublishedPackageRefusesWhileInstalled(t *testing.T) {
 	params := map[string]string{"id": testWorkspaceID, "packageId": published.ID}
 	recorder := httptest.NewRecorder()
 	testHandler.DeletePluginPackage(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil, params))
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("delete while installed status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusConflict, "HTTP status")
 
-	uninstall := httptest.NewRecorder()
-	testHandler.UninstallPlugin(uninstall, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, map[string]string{
+	testutil.Call(t, testHandler.UninstallPlugin, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if uninstall.Code != http.StatusNoContent {
-		t.Fatalf("uninstall status=%d body=%s", uninstall.Code, uninstall.Body.String())
-	}
+	})).Want(http.StatusNoContent)
 
 	recorder = httptest.NewRecorder()
 	testHandler.DeletePluginPackage(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/packages", nil, params))
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("delete after uninstall status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusNoContent, "HTTP status")
 
 	// The stored bundle goes with it; a package row with orphaned files behind
 	// it is storage nothing can reach.
@@ -315,13 +293,9 @@ func TestSurfaceScriptRefusesWhatWasNeverInstalled(t *testing.T) {
 		t.Fatalf("unknown surface key status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
-	disable := httptest.NewRecorder()
-	testHandler.DisablePlugin(disable, pluginHandlerRequest(http.MethodPost, "/plugins/disable", nil, map[string]string{
+	testutil.Call(t, testHandler.DisablePlugin, pluginHandlerRequest(http.MethodPost, "/plugins/disable", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID,
-	}))
-	if disable.Code != http.StatusOK {
-		t.Fatalf("disable status=%d body=%s", disable.Code, disable.Body.String())
-	}
+	})).Want(http.StatusOK)
 	// Disabling has to stop the code from being served, or "disabled" is a UI
 	// state rather than a decision.
 	if recorder, _ := surfaceScript(t, installationID, "hello"); recorder.Code != http.StatusForbidden {

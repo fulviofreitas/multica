@@ -2,12 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -144,25 +143,17 @@ func TestDeleteAgentRuntime_StructuredConflict(t *testing.T) {
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Cascade 409 Agent")
 	_ = agentID
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusConflict)
 
 	var body struct {
 		Error        string          `json:"error"`
 		Code         string          `json:"code"`
 		ActiveAgents []AgentResponse `json:"active_agents"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.Code != "runtime_has_active_agents" {
-		t.Fatalf("expected code runtime_has_active_agents, got %q", body.Code)
-	}
+	w.Decode(&body)
+	testutil.Equal(t, body.Code, "runtime_has_active_agents", "HTTP status")
 	if len(body.ActiveAgents) != 1 || body.ActiveAgents[0].ID != agentID {
 		t.Fatalf("expected one active agent %s, got %+v", agentID, body.ActiveAgents)
 	}
@@ -254,23 +245,15 @@ func TestDeleteAgentRuntime_CustomProfileInstanceRefusesDirectDelete(t *testing.
 
 	runtimeID, _ := createProfileBackedRuntime(t, ctx, "Custom Instance Delete Guard")
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusConflict)
 
 	var body struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.Code != "runtime_profile_instance_delete_unsupported" {
-		t.Fatalf("expected runtime_profile_instance_delete_unsupported, got %q", body.Code)
-	}
+	w.Decode(&body)
+	testutil.Equal(t, body.Code, "runtime_profile_instance_delete_unsupported", "HTTP status")
 
 	var rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {
@@ -292,13 +275,9 @@ func TestDeleteAgentRuntime_OrphanedProfileAllowsDirectDelete(t *testing.T) {
 		t.Fatalf("delete profile row: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/runtimes/"+runtimeID, nil)
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.DeleteAgentRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.DeleteAgentRuntime, req).Want(http.StatusOK)
 
 	var rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {
@@ -322,14 +301,10 @@ func TestUnbindAgentsAndDeleteRuntime_HappyPath(t *testing.T) {
 	runtimeID := createCascadeFixtureRuntime(t, ctx, "Cascade Happy Runtime")
 	agentID := createCascadeFixtureAgent(t, ctx, runtimeID, "Cascade Happy Agent")
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{agentID}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusOK)
 
 	// Runtime row must be gone.
 	var rtRows int
@@ -370,9 +345,7 @@ func TestUnbindAgentsAndDeleteRuntime_HappyPath(t *testing.T) {
 		AgentsUnbound  int `json:"agents_unbound"`
 		AgentsArchived int `json:"agents_archived"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&body)
 	if body.AgentsUnbound != 1 {
 		t.Fatalf("agents_unbound = %d, want 1", body.AgentsUnbound)
 	}
@@ -391,24 +364,16 @@ func TestUnbindAgentsAndDeleteRuntime_CustomProfileInstanceRefusesDirectDelete(t
 
 	runtimeID, _ := createProfileBackedRuntime(t, ctx, "Custom Instance Cascade Guard")
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusConflict)
 
 	var body struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.Code != "runtime_profile_instance_delete_unsupported" {
-		t.Fatalf("expected runtime_profile_instance_delete_unsupported, got %q", body.Code)
-	}
+	w.Decode(&body)
+	testutil.Equal(t, body.Code, "runtime_profile_instance_delete_unsupported", "HTTP status")
 
 	var rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {
@@ -430,14 +395,10 @@ func TestUnbindAgentsAndDeleteRuntime_OrphanedProfileAllowsCascade(t *testing.T)
 		t.Fatalf("delete profile row: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusOK)
 
 	var rtRows int
 	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, runtimeID).Scan(&rtRows); err != nil {
@@ -464,25 +425,18 @@ func TestUnbindAgentsAndDeleteRuntime_PlanChanged(t *testing.T) {
 	agent2 := createCascadeFixtureAgent(t, ctx, runtimeID, "Cascade Drift Agent B")
 
 	// User confirmed only agent1 — but the live set is {agent1, agent2}.
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/runtimes/"+runtimeID+"/unbind-agents-and-delete",
 		map[string]any{"expected_active_agent_ids": []string{agent1}})
 	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.UnbindAgentsAndDeleteRuntime(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UnbindAgentsAndDeleteRuntime, req).Want(http.StatusConflict)
 
 	var body struct {
 		Code         string          `json:"code"`
 		ActiveAgents []AgentResponse `json:"active_agents"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.Code != "runtime_delete_plan_changed" {
-		t.Fatalf("expected code runtime_delete_plan_changed, got %q", body.Code)
-	}
+	w.Decode(&body)
+	testutil.Equal(t, body.Code, "runtime_delete_plan_changed", "HTTP status")
 	if len(body.ActiveAgents) != 2 {
 		t.Fatalf("expected 2 active agents in fresh snapshot, got %d", len(body.ActiveAgents))
 	}
@@ -561,18 +515,6 @@ func createProfileBackedRuntime(t *testing.T, ctx context.Context, name string) 
 func createCascadeFixtureAgent(t *testing.T, ctx context.Context, runtimeID, name string) string {
 	t.Helper()
 	var agentID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO agent (
-			workspace_id, name, description, runtime_mode, runtime_config,
-			runtime_id, visibility, max_concurrent_tasks, owner_id
-		)
-		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'private', 1, $4)
-		RETURNING id
-	`, testWorkspaceID, name, runtimeID, testUserID).Scan(&agentID); err != nil {
-		t.Fatalf("insert cascade fixture agent: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id = $1`, agentID)
-	})
+	agentID = dbfx.Insert(t, "agent", testutil.Cols{"workspace_id": testWorkspaceID, "name": name, "description": testutil.Raw("''"), "runtime_mode": testutil.Raw("'cloud'"), "runtime_config": testutil.Raw("'{}'::jsonb"), "runtime_id": runtimeID, "visibility": testutil.Raw("'private'"), "max_concurrent_tasks": testutil.Raw("1"), "owner_id": testUserID})
 	return agentID
 }

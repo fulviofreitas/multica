@@ -1,13 +1,12 @@
 package handler
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -26,21 +25,15 @@ func TestCreateComment_StripsNullBytesInsteadOf500(t *testing.T) {
 	issueID := createTestIssue(t, "null-byte comment fixture (GH #5388)", "todo", "medium")
 	t.Cleanup(func() { deleteTestIssue(t, issueID) })
 
-	w := httptest.NewRecorder()
 	r := newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
 		"content": "diagnosis body\x00 with a stray NUL byte",
 	})
 	r = withURLParam(r, "id", issueID)
 
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment with NUL byte: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	var body map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&body)
 	got, _ := body["content"].(string)
 	if strings.ContainsRune(got, '\x00') {
 		t.Fatalf("stored content still contains a NUL byte: %q", got)

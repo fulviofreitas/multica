@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -452,7 +451,7 @@ func TestPinTaskSession_PointerAdvanceIsAtomicWithPin(t *testing.T) {
 
 	pinDone := make(chan int, 1)
 	go func() {
-		w := httptest.NewRecorder()
+
 		req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
 			map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
 			testWorkspaceID, daemonID)
@@ -463,7 +462,7 @@ func TestPinTaskSession_PointerAdvanceIsAtomicWithPin(t *testing.T) {
 		rctx := chi.NewRouteContext()
 		rctx.URLParams.Add("taskId", taskID)
 		req = req.WithContext(context.WithValue(reqCtx, chi.RouteCtxKey, rctx))
-		testHandler.PinTaskSession(w, req)
+		w := testutil.Call(t, testHandler.PinTaskSession, req)
 		pinDone <- w.Code
 	}()
 
@@ -744,7 +743,7 @@ func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
 		{
 			name: "pin-vs-fail",
 			first: func(taskID string) error {
-				w := httptest.NewRecorder()
+
 				req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
 					map[string]any{"session_id": "turn2-session", "work_dir": "/tmp/turn2-workdir"},
 					testWorkspaceID, daemonID)
@@ -753,7 +752,7 @@ func TestCancelAndPin_ConcurrentWithTerminalReport(t *testing.T) {
 				rctx := chi.NewRouteContext()
 				rctx.URLParams.Add("taskId", taskID)
 				req = req.WithContext(context.WithValue(reqCtx, chi.RouteCtxKey, rctx))
-				testHandler.PinTaskSession(w, req)
+				w := testutil.Call(t, testHandler.PinTaskSession, req)
 				// Any non-204 fails, deliberately: a pin that loses a deadlock is
 				// reported by the handler as a plain 500, so a check that only
 				// recognised *pgconn.PgError(40P01) would skip the very failure
@@ -903,17 +902,13 @@ func raceCtx() (context.Context, context.CancelFunc) {
 func pinTaskSessionViaAPI(t *testing.T, taskID, daemonID, sessionID, workDir string) {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/tasks/"+taskID+"/session",
 		map[string]any{"session_id": sessionID, "work_dir": workDir}, testWorkspaceID, daemonID)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("taskId", taskID)
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
-	testHandler.PinTaskSession(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("PinTaskSession: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.PinTaskSession, req).Want(http.StatusNoContent)
 }
 
 // TestPinTaskSession_LateCancelledPin covers the mid-flight pin racing the

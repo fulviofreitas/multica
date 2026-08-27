@@ -6,15 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // decodeProject decodes a ProjectResponse from a recorder, failing the test on
 // a non-expected status or a decode error.
 func decodeProject(t *testing.T, w *httptest.ResponseRecorder, wantStatus int) ProjectResponse {
 	t.Helper()
-	if w.Code != wantStatus {
-		t.Fatalf("expected status %d, got %d: %s", wantStatus, w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, wantStatus, "HTTP status")
 	var p ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&p); err != nil {
 		t.Fatalf("decode ProjectResponse: %v", err)
@@ -99,9 +99,7 @@ func TestSearchProjectsCarriesDates(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	testHandler.SearchProjects(w, newRequest("GET", "/api/projects/search?q=zzsearchdated", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("search status = %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp struct {
 		Projects []SearchProjectResponse `json:"projects"`
 	}
@@ -130,9 +128,7 @@ func TestProjectInvalidDateReturns400(t *testing.T) {
 		"title":      "bad date project",
 		"start_date": "03/01/2026",
 	}))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid create start_date, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Seed a valid project, then reject a malformed update due_date.
 	w = httptest.NewRecorder()
@@ -149,7 +145,5 @@ func TestProjectInvalidDateReturns400(t *testing.T) {
 		"due_date": "not-a-date",
 	}), "id", project.ID)
 	testHandler.UpdateProject(w, putReq)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for invalid update due_date, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 }

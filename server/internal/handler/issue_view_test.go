@@ -8,13 +8,15 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func createIssueViewForTest(t *testing.T, body map[string]any) (IssueViewResponse, int, string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issue-views", body)
-	testHandler.CreateIssueView(w, req)
+	w := testutil.Call(t, testHandler.CreateIssueView, req)
 	var view IssueViewResponse
 	if w.Code == http.StatusCreated {
 		json.NewDecoder(w.Body).Decode(&view)
@@ -44,11 +46,7 @@ func TestCreateAndListIssueView(t *testing.T) {
 		t.Fatalf("expected workspace visibility, got %s", view.Visibility)
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.ListIssueViews(w, newRequest("GET", "/api/issue-views?scope_type=workspace", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("list: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListIssueViews, newRequest("GET", "/api/issue-views?scope_type=workspace", nil)).Want(http.StatusOK)
 	var views []IssueViewResponse
 	json.NewDecoder(w.Body).Decode(&views)
 	found := false
@@ -114,9 +112,7 @@ func TestIssueViewPrivateInvisibleToOthers(t *testing.T) {
 	req.Header.Set("X-User-ID", otherID)
 	req = withURLParam(req, "id", view.ID)
 	testHandler.GetIssueViewByID(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for foreign private view, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 }
 
 func TestUpdateIssueViewRevisionConflict(t *testing.T) {
@@ -131,13 +127,13 @@ func TestUpdateIssueViewRevisionConflict(t *testing.T) {
 	}
 
 	patch := func(rev int32, name string) int {
-		w := httptest.NewRecorder()
+
 		req := newRequest("PATCH", "/api/issue-views/"+view.ID, map[string]any{
 			"name":              name,
 			"expected_revision": rev,
 		})
 		req = withURLParam(req, "id", view.ID)
-		testHandler.UpdateIssueView(w, req)
+		w := testutil.Call(t, testHandler.UpdateIssueView, req)
 		return w.Code
 	}
 
@@ -222,16 +218,13 @@ func TestWorkspaceIssueViewVariant(t *testing.T) {
 	}
 
 	// Switching the variant via PATCH works; the scope_type stays fixed.
-	w := httptest.NewRecorder()
+
 	req := newRequest("PATCH", "/api/issue-views/"+view.ID, map[string]any{
 		"scope_variant":     "members",
 		"expected_revision": 1,
 	})
 	req = withURLParam(req, "id", view.ID)
-	testHandler.UpdateIssueView(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("patch variant: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.UpdateIssueView, req).Want(http.StatusOK)
 	var updated IssueViewResponse
 	json.NewDecoder(w.Body).Decode(&updated)
 	if updated.ScopeVariant == nil || *updated.ScopeVariant != "members" {
@@ -241,18 +234,12 @@ func TestWorkspaceIssueViewVariant(t *testing.T) {
 
 func TestProjectIssueViewVariant(t *testing.T) {
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "variant project",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create project: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	t.Cleanup(func() {
 		req := newRequest("DELETE", "/api/projects/"+project.ID, nil)
 		req = withURLParam(req, "id", project.ID)
@@ -327,7 +314,7 @@ func TestPinIssueView(t *testing.T) {
 	})
 
 	pinView := func(userID, viewID string) int {
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/pins", map[string]any{
 			"item_type": "view",
 			"item_id":   viewID,
@@ -335,7 +322,7 @@ func TestPinIssueView(t *testing.T) {
 		if userID != "" {
 			req.Header.Set("X-User-ID", userID)
 		}
-		testHandler.CreatePin(w, req)
+		w := testutil.Call(t, testHandler.CreatePin, req)
 		return w.Code
 	}
 
@@ -353,14 +340,10 @@ func TestPinIssueView(t *testing.T) {
 		t.Fatalf("pin foreign private view: expected 404, got %d", got)
 	}
 	// Unknown type still rejected.
-	w := httptest.NewRecorder()
-	testHandler.CreatePin(w, newRequest("POST", "/api/pins", map[string]any{
+	testutil.Call(t, testHandler.CreatePin, newRequest("POST", "/api/pins", map[string]any{
 		"item_type": "label",
 		"item_id":   shared.ID,
-	}))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for unknown item_type, got %d", w.Code)
-	}
+	})).Want(http.StatusBadRequest)
 }
 
 // Old clients (built before saved views) classify every non-issue pin as a
@@ -382,21 +365,13 @@ func TestListPinsHidesViewPinsWithoutOptIn(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM pinned_item WHERE item_type = 'view'`)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.CreatePin(w, newRequest("POST", "/api/pins", map[string]any{
+	testutil.Call(t, testHandler.CreatePin, newRequest("POST", "/api/pins", map[string]any{
 		"item_type": "view",
 		"item_id":   view.ID,
-	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("pin view: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	})).Want(http.StatusCreated)
 
 	listPins := func(path string) []PinnedItemResponse {
-		rec := httptest.NewRecorder()
-		testHandler.ListPins(rec, newRequest("GET", path, nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("list pins: expected 200, got %d: %s", rec.Code, rec.Body.String())
-		}
+		rec := testutil.Call(t, testHandler.ListPins, newRequest("GET", path, nil)).Want(http.StatusOK)
 		var pins []PinnedItemResponse
 		json.NewDecoder(rec.Body).Decode(&pins)
 		return pins
@@ -551,14 +526,10 @@ func TestDeletingViewsSweepsTheirPins(t *testing.T) {
 		return n
 	}
 	pinView := func(viewID string) {
-		w := httptest.NewRecorder()
-		testHandler.CreatePin(w, newRequest("POST", "/api/pins", map[string]any{
+		testutil.Call(t, testHandler.CreatePin, newRequest("POST", "/api/pins", map[string]any{
 			"item_type": "view",
 			"item_id":   viewID,
-		}))
-		if w.Code != http.StatusCreated {
-			t.Fatalf("pin view: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		})).Want(http.StatusCreated)
 	}
 
 	// 1) Direct handler delete.
@@ -574,9 +545,7 @@ func TestDeletingViewsSweepsTheirPins(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := withURLParam(newRequest("DELETE", "/api/issue-views/"+view.ID, nil), "id", view.ID)
 	testHandler.DeleteIssueView(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("delete view: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 	if n := countViewPins(); n != 0 {
 		t.Fatalf("pin survived direct view delete: %d rows", n)
 	}
@@ -586,9 +555,7 @@ func TestDeletingViewsSweepsTheirPins(t *testing.T) {
 	testHandler.CreateProject(w, newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "pin sweep project",
 	}))
-	if w.Code != http.StatusCreated {
-		t.Fatalf("create project: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	json.NewDecoder(w.Body).Decode(&project)
 

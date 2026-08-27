@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestUpdateIssueProjectStaysInWorkspace mirrors
@@ -43,70 +45,35 @@ func TestUpdateIssueProjectStaysInWorkspace(t *testing.T) {
 	})
 
 	var localProjectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title)
-		VALUES ($1, $2)
-		RETURNING id
-	`, testWorkspaceID, "Local update project "+suffix).Scan(&localProjectID); err != nil {
-		t.Fatalf("insert local project: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, localProjectID)
-	})
+	localProjectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": "Local update project " + suffix})
 
 	var foreignWorkspaceID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, '', 'UPB')
-		RETURNING id
-	`, "Update boundary foreign workspace "+suffix, "update-boundary-"+suffix).Scan(&foreignWorkspaceID); err != nil {
-		t.Fatalf("insert foreign workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-	})
+	foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Update boundary foreign workspace " + suffix, "slug": "update-boundary-" + suffix, "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'UPB'")})
 
 	var foreignProjectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title)
-		VALUES ($1, $2)
-		RETURNING id
-	`, foreignWorkspaceID, "Foreign update project "+suffix).Scan(&foreignProjectID); err != nil {
-		t.Fatalf("insert foreign project: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, foreignProjectID)
-	})
+	foreignProjectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": foreignWorkspaceID, "title": "Foreign update project " + suffix})
 
 	t.Run("same-workspace project is accepted", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{
 			"project_id": localProjectID,
 		})
 		req = withURLParam(req, "id", issueID)
-		testHandler.UpdateIssue(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("UpdateIssue: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 		var updated IssueResponse
-		if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
-			t.Fatalf("decode response: %v", err)
-		}
+		w.Decode(&updated)
 		if updated.ProjectID == nil || *updated.ProjectID != localProjectID {
 			t.Fatalf("UpdateIssue: expected project %s, got %v", localProjectID, updated.ProjectID)
 		}
 	})
 
 	t.Run("cross-workspace project is rejected", func(t *testing.T) {
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/issues/"+issueID, map[string]any{
 			"project_id": foreignProjectID,
 		})
 		req = withURLParam(req, "id", issueID)
-		testHandler.UpdateIssue(w, req)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("UpdateIssue: expected 400 for foreign project, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusBadRequest)
 		if !strings.Contains(w.Body.String(), "project not found in this workspace") {
 			t.Fatalf("UpdateIssue: expected boundary error message, got %s", w.Body.String())
 		}
@@ -127,47 +94,20 @@ func TestUpdateIssueProjectStaysInWorkspace(t *testing.T) {
 // POST /api/issues/batch-update, reachable with a multi-select drag on the
 // board: a project from another workspace is rejected and no target row moves.
 func TestBatchUpdateIssuesProjectStaysInWorkspace(t *testing.T) {
-	ctx := context.Background()
+
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 	first := insertProjectScopeTestIssue(t, "Batch project boundary A "+suffix)
 	second := insertProjectScopeTestIssue(t, "Batch project boundary B "+suffix)
 
 	var localProjectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title)
-		VALUES ($1, $2)
-		RETURNING id
-	`, testWorkspaceID, "Local batch project "+suffix).Scan(&localProjectID); err != nil {
-		t.Fatalf("insert local project: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, localProjectID)
-	})
+	localProjectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": "Local batch project " + suffix})
 
 	var foreignWorkspaceID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, '', 'BPB')
-		RETURNING id
-	`, "Batch boundary foreign workspace "+suffix, "batch-boundary-"+suffix).Scan(&foreignWorkspaceID); err != nil {
-		t.Fatalf("insert foreign workspace: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, foreignWorkspaceID)
-	})
+	foreignWorkspaceID = dbfx.Insert(t, "workspace", testutil.Cols{"name": "Batch boundary foreign workspace " + suffix, "slug": "batch-boundary-" + suffix, "description": testutil.Raw("''"), "issue_prefix": testutil.Raw("'BPB'")})
 
 	var foreignProjectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title)
-		VALUES ($1, $2)
-		RETURNING id
-	`, foreignWorkspaceID, "Foreign batch project "+suffix).Scan(&foreignProjectID); err != nil {
-		t.Fatalf("insert foreign project: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, foreignProjectID)
-	})
+	foreignProjectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": foreignWorkspaceID, "title": "Foreign batch project " + suffix})
 
 	batchUpdateProject := func(projectID string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -198,9 +138,7 @@ func TestBatchUpdateIssuesProjectStaysInWorkspace(t *testing.T) {
 	// value rather than a NULL a skipped write would also leave.
 	t.Run("same-workspace project is accepted", func(t *testing.T) {
 		w := batchUpdateProject(localProjectID)
-		if w.Code != http.StatusOK {
-			t.Fatalf("BatchUpdateIssues: expected 200, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 		var resp struct {
 			Updated int `json:"updated"`
 		}
@@ -215,9 +153,7 @@ func TestBatchUpdateIssuesProjectStaysInWorkspace(t *testing.T) {
 
 	t.Run("cross-workspace project changes no row", func(t *testing.T) {
 		w := batchUpdateProject(foreignProjectID)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("BatchUpdateIssues: expected 400 for foreign project, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 		if !strings.Contains(w.Body.String(), "project not found in this workspace") {
 			t.Fatalf("BatchUpdateIssues: expected boundary error message, got %s", w.Body.String())
 		}
@@ -228,9 +164,7 @@ func TestBatchUpdateIssuesProjectStaysInWorkspace(t *testing.T) {
 	// error too, not a per-issue skip.
 	t.Run("unparseable project is rejected", func(t *testing.T) {
 		w := batchUpdateProject("not-a-uuid")
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("BatchUpdateIssues: expected 400 for unparseable project, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 		assertStoredProjects(t, localProjectID)
 	})
 }

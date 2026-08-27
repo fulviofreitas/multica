@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -75,16 +76,7 @@ func newCommentListFixture(t *testing.T) commentListFixture {
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "comment list fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "comment list fixture"})
 
 	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
 
@@ -334,16 +326,7 @@ func TestListComments_SummaryClipsContent(t *testing.T) {
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "summary fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "summary fixture"})
 
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	insert := func(body string, offset time.Duration) string {
@@ -426,16 +409,7 @@ func TestListComments_RootsOnlySummaryComposes(t *testing.T) {
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "roots+summary fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "roots+summary fixture"})
 
 	base := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	insert := func(parent *string, body string, offset time.Duration) string {
@@ -517,16 +491,12 @@ func TestListComments_ThreadAnchorErrors(t *testing.T) {
 
 	t.Run("non-uuid thread returns 400", func(t *testing.T) {
 		w, _ := listComments(t, fx.IssueID, "thread=not-a-uuid")
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 	})
 
 	t.Run("unknown thread anchor returns 404", func(t *testing.T) {
 		w, _ := listComments(t, fx.IssueID, "thread=00000000-0000-0000-0000-000000000001")
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-		}
+		testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 	})
 }
 
@@ -545,9 +515,7 @@ func TestListComments_ThreadRootWalkFailsClosedAcrossIssueBoundary(t *testing.T)
 	localReplyID := seedCommentRow(t, issueID, base.Add(time.Second), "local anomalous reply", &foreignRootID, nil)
 
 	w, rows := listComments(t, issueID, "thread="+localReplyID)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("cross-issue root walk status = %d, want 404: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 	if rows != nil {
 		t.Fatalf("cross-issue root walk returned rows: %v", ids(rows))
 	}
@@ -597,15 +565,7 @@ func TestListComments_RecentRanksStaleThreadAheadIfRecentlyReplied(t *testing.T)
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3) RETURNING id
-	`, testWorkspaceID, testUserID, "stale-but-fresh fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "stale-but-fresh fixture"})
 
 	base := time.Now().UTC().Add(-1 * time.Hour).Truncate(time.Second)
 	insert := func(parent *string, offset time.Duration, body string) string {
@@ -724,15 +684,7 @@ func TestListComments_ThreadCursorStableUnderSameLastActivity(t *testing.T) {
 	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3) RETURNING id
-	`, testWorkspaceID, testUserID, "thread tie-break fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "thread tie-break fixture"})
 
 	ts := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Millisecond)
 	insertRoot := func(body string) string {
@@ -1343,9 +1295,7 @@ func TestListComments_ThreadTailZeroReplyCountIsAllowed(t *testing.T) {
 	v.Set("thread", fx.Root1)
 	v.Set("tail", "0")
 	w, rows := listComments(t, fx.IssueID, v.Encode())
-	if w.Code != http.StatusOK {
-		t.Fatalf("tail=0 should succeed, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	eqIDs(t, ids(rows), []string{fx.Root1}, "tail=0 returns only root")
 }
 
@@ -1364,9 +1314,7 @@ func TestListComments_ThreadTailNotFoundReturns404(t *testing.T) {
 	v.Set("thread", "00000000-0000-0000-0000-000000000001")
 	v.Set("tail", "5")
 	w, _ := listComments(t, fx.IssueID, v.Encode())
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 for unknown anchor, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNotFound, "HTTP status")
 	_ = fx
 }
 
@@ -1447,19 +1395,9 @@ func TestCreateCommentPreservesDirectParent(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("requires DB")
 	}
-	ctx := context.Background()
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
-		VALUES ($1, 'member', $2, $3)
-		RETURNING id
-	`, testWorkspaceID, testUserID, "direct parent fixture").Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": "direct parent fixture"})
 
 	create := func(parentID, body string) CommentResponse {
 		t.Helper()
@@ -1467,10 +1405,10 @@ func TestCreateCommentPreservesDirectParent(t *testing.T) {
 		if parentID != "" {
 			payload["parent_id"] = parentID
 		}
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues/"+issueID+"/comments", payload)
 		req = withURLParam(req, "id", issueID)
-		testHandler.CreateComment(w, req)
+		w := testutil.Call(t, testHandler.CreateComment, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateComment(%q): expected 201, got %d: %s", body, w.Code, w.Body.String())
 		}

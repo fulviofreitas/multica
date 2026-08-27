@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -20,9 +21,7 @@ func TestProjectResourceLifecycle(t *testing.T) {
 		"title": "Resource lifecycle project",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -44,9 +43,7 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode CreateProjectResource: %v", err)
@@ -73,9 +70,7 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	req = newRequest("GET", "/api/projects/"+project.ID+"/resources", nil)
 	req = withURLParam(req, "id", project.ID)
 	testHandler.ListProjectResources(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListProjectResources: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var listResp struct {
 		Resources []ProjectResourceResponse `json:"resources"`
 		Total     int                       `json:"total"`
@@ -134,9 +129,7 @@ func TestProjectResourceLifecycle(t *testing.T) {
 	req = newRequest("DELETE", "/api/projects/"+project.ID+"/resources/"+created.ID, nil)
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.DeleteProjectResource(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteProjectResource: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 
 	// After deletion the list should be empty.
 	w = httptest.NewRecorder()
@@ -156,18 +149,13 @@ func TestProjectResourceLifecycle(t *testing.T) {
 // repos configured with an SSH remote previously got rejected when attached
 // to a project.
 func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "SSH repo URL acceptance",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	defer func() {
 		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
 		r = withURLParam(r, "id", project.ID)
@@ -183,20 +171,18 @@ func TestProjectResourceAcceptsSSHRepoURLs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "github_repo",
 				"resource_ref":  map[string]any{"url": tc.url},
 			})
 			req = withURLParam(req, "id", project.ID)
-			testHandler.CreateProjectResource(w, req)
+			w := testutil.Call(t, testHandler.CreateProjectResource, req)
 			if w.Code != http.StatusCreated {
 				t.Fatalf("CreateProjectResource(%s): expected 201, got %d: %s", tc.url, w.Code, w.Body.String())
 			}
 			var created ProjectResourceResponse
-			if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
+			w.Decode(&created)
 			var ref struct {
 				URL string `json:"url"`
 			}
@@ -255,18 +241,16 @@ func TestIsValidGitRepoURL(t *testing.T) {
 // not to add a UNIQUE(daemon_id, local_path) constraint.
 func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 	createProject := func(title string) ProjectResponse {
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 			"title": title,
 		})
-		testHandler.CreateProject(w, req)
+		w := testutil.Call(t, testHandler.CreateProject, req)
 		if w.Code != http.StatusCreated {
 			t.Fatalf("CreateProject(%s): %d %s", title, w.Code, w.Body.String())
 		}
 		var p ProjectResponse
-		if err := json.NewDecoder(w.Body).Decode(&p); err != nil {
-			t.Fatalf("decode CreateProject: %v", err)
-		}
+		w.Decode(&p)
 		return p
 	}
 	deleteProject := func(id string) {
@@ -297,9 +281,7 @@ func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 	})
 	req = withURLParam(req, "id", projectA.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode CreateProjectResource: %v", err)
@@ -324,9 +306,7 @@ func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 	req = newRequest("GET", "/api/projects/"+projectA.ID+"/resources", nil)
 	req = withURLParam(req, "id", projectA.ID)
 	testHandler.ListProjectResources(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListProjectResources: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var listResp struct {
 		Resources []ProjectResourceResponse `json:"resources"`
 		Total     int                       `json:"total"`
@@ -351,9 +331,7 @@ func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 	})
 	req = withURLParam(req, "id", projectB.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("same path on project B: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	// Duplicate attach on the same project must still conflict — the
 	// UNIQUE(project_id, resource_type, resource_ref) row constraint
@@ -378,9 +356,7 @@ func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 	req = newRequest("DELETE", "/api/projects/"+projectA.ID+"/resources/"+created.ID, nil)
 	req = withURLParams(req, "id", projectA.ID, "resourceId", created.ID)
 	testHandler.DeleteProjectResource(w, req)
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("DeleteProjectResource: expected 204, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusNoContent, "HTTP status")
 }
 
 // TestProjectResourceLocalDirectoryValidation pins the schema rejection
@@ -389,18 +365,13 @@ func TestProjectResourceLocalDirectoryLifecycle(t *testing.T) {
 // errors agents will hit, so freezing them as tests prevents accidental
 // loosening when someone touches the validator.
 func TestProjectResourceLocalDirectoryValidation(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Local directory validation",
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	defer func() {
 		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
 		r = withURLParam(r, "id", project.ID)
@@ -421,13 +392,13 @@ func TestProjectResourceLocalDirectoryValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest("POST", "/api/projects/"+project.ID+"/resources", map[string]any{
 				"resource_type": "local_directory",
 				"resource_ref":  tc.ref,
 			})
 			req = withURLParam(req, "id", project.ID)
-			testHandler.CreateProjectResource(w, req)
+			w := testutil.Call(t, testHandler.CreateProjectResource, req)
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
 			}
@@ -469,7 +440,7 @@ func TestIsAbsoluteLocalPath(t *testing.T) {
 }
 
 func TestCreateProjectAttachesResources(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Project with bundled resources",
 		"resources": []map[string]any{
@@ -479,17 +450,12 @@ func TestCreateProjectAttachesResources(t *testing.T) {
 			},
 		},
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject with resources: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var resp struct {
 		ID        string                    `json:"id"`
 		Resources []ProjectResourceResponse `json:"resources"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.Decode(&resp)
 	defer func() {
 		r := newRequest("DELETE", "/api/projects/"+resp.ID, nil)
 		r = withURLParam(r, "id", resp.ID)
@@ -510,9 +476,7 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 		"title": "Resource count breadcrumb",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -524,17 +488,12 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	}()
 
 	getCount := func() int64 {
-		w := httptest.NewRecorder()
+
 		req := newRequest("GET", "/api/projects/"+project.ID, nil)
 		req = withURLParam(req, "id", project.ID)
-		testHandler.GetProject(w, req)
-		if w.Code != http.StatusOK {
-			t.Fatalf("GetProject: %d %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.GetProject, req).Want(http.StatusOK)
 		var resp ProjectResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode GetProject: %v", err)
-		}
+		w.Decode(&resp)
 		return resp.ResourceCount
 	}
 	if got := getCount(); got != 0 {
@@ -548,9 +507,7 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 
 	if got := getCount(); got != 1 {
 		t.Errorf("after attach GetProject ResourceCount = %d, want 1", got)
@@ -559,9 +516,7 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListProjects(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListProjects: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var list struct {
 		Projects []ProjectResponse `json:"projects"`
 	}
@@ -590,20 +545,8 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	`, testWorkspaceID).Scan(&number); err != nil {
 		t.Fatalf("next issue number: %v", err)
 	}
-	var issueID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO issue (
-			workspace_id, creator_type, creator_id, title, status, priority,
-			project_id, number, position
-		)
-		VALUES ($1, 'member', $2, 'Project update stats breadcrumb', 'done', 'none', $3, $4, 0)
-		RETURNING id
-	`, testWorkspaceID, testUserID, project.ID, number).Scan(&issueID); err != nil {
-		t.Fatalf("create project issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+
+	dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "title": testutil.Raw("'Project update stats breadcrumb'"), "status": testutil.Raw("'done'"), "priority": testutil.Raw("'none'"), "project_id": project.ID, "number": number, "position": testutil.Raw("0")})
 
 	// UpdateProject must preserve the breadcrumb. A title-only PUT used to
 	// reset derived counts to 0 because UpdateProject didn't reload them.
@@ -613,9 +556,7 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.UpdateProject(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateProject: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var updated ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
 		t.Fatalf("decode UpdateProject: %v", err)
@@ -632,7 +573,7 @@ func TestProjectResourceCountBreadcrumb(t *testing.T) {
 // echo carries resource_count matching the attached resources, so the HTTP
 // response and the published project:created event agree.
 func TestCreateProjectWithResourcesEchoesCount(t *testing.T) {
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Create echo with resource_count",
 		"resources": []map[string]any{
@@ -642,18 +583,13 @@ func TestCreateProjectWithResourcesEchoesCount(t *testing.T) {
 			},
 		},
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject with resources: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var resp struct {
 		ID            string                    `json:"id"`
 		ResourceCount int64                     `json:"resource_count"`
 		Resources     []ProjectResourceResponse `json:"resources"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&resp)
 	defer func() {
 		r := newRequest("DELETE", "/api/projects/"+resp.ID, nil)
 		r = withURLParam(r, "id", resp.ID)
@@ -676,18 +612,14 @@ func TestCreateProjectRollsBackOnInvalidResource(t *testing.T) {
 		},
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("CreateProject with invalid resource: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Confirm no project survived (transactional rollback). Listing all projects
 	// in the workspace and checking for the title is enough.
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListProjects(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListProjects: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var list struct {
 		Projects []ProjectResponse `json:"projects"`
 	}
@@ -711,9 +643,7 @@ func TestProjectResourceUpdateLifecycle(t *testing.T) {
 		"title": "Update lifecycle project",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -737,9 +667,7 @@ func TestProjectResourceUpdateLifecycle(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode CreateProjectResource: %v", err)
@@ -755,9 +683,7 @@ func TestProjectResourceUpdateLifecycle(t *testing.T) {
 	})
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.UpdateProjectResource(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateProjectResource label-only: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var updated ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
 		t.Fatalf("decode UpdateProjectResource: %v", err)
@@ -788,9 +714,7 @@ func TestProjectResourceUpdateLifecycle(t *testing.T) {
 	})
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.UpdateProjectResource(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateProjectResource ref+position: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
 		t.Fatalf("decode UpdateProjectResource: %v", err)
 	}
@@ -826,9 +750,7 @@ func TestProjectResourceUpdateLifecycle(t *testing.T) {
 	})
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.UpdateProjectResource(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateProjectResource label=null: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	if err := json.NewDecoder(w.Body).Decode(&updated); err != nil {
 		t.Fatalf("decode UpdateProjectResource: %v", err)
 	}
@@ -880,9 +802,7 @@ func TestProjectResourceLabelConvergence(t *testing.T) {
 		"title": "Label convergence project",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -906,9 +826,7 @@ func TestProjectResourceLabelConvergence(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var created ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
 		t.Fatalf("decode CreateProjectResource: %v", err)
@@ -916,17 +834,15 @@ func TestProjectResourceLabelConvergence(t *testing.T) {
 
 	update := func(body map[string]any) ProjectResourceResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/projects/"+project.ID+"/resources/"+created.ID, body)
 		req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
-		testHandler.UpdateProjectResource(w, req)
+		w := testutil.Call(t, testHandler.UpdateProjectResource, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("UpdateProjectResource %v: %d %s", body, w.Code, w.Body.String())
 		}
 		var resp ProjectResourceResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode UpdateProjectResource: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 	refFields := func(resp ProjectResourceResponse) map[string]json.RawMessage {
@@ -1072,9 +988,7 @@ func TestProjectResourceLocalDirectoryDaemonScopedConflict(t *testing.T) {
 		"title": "Local dir daemon-scoped conflict",
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var project ProjectResponse
 	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
 		t.Fatalf("decode CreateProject: %v", err)
@@ -1103,9 +1017,7 @@ func TestProjectResourceLocalDirectoryDaemonScopedConflict(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("first attach: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var first ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&first); err != nil {
 		t.Fatalf("decode first: %v", err)
@@ -1159,9 +1071,7 @@ func TestProjectResourceLocalDirectoryDaemonScopedConflict(t *testing.T) {
 	})
 	req = withURLParam(req, "id", project.ID)
 	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("other daemon attach: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var second ProjectResourceResponse
 	if err := json.NewDecoder(w.Body).Decode(&second); err != nil {
 		t.Fatalf("decode other-daemon row: %v", err)
@@ -1229,17 +1139,13 @@ func TestCreateProjectBundledLocalDirectoryDaemonConflict(t *testing.T) {
 		},
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("bundled label shadow: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// Confirm the rollback: no project with the title should exist.
 	w = httptest.NewRecorder()
 	req = newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
 	testHandler.ListProjects(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ListProjects: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var list struct {
 		Projects []ProjectResponse `json:"projects"`
 	}
@@ -1278,9 +1184,7 @@ func TestCreateProjectBundledLocalDirectoryDaemonConflict(t *testing.T) {
 		},
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("distinct-paths same daemon bundle: expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadRequest, "HTTP status")
 
 	// A bundle with one row per daemon is allowed — each daemon owns its
 	// own local_directory.
@@ -1307,9 +1211,7 @@ func TestCreateProjectBundledLocalDirectoryDaemonConflict(t *testing.T) {
 		},
 	})
 	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("per-daemon bundle: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusCreated, "HTTP status")
 	var resp struct {
 		ID        string                    `json:"id"`
 		Resources []ProjectResourceResponse `json:"resources"`
@@ -1472,7 +1374,7 @@ func TestCreateProjectGatesWorktreeLocalDirectory(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Bundled worktree resource",
 		"resources": []map[string]any{
@@ -1486,24 +1388,18 @@ func TestCreateProjectGatesWorktreeLocalDirectory(t *testing.T) {
 			},
 		},
 	})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("CreateProject with un-runnable worktree resource: expected 422, got %d: %s",
-			w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusUnprocessableEntity)
 	var resp map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
+	w.JSON(&resp)
 	if resp["code"] != "daemon_version_unsupported" {
 		t.Fatalf("expected the shared gate's error code, got %#v", resp["code"])
 	}
 
 	// The gate runs before the transaction opens, so the rejection must not
 	// leave a half-created project behind.
-	lw := httptest.NewRecorder()
+
 	lreq := newRequest("GET", "/api/projects?workspace_id="+testWorkspaceID, nil)
-	testHandler.ListProjects(lw, lreq)
+	lw := testutil.Call(t, testHandler.ListProjects, lreq)
 	if strings.Contains(lw.Body.String(), "Bundled worktree resource") {
 		t.Fatal("rejected create left a project behind")
 	}
@@ -1514,16 +1410,11 @@ func TestCreateProjectGatesWorktreeLocalDirectory(t *testing.T) {
 // the rows look exactly like a client's would.
 func createTestProjectForResources(t *testing.T, title string) ProjectResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects?workspace_id="+testWorkspaceID, map[string]any{"title": title})
-	testHandler.CreateProject(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProject: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProject, req).Want(http.StatusCreated)
 	var project ProjectResponse
-	if err := json.NewDecoder(w.Body).Decode(&project); err != nil {
-		t.Fatalf("decode CreateProject: %v", err)
-	}
+	w.Decode(&project)
 	t.Cleanup(func() {
 		r := newRequest("DELETE", "/api/projects/"+project.ID, nil)
 		r = withURLParam(r, "id", project.ID)
@@ -1534,20 +1425,15 @@ func createTestProjectForResources(t *testing.T, title string) ProjectResponse {
 
 func createLocalDirectoryResourceFor(t *testing.T, projectID string, ref map[string]any) ProjectResourceResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/projects/"+projectID+"/resources", map[string]any{
 		"resource_type": "local_directory",
 		"resource_ref":  ref,
 	})
 	req = withURLParam(req, "id", projectID)
-	testHandler.CreateProjectResource(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateProjectResource: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateProjectResource, req).Want(http.StatusCreated)
 	var created ProjectResourceResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode CreateProjectResource: %v", err)
-	}
+	w.Decode(&created)
 	return created
 }
 
@@ -1576,17 +1462,15 @@ func TestProjectResourceStaleRefSnapshotDoesNotRollBackARename(t *testing.T) {
 
 	update := func(body map[string]any) ProjectResourceResponse {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		req := newRequest("PUT", "/api/projects/"+project.ID+"/resources/"+created.ID, body)
 		req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
-		testHandler.UpdateProjectResource(w, req)
+		w := testutil.Call(t, testHandler.UpdateProjectResource, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("UpdateProjectResource(%v): %d %s", body, w.Code, w.Body.String())
 		}
 		var resp ProjectResourceResponse
-		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
+		w.Decode(&resp)
 		return resp
 	}
 	refLabelOf := func(resp ProjectResourceResponse) string {
@@ -1676,10 +1560,7 @@ func TestProjectResourceLegacyRenameSkipsWorktreeGate(t *testing.T) {
 	})
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.UpdateProjectResource(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("a rename that changes no execution semantics must not hit the capability gate: %d %s",
-			w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 
 	// And the gate still fires when the same client actually changes the mode.
 	w = httptest.NewRecorder()
@@ -1693,7 +1574,5 @@ func TestProjectResourceLegacyRenameSkipsWorktreeGate(t *testing.T) {
 	})
 	req = withURLParams(req, "id", project.ID, "resourceId", created.ID)
 	testHandler.UpdateProjectResource(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("switching to in_place needs no capability: %d %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 }

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
@@ -181,20 +182,13 @@ func installExamplePlugin(t *testing.T, servers exampleServers) string {
 		"version_id":     versionID,
 		"granted_scopes": scopes,
 	})
-	recorder := httptest.NewRecorder()
-	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
-	if recorder.Code != http.StatusCreated {
-		t.Fatalf("install deploy-sentinel: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.InstallPlugin, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID})).Want(http.StatusCreated)
 	var installed struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
-		t.Fatalf("decode installation: %v", err)
-	}
+	recorder.JSON(&installed)
 	t.Cleanup(func() {
-		cleanup := httptest.NewRecorder()
-		testHandler.UninstallPlugin(cleanup, pluginHandlerRequest(http.MethodDelete, "/plugins", nil,
+		testutil.Call(t, testHandler.UninstallPlugin, pluginHandlerRequest(http.MethodDelete, "/plugins", nil,
 			map[string]string{"id": testWorkspaceID, "installationId": installed.ID}))
 	})
 	return installed.ID
@@ -209,12 +203,8 @@ func configureExamplePlugin(t *testing.T, installationID string) {
 		"environment":             "production",
 		"sentinel_token":          "sentinel-secret",
 	}})
-	recorder := httptest.NewRecorder()
-	testHandler.ConfigurePlugin(recorder, pluginHandlerRequest(http.MethodPut, "/config", body,
-		map[string]string{"id": testWorkspaceID, "installationId": installationID}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("configure: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Call(t, testHandler.ConfigurePlugin, pluginHandlerRequest(http.MethodPut, "/config", body,
+		map[string]string{"id": testWorkspaceID, "installationId": installationID})).Want(http.StatusOK)
 }
 
 // quietServer is the plugin's own hook endpoint: TLS, because the http
@@ -387,9 +377,7 @@ func TestExamplePluginMCPToolsNeedApproval(t *testing.T) {
 	testHandler.ListPluginMCPTools(recorder, pluginHandlerRequest(http.MethodGet, "/mcp/tools", nil, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID, "hookKey": "metrics",
 	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("discover: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 	var discovered struct {
 		Tools []struct {
 			Name     string `json:"name"`
@@ -422,9 +410,7 @@ func TestExamplePluginMCPToolsNeedApproval(t *testing.T) {
 	testHandler.ApprovePluginMCPTools(recorder, pluginHandlerRequest(http.MethodPut, "/mcp/tools", approve, map[string]string{
 		"id": testWorkspaceID, "installationId": installationID, "hookKey": "metrics",
 	}))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("approve: status=%d body=%s", recorder.Code, recorder.Body.String())
-	}
+	testutil.Equal(t, recorder.Code, http.StatusOK, "HTTP status")
 
 	connections, err = testHandler.PluginService.AgentMCPConnections(context.Background(), parseUUID(testWorkspaceID))
 	if err != nil {

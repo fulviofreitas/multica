@@ -2,10 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestCreateIssue_AgentCreate_StampsActingTaskOrigin locks the MUL-4305 fix at
@@ -33,29 +34,16 @@ func TestCreateIssue_AgentCreate_StampsActingTaskOrigin(t *testing.T) {
 	// Acting task carrying the human originator (testUserID). resolveActor
 	// validates this (agent, task) pair before the handler trusts X-Task-ID.
 	var taskID string
-	if err := testPool.QueryRow(ctx,
-		`INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, originator_user_id, accountable_user_id)
-		 VALUES ($1, $2, 'running', 0, $3, $3) RETURNING id`,
-		agentID, runtimeID, testUserID,
-	).Scan(&taskID); err != nil {
-		t.Fatalf("seed acting task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	taskID = dbfx.Insert(t, "agent_task_queue", testutil.Cols{"agent_id": agentID, "runtime_id": runtimeID, "status": testutil.Raw("'running'"), "priority": testutil.Raw("0"), "originator_user_id": testUserID, "accountable_user_id": testUserID})
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "Agent-created via normal create (MUL-4305)",
 	})
 	req.Header.Set("X-Agent-ID", agentID)
 	req.Header.Set("X-Task-ID", taskID)
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var created IssueResponse
-	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-		t.Fatalf("decode issue: %v", err)
-	}
+	w.Decode(&created)
 	t.Cleanup(func() {
 		cleanup := withURLParam(newRequest("DELETE", "/api/issues/"+created.ID, nil), "id", created.ID)
 		testHandler.DeleteIssue(httptest.NewRecorder(), cleanup)
@@ -97,21 +85,16 @@ func TestCreateIssue_NoAgentCreateStampForMemberOrForgedAgent(t *testing.T) {
 
 	assertNoAgentOrigin := func(t *testing.T, mutate func(*http.Request)) {
 		t.Helper()
-		w := httptest.NewRecorder()
+
 		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 			"title": "No agent_create stamp expected (MUL-4305)",
 		})
 		if mutate != nil {
 			mutate(req)
 		}
-		testHandler.CreateIssue(w, req)
-		if w.Code != http.StatusCreated {
-			t.Fatalf("CreateIssue: expected 201, got %d: %s", w.Code, w.Body.String())
-		}
+		w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 		var created IssueResponse
-		if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
-			t.Fatalf("decode issue: %v", err)
-		}
+		w.Decode(&created)
 		t.Cleanup(func() {
 			cleanup := withURLParam(newRequest("DELETE", "/api/issues/"+created.ID, nil), "id", created.ID)
 			testHandler.DeleteIssue(httptest.NewRecorder(), cleanup)

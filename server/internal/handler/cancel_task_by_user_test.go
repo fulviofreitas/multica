@@ -2,9 +2,7 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -158,12 +156,7 @@ func TestCancelTaskByUser_QueuedOnlyDoesNotCancelPromotedTask(t *testing.T) {
 		nil,
 	)
 	req = withURLParam(req, "taskId", taskID)
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, withChatTestWorkspaceCtx(t, req))
-
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, withChatTestWorkspaceCtx(t, req)).Want(http.StatusConflict)
 	if got := taskStatus(t, taskID); got != "running" {
 		t.Fatalf("queued-only cancellation changed promoted task status to %q", got)
 	}
@@ -183,14 +176,7 @@ func TestCancelTaskByUser_QueuedEditPersistsDraftRestore(t *testing.T) {
 		"edit this queued prompt",
 	)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(
-		w,
-		cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "edit"),
-	)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "edit")).Want(http.StatusOK)
 	if got := taskStatus(t, taskID); got != "cancelled" {
 		t.Fatalf("queued edit task status = %q, want cancelled", got)
 	}
@@ -254,14 +240,7 @@ func TestCancelTaskByUser_QueuedEditRollsBackOnRestoreFailure(t *testing.T) {
 		testPool.Exec(context.Background(), `DELETE FROM chat_draft_restore WHERE id = $1`, messageID)
 	})
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(
-		w,
-		cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "edit"),
-	)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "edit")).Want(http.StatusBadRequest)
 	if got := taskStatus(t, taskID); got != "queued" {
 		t.Fatalf("failed queued edit left task status %q", got)
 	}
@@ -292,14 +271,7 @@ func TestCancelTaskByUser_QueuedRemoveDeletesAttachment(t *testing.T) {
 		"discard this queued prompt",
 	)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(
-		w,
-		cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "remove"),
-	)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelQueuedTaskByUserRequest(t, testUserID, taskID, sessionID, "remove")).Want(http.StatusOK)
 	if got := taskStatus(t, taskID); got != "cancelled" {
 		t.Fatalf("queued remove task status = %q, want cancelled", got)
 	}
@@ -363,15 +335,9 @@ func TestCancelTaskByUser_StartedEmptyChat_WithDraftRestoreCapability_Defers(t *
 
 	req := cancelTaskByUserRequest(t, testUserID, taskID)
 	req.Header.Set("X-Client-Capabilities", protocol.AppCapabilityChatDraftRestoreV1)
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, req).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage != nil {
 		t.Fatalf("capable client must get no synchronous restore, got %#v", resp.CancelledChatMessage)
 	}
@@ -400,15 +366,9 @@ func TestCancelTaskByUser_StartedEmptyChat_LegacyClient_StillGetsSynchronousRest
 	taskID, userMessageID := createStartedEmptyChatTask(t, sessionID, agentID, userContent)
 
 	// No X-Client-Capabilities: a build that predates the durable restore.
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage == nil {
 		t.Fatal("legacy client must still get the synchronous restore payload")
 	}
@@ -448,11 +408,7 @@ func TestCancelTaskByUser_RunOnlyAutopilot_Succeeds(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "CancelRunOnlyAgent", []byte("[]"))
 	taskID := createAutopilotRunOnlyTask(t, agentID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	if got := taskStatus(t, taskID); got != "cancelled" {
 		t.Fatalf("task not cancelled: status = %q", got)
 	}
@@ -469,11 +425,7 @@ func TestCancelTaskByUser_RunOnlyAutopilot_CrossWorkspace_Returns404(t *testing.
 	foreignAgentID := createForeignWorkspaceAgent(t)
 	taskID := createAutopilotRunOnlyTask(t, foreignAgentID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusNotFound)
 	if got := taskStatus(t, taskID); got != "queued" {
 		t.Fatalf("foreign task was mutated: status = %q", got)
 	}
@@ -498,11 +450,7 @@ func TestCancelTaskByUser_QuickCreate_Succeeds(t *testing.T) {
 	`, agentID).Scan(&taskID)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	if got := taskStatus(t, taskID); got != "cancelled" {
 		t.Fatalf("task not cancelled: status = %q", got)
 	}
@@ -528,11 +476,7 @@ func TestCancelTaskByUser_RetryClone_Autopilot_Succeeds(t *testing.T) {
 	`, parentID).Scan(&cloneID)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, cloneID) })
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, cloneID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, cloneID)).Want(http.StatusOK)
 	if got := taskStatus(t, cloneID); got != "cancelled" {
 		t.Fatalf("clone not cancelled: status = %q", got)
 	}
@@ -562,11 +506,7 @@ func TestCancelTaskByUser_IssueTask_Succeeds(t *testing.T) {
 	`, agentID, issueID).Scan(&taskID)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	if got := taskStatus(t, taskID); got != "cancelled" {
 		t.Fatalf("task not cancelled: status = %q", got)
 	}
@@ -613,11 +553,7 @@ func TestCancelTaskByUser_DelegatedFailureRecoveryAcknowledgesSignal(t *testing.
 		RETURNING id
 	`, agentID, issueID, recoveryCommentID, failedTaskID).Scan(&recoveryTaskID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, recoveryTaskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, recoveryTaskID)).Want(http.StatusOK)
 	var status string
 	var acknowledged bool
 	dbfx.QueryRow(t, `
@@ -648,11 +584,7 @@ func TestCancelTaskByUser_ChatTask_NonCreator_Returns403(t *testing.T) {
 	`, agentID, sessionID).Scan(&taskID)
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, otherUserID, taskID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, otherUserID, taskID)).Want(http.StatusForbidden)
 	if got := taskStatus(t, taskID); got != "running" {
 		t.Fatalf("chat task was mutated: status = %q", got)
 	}
@@ -683,15 +615,9 @@ func TestCancelTaskByUser_ChatTaskWithTranscript_PersistsAssistantSnapshot(t *te
 		VALUES ($1, 1, 'text', 'partial answer')
 	`, taskID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage != nil {
 		t.Fatalf("expected no restore payload when transcript exists, got %#v", resp.CancelledChatMessage)
 	}
@@ -734,15 +660,9 @@ func TestCancelTaskByUser_ChatTaskWithoutTranscript_RestoresUserDraft(t *testing
 		RETURNING id
 	`, sessionID, userContent, taskID).Scan(&userMessageID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage == nil {
 		t.Fatal("expected restore payload for empty transcript cancel")
 	}
@@ -830,15 +750,9 @@ func TestCancelTaskByUser_ChatRetryRestoresRootInput(t *testing.T) {
 		t.Fatalf("queued retry hid its historical root input: %+v", transcript)
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, retryTaskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, retryTaskID)).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode retry cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage == nil ||
 		resp.CancelledChatMessage.MessageID != messageID ||
 		resp.CancelledChatMessage.Content != content {
@@ -896,15 +810,9 @@ func TestCancelTaskByUser_ChatTaskWithBoundAttachment_SurvivesCancelAndRebinds(t
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, attachmentID) })
 
 	// Cancel the empty chat task (no transcript) — this deletes the user message.
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, testUserID, taskID))
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, testUserID, taskID)).Want(http.StatusOK)
 	var resp CancelTaskByUserResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode cancel response: %v", err)
-	}
+	w.JSON(&resp)
 	if resp.CancelledChatMessage == nil {
 		t.Fatal("expected restore payload for empty transcript cancel")
 	}
@@ -957,15 +865,9 @@ func TestCancelTaskByUser_ChatTaskWithBoundAttachment_SurvivesCancelAndRebinds(t
 	})
 	sendReq = withURLParam(sendReq, "sessionId", sessionID)
 	sendReq = withChatTestWorkspaceCtx(t, sendReq)
-	sendW := httptest.NewRecorder()
-	testHandler.SendChatMessage(sendW, sendReq)
-	if sendW.Code != http.StatusCreated {
-		t.Fatalf("resend: expected 201, got %d: %s", sendW.Code, sendW.Body.String())
-	}
+	sendW := testutil.Call(t, testHandler.SendChatMessage, sendReq).Want(http.StatusCreated)
 	var sendResp SendChatMessageResponse
-	if err := json.Unmarshal(sendW.Body.Bytes(), &sendResp); err != nil {
-		t.Fatalf("decode resend response: %v", err)
-	}
+	sendW.JSON(&sendResp)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, sendResp.TaskID)
 	})
@@ -999,11 +901,7 @@ func TestCancelTaskByUser_PrivateAgent_PlainMember_Returns403(t *testing.T) {
 	agentID, _, memberID := privateAgentTestFixture(t)
 	taskID := createAutopilotRunOnlyTask(t, agentID)
 
-	w := httptest.NewRecorder()
-	testHandler.CancelTaskByUser(w, cancelTaskByUserRequest(t, memberID, taskID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CancelTaskByUser, cancelTaskByUserRequest(t, memberID, taskID)).Want(http.StatusForbidden)
 	if got := taskStatus(t, taskID); got != "queued" {
 		t.Fatalf("task was mutated: status = %q", got)
 	}

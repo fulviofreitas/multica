@@ -2,10 +2,10 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // workingAgentsFacetCounts posts one facets request and returns the
@@ -16,15 +16,9 @@ func workingAgentsFacetCounts(
 ) map[string]int64 {
 	t.Helper()
 
-	recorder := httptest.NewRecorder()
-	testHandler.ListIssueTableFacets(recorder, request)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("facets status = %d: %s", recorder.Code, recorder.Body.String())
-	}
+	recorder := testutil.Call(t, testHandler.ListIssueTableFacets, request).Want(http.StatusOK)
 	var response issueTableFacetsResponse
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode facets: %v", err)
-	}
+	recorder.Decode(&response)
 	counts := map[string]int64{}
 	for _, facet := range response.Facets {
 		if facet.Kind != "working_agents" {
@@ -68,16 +62,7 @@ func TestIssueTableWorkingAgentsFacetFollowsSurfaceScopeAndFilters(t *testing.T)
 	idleAgentID := createHandlerTestAgent(t, "facet-working-idle", []byte(`{}`))
 
 	var projectID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO project (workspace_id, title)
-		VALUES ($1, 'Working Agents Facet Project')
-		RETURNING id
-	`, testWorkspaceID).Scan(&projectID); err != nil {
-		t.Fatalf("create project: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM project WHERE id = $1`, projectID)
-	})
+	projectID = dbfx.Insert(t, "project", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'Working Agents Facet Project'")})
 
 	var finalNumber int
 	if err := testPool.QueryRow(ctx, `
@@ -228,19 +213,7 @@ func TestIssueTableWorkingAgentsFacetHidesInaccessibleAgents(t *testing.T) {
 	}
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (
-			workspace_id, title, status, priority, creator_type, creator_id,
-			position, number
-		)
-		VALUES ($1, 'worked on by a private agent', 'todo', 'none', 'member', $2, $3, $4)
-		RETURNING id
-	`, testWorkspaceID, testUserID, finalNumber, finalNumber).Scan(&issueID); err != nil {
-		t.Fatalf("insert issue: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
-	})
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'worked on by a private agent'"), "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'none'"), "creator_type": testutil.Raw("'member'"), "creator_id": testUserID, "position": finalNumber, "number": finalNumber})
 	createHandlerTestTaskForAgentOnIssue(t, privateAgentID, issueID)
 
 	facetRequest := func(userID string) *http.Request {

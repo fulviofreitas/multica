@@ -2,12 +2,11 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -121,14 +120,7 @@ func TestListTasksByIssueHydratesAttribution(t *testing.T) {
 	agentID := createHandlerTestAgent(t, "AttributionListAgent", []byte("[]"))
 
 	var issueID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type, number, position)
-		VALUES ($1, 'attribution-list-issue', 'todo', 'medium', $2, 'member', 92777, 0)
-		RETURNING id
-	`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
-		t.Fatalf("create issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID) })
+	issueID = dbfx.Insert(t, "issue", testutil.Cols{"workspace_id": testWorkspaceID, "title": testutil.Raw("'attribution-list-issue'"), "status": testutil.Raw("'todo'"), "priority": testutil.Raw("'medium'"), "creator_id": testUserID, "creator_type": testutil.Raw("'member'"), "number": testutil.Raw("92777"), "position": testutil.Raw("0")})
 
 	// direct_human: accountable == originator == the fixture user, whose name
 	// lives in the global user table — so hydration has a name to fill.
@@ -144,16 +136,10 @@ func TestListTasksByIssueHydratesAttribution(t *testing.T) {
 
 	req := newRequest("GET", "/api/issues/"+issueID+"/tasks", nil)
 	req = withURLParam(req, "id", issueID)
-	w := httptest.NewRecorder()
-	testHandler.ListTasksByIssue(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ListTasksByIssue, req).Want(http.StatusOK)
 
 	var resp []AgentTaskResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode task list: %v", err)
-	}
+	w.JSON(&resp)
 
 	var got *TaskAttribution
 	for i := range resp {

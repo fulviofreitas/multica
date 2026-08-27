@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -386,10 +387,7 @@ func TestCommentEnqueueRaceQueuedWinnerReattributesOriginator(t *testing.T) {
 		t.Fatalf("create M2 user: %v", err)
 	}
 	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, m2) })
-	if _, err := testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'member')`, testWorkspaceID, m2); err != nil {
-		t.Fatalf("create M2 member: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM member WHERE user_id = $1`, m2) })
+	dbfx.InsertNoID(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": m2, "role": testutil.Raw("'member'")}, "user_id = $1", m2)
 
 	// Winner: a queued task attributed to M1 (testUserID) via its own comment.
 	winnerCommentID := insertDupRaceComment(t, issueID, "M1 instruction", "6 minutes")

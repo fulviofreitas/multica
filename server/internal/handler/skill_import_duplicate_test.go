@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func TestExistingSkillIdentityByNameReturnsIDAndName(t *testing.T) {
@@ -29,9 +31,7 @@ func TestWriteSkillImportDuplicateConflictIncludesExistingSkill(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeSkillImportDuplicateConflict(w, ExistingSkillIdentity{ID: "skill-123", Name: "review-helper"})
 
-	if w.Code != 409 {
-		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, 409, "HTTP status")
 	var body map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body: %v", err)
@@ -95,20 +95,13 @@ func TestImportSkillOnConflictSkipReturnsStructuredResult(t *testing.T) {
 	existingID := insertHandlerTestSkill(t, namePrefix, "# Existing")
 	importURL := withMockClawHubImport(t, skillName)
 
-	w := httptest.NewRecorder()
 	req := newRequestAsUser(testUserID, http.MethodPost, "/api/skills/import", map[string]any{
 		"url":         importURL,
 		"on_conflict": "skip",
 	})
-	testHandler.ImportSkill(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ImportSkill, req).Want(http.StatusOK)
 	var body SkillImportResult
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
+	w.JSON(&body)
 	if body.Status != "skipped" {
 		t.Fatalf("status = %q", body.Status)
 	}
@@ -126,20 +119,13 @@ func TestImportSkillOnConflictRenameCreatesSuffixedSkill(t *testing.T) {
 	insertHandlerTestSkill(t, namePrefix, "# Existing")
 	importURL := withMockClawHubImport(t, skillName)
 
-	w := httptest.NewRecorder()
 	req := newRequestAsUser(testUserID, http.MethodPost, "/api/skills/import", map[string]any{
 		"url":         importURL,
 		"on_conflict": "rename",
 	})
-	testHandler.ImportSkill(w, req)
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.ImportSkill, req).Want(http.StatusCreated)
 	var body SkillImportResult
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
+	w.JSON(&body)
 	if body.Status != "created" || body.Skill == nil {
 		t.Fatalf("body = %#v", body)
 	}

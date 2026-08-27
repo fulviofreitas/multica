@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // createImportTargetSkillWithConfig is createImportTargetSkill with an explicit
@@ -150,9 +152,7 @@ func TestRefreshSkill_UpdatesContentPreservingIdentityAndBindings(t *testing.T) 
 	})
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	var resp SkillWithFilesResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -220,9 +220,7 @@ func TestRefreshSkill_UpstreamRenameCollisionReturns409(t *testing.T) {
 	installClawHubFixture(t, slug, takenName, "incoming", map[string]string{"SKILL.md": "# incoming"})
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusConflict, "HTTP status")
 	// Whole refresh rolled back: name, description, and content unchanged.
 	name, desc, content, _ := getSkillRow(t, skillID)
 	if name != oldName || desc != "original description" || content != "# original" {
@@ -245,9 +243,7 @@ func TestRefreshSkill_AdminCanRefresh(t *testing.T) {
 	installClawHubFixture(t, slug, slug, "admin refreshed", map[string]string{"SKILL.md": "# refreshed"})
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusOK, "HTTP status")
 	// Creator still preserved even when an admin refreshes.
 	if _, desc, _, createdBy := getSkillRow(t, skillID); desc != "admin refreshed" || createdBy != creatorID {
 		t.Fatalf("desc=%q createdBy=%q, want refreshed desc with original creator %q", desc, createdBy, creatorID)
@@ -266,9 +262,7 @@ func TestRefreshSkill_PlainMemberNonCreatorForbidden(t *testing.T) {
 	requests := installClawHubFixture(t, slug, slug, "incoming", map[string]string{"SKILL.md": "# incoming"})
 
 	w := doRefreshSkill(t, memberID, skillID)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusForbidden, "HTTP status")
 	if _, desc, _, _ := getSkillRow(t, skillID); desc != "original description" {
 		t.Fatalf("forbidden refresh must not mutate the skill, description = %q", desc)
 	}
@@ -287,9 +281,7 @@ func TestRefreshSkill_ManualSkillNotRefreshable(t *testing.T) {
 	skillID := createImportTargetSkill(t, name, testUserID, nil)
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnprocessableEntity, "HTTP status")
 	if _, desc, _, _ := getSkillRow(t, skillID); desc != "original description" {
 		t.Fatalf("non-refreshable refresh must not mutate the skill, description = %q", desc)
 	}
@@ -305,9 +297,7 @@ func TestRefreshSkill_RuntimeLocalOriginNotRefreshable(t *testing.T) {
 	skillID := createImportTargetSkillWithConfig(t, name, testUserID, config, nil)
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnprocessableEntity, "HTTP status")
 }
 
 func TestRefreshSkill_OriginHostMismatchRejected(t *testing.T) {
@@ -322,9 +312,7 @@ func TestRefreshSkill_OriginHostMismatchRejected(t *testing.T) {
 	skillID := createImportTargetSkillWithConfig(t, name, testUserID, config, nil)
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusUnprocessableEntity, "HTTP status")
 }
 
 func TestRefreshSkill_UpstreamGoneReturns502(t *testing.T) {
@@ -342,9 +330,7 @@ func TestRefreshSkill_UpstreamGoneReturns502(t *testing.T) {
 	t.Cleanup(func() { clawHubAPIBase = prev; srv.Close() })
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusBadGateway, "HTTP status")
 	if _, desc, _, _ := getSkillRow(t, skillID); desc != "original description" {
 		t.Fatalf("failed refresh must not mutate the skill, description = %q", desc)
 	}
@@ -364,9 +350,7 @@ func TestRefreshSkill_CapExceededReturns413(t *testing.T) {
 	})
 
 	w := doRefreshSkill(t, testUserID, skillID)
-	if w.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("expected 413, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusRequestEntityTooLarge, "HTTP status")
 	if _, desc, _, _ := getSkillRow(t, skillID); desc != "original description" {
 		t.Fatalf("cap-exceeded refresh must not mutate the skill, description = %q", desc)
 	}

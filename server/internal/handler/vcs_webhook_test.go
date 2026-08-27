@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -75,14 +76,11 @@ func cleanupVCS(ctx context.Context, issueID string) {
 
 func newVCSIssue(t *testing.T, title string) IssueResponse {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title": title, "status": "in_progress",
 	})
-	testHandler.CreateIssue(w, req)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateIssue, req).Want(http.StatusCreated)
 	var created IssueResponse
 	json.NewDecoder(w.Body).Decode(&created)
 	return created
@@ -124,13 +122,9 @@ func TestVCSWebhook_ForgejoMirrorsAndCloses(t *testing.T) {
 		},
 		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
 	})
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
-	}, raw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
-	}
+	}, raw)).Want(http.StatusAccepted)
 
 	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
 	if err != nil {
@@ -174,9 +168,7 @@ func TestVCSWebhook_ReferenceOnlyExcludedAndNonBlocking(t *testing.T) {
 	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(refRaw),
 	}, refRaw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("ref PR: expected 202, got %d (%s)", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusAccepted, "HTTP status")
 
 	// The link exists but is reference_only, so it is hidden from the PR list.
 	var referenceOnly bool
@@ -213,9 +205,7 @@ func TestVCSWebhook_ReferenceOnlyExcludedAndNonBlocking(t *testing.T) {
 	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(closeRaw),
 	}, closeRaw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("close PR: expected 202, got %d (%s)", w.Code, w.Body.String())
-	}
+	testutil.Equal(t, w.Code, http.StatusAccepted, "HTTP status")
 
 	updated, _ := testHandler.Queries.GetIssue(ctx, parseUUID(issue.ID))
 	if updated.Status != "done" {
@@ -307,13 +297,9 @@ func TestDeleteIssue_VCSLinkCleanupIsWorkspaceScoped(t *testing.T) {
 		},
 		"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
 	})
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
-	}, raw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("seed PR: %d %s", w.Code, w.Body.String())
-	}
+	}, raw)).Want(http.StatusAccepted)
 
 	linkCount := func() int {
 		var n int
@@ -368,8 +354,7 @@ func TestVCSWebhook_StaleEventDoesNotRewriteLink(t *testing.T) {
 			},
 			"repository": map[string]any{"name": "widget", "owner": map[string]any{"username": "acme"}},
 		})
-		w := httptest.NewRecorder()
-		testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+		w := testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 			"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
 		}, raw))
 		if w.Code != http.StatusAccepted {
@@ -418,13 +403,9 @@ func TestVCSWebhook_GitlabMergeRequest(t *testing.T) {
 		},
 	})
 	// GitLab authenticates by plaintext X-Gitlab-Token, not HMAC.
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitlab-Event": "Merge Request Hook", "X-Gitlab-Token": vcsTestSecret,
-	}, raw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
-	}
+	}, raw)).Want(http.StatusAccepted)
 
 	rows, err := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
 	if err != nil {
@@ -464,18 +445,14 @@ func TestVCSWebhook_CommitStatusMirrors(t *testing.T) {
 	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(prRaw),
 	}, prRaw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("pr: expected 202, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusAccepted, "HTTP status")
 
 	stRaw, _ := json.Marshal(map[string]any{"sha": "deadbeef", "context": "ci/woodpecker", "state": "success"})
 	w = httptest.NewRecorder()
 	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "status", "X-Gitea-Signature": giteaSig(stRaw),
 	}, stRaw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status: expected 202, got %d", w.Code)
-	}
+	testutil.Equal(t, w.Code, http.StatusAccepted, "HTTP status")
 
 	rows, _ := testHandler.Queries.ListVCSPullRequestsByIssue(ctx, parseUUID(issue.ID))
 	if len(rows) != 1 || rows[0].ChecksTotal != 1 || rows[0].ChecksPassed != 1 {
@@ -490,13 +467,9 @@ func TestVCSWebhook_BadSignature(t *testing.T) {
 	t.Cleanup(func() { cleanupVCS(ctx, "") })
 
 	raw := []byte(`{"action":"opened","pull_request":{"number":1}}`)
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": "00",
-	}, raw))
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", w.Code)
-	}
+	}, raw)).Want(http.StatusUnauthorized)
 }
 
 func TestVCSWebhook_UnknownConnection(t *testing.T) {
@@ -504,11 +477,7 @@ func TestVCSWebhook_UnknownConnection(t *testing.T) {
 	req := vcsWebhookReq("00000000-0000-0000-0000-000000000000", map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": "00",
 	}, []byte(`{}`))
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, req)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404, got %d", w.Code)
-	}
+	testutil.Call(t, testHandler.HandleVCSWebhook, req).Want(http.StatusNotFound)
 }
 
 // TestVCSWebhook_DisabledDeploymentReturns404 verifies the deployment-level
@@ -527,13 +496,9 @@ func TestVCSWebhook_DisabledDeploymentReturns404(t *testing.T) {
 	testHandler.cfg.VCSIntegrationEnabled = false
 
 	raw := []byte(`{"action":"opened","pull_request":{"number":1}}`)
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
-	}, raw))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 when integration disabled, got %d (%s)", w.Code, w.Body.String())
-	}
+	}, raw)).Want(http.StatusNotFound)
 }
 
 func TestVCSWebhook_MalformedTolerated(t *testing.T) {
@@ -543,13 +508,9 @@ func TestVCSWebhook_MalformedTolerated(t *testing.T) {
 	t.Cleanup(func() { cleanupVCS(ctx, "") })
 
 	raw := []byte(`{"action":"opened","pull_request":"not-an-object"}`)
-	w := httptest.NewRecorder()
-	testHandler.HandleVCSWebhook(w, vcsWebhookReq(connID, map[string]string{
+	testutil.Call(t, testHandler.HandleVCSWebhook, vcsWebhookReq(connID, map[string]string{
 		"X-Gitea-Event": "pull_request", "X-Gitea-Signature": giteaSig(raw),
-	}, raw))
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("expected 202, got %d (%s)", w.Code, w.Body.String())
-	}
+	}, raw)).Want(http.StatusAccepted)
 	var count int
 	testPool.QueryRow(ctx, `SELECT count(*) FROM vcs_pull_request WHERE workspace_id = $1`, testWorkspaceID).Scan(&count)
 	if count != 0 {

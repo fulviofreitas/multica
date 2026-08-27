@@ -2,13 +2,12 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -55,36 +54,24 @@ func createCommentTriggerPreviewIssue(t *testing.T, title string, assigneeType, 
 func previewCommentTriggersForTest(t *testing.T, issueID string, body any) CommentTriggerPreviewResponse {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments/trigger-preview", body)
 	r = withURLParam(r, "id", issueID)
-	testHandler.PreviewCommentTriggers(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PreviewCommentTriggers: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.PreviewCommentTriggers, r).Want(http.StatusOK)
 
 	var resp CommentTriggerPreviewResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode preview response: %v", err)
-	}
+	w.Decode(&resp)
 	return resp
 }
 
 func postCommentForTriggerPreviewTest(t *testing.T, issueID string, body map[string]any) string {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", body)
 	r = withURLParam(r, "id", issueID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	var resp CommentResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode created comment: %v", err)
-	}
+	w.Decode(&resp)
 	return resp.ID
 }
 
@@ -105,13 +92,9 @@ func insertMemberRootCommentForTriggerPreviewTest(t *testing.T, issueID, content
 func updateCommentForTriggerPreviewTest(t *testing.T, commentID string, body map[string]any) {
 	t.Helper()
 
-	w := httptest.NewRecorder()
 	r := newRequest(http.MethodPut, "/api/comments/"+commentID, body)
 	r = withURLParam(r, "commentId", commentID)
-	testHandler.UpdateComment(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("UpdateComment: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.UpdateComment, r).Want(http.StatusOK)
 }
 
 func countQueuedCommentTriggerTasks(t *testing.T, issueID, agentID string) int {
@@ -144,16 +127,7 @@ func createCommentTriggerPreviewSquad(t *testing.T, name, leaderID string) strin
 	t.Helper()
 
 	var squadID string
-	if err := testPool.QueryRow(context.Background(), `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, name, leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": name, "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 	return squadID
 }
 
@@ -522,7 +496,6 @@ func TestCreateComment_TopLevelNewThreadFallsBackToAssignee(t *testing.T) {
 		t.Fatalf("complete initial conversation task: %v", err)
 	}
 
-	w := httptest.NewRecorder()
 	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
 		"content":   "Pong",
 		"parent_id": rootID,
@@ -530,10 +503,7 @@ func TestCreateComment_TopLevelNewThreadFallsBackToAssignee(t *testing.T) {
 	r = withURLParam(r, "id", issueID)
 	r.Header.Set("X-Agent-ID", conversationAgentID)
 	r.Header.Set("X-Task-ID", conversationTaskID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("agent reply: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	followUpContent := "人生的意义是什么?"
 	preview := previewCommentTriggersForTest(t, issueID, CommentTriggerPreviewRequest{
@@ -778,7 +748,6 @@ func TestCreateComment_ParentAgentReplyCancelsPromotedFallbackBeforeClaim(t *tes
 		t.Fatalf("queued assignee fallback before parent ack = %d, want 1", got)
 	}
 
-	w := httptest.NewRecorder()
 	r := newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
 		"content":   "acknowledged",
 		"parent_id": memberReplyID,
@@ -786,10 +755,7 @@ func TestCreateComment_ParentAgentReplyCancelsPromotedFallbackBeforeClaim(t *tes
 	r = withURLParam(r, "id", issueID)
 	r.Header.Set("X-Agent-ID", parentAgentID)
 	r.Header.Set("X-Task-ID", primaryTaskID)
-	testHandler.CreateComment(w, r)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("agent ack comment: expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateComment, r).Want(http.StatusCreated)
 
 	if got := countCommentTriggerTasksWithStatus(t, issueID, assigneeID, "deferred"); got != 0 {
 		t.Fatalf("deferred assignee fallback after parent ack = %d, want 0", got)
@@ -1321,20 +1287,10 @@ func TestPreviewCommentTriggers_AssignedSquadLeaderAndSuppress(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	ctx := context.Background()
 	leaderID := createHandlerTestAgent(t, "Preview Squad Leader", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, "Preview Trigger Squad", leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Preview Trigger Squad", "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	issueID := createCommentTriggerPreviewIssue(t, "comment trigger squad assignee", "squad", squadID)
 
@@ -1363,20 +1319,10 @@ func TestPreviewCommentTriggers_MentionedSquadLeaderAndSuppress(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	ctx := context.Background()
 	leaderID := createHandlerTestAgent(t, "Preview Mentioned Squad Leader", nil)
 
 	var squadID string
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
-		VALUES ($1, $2, '', $3, $4)
-		RETURNING id
-	`, testWorkspaceID, "Preview Mentioned Trigger Squad", leaderID, testUserID).Scan(&squadID); err != nil {
-		t.Fatalf("create squad: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
-	})
+	squadID = dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Preview Mentioned Trigger Squad", "description": testutil.Raw("''"), "leader_id": leaderID, "creator_id": testUserID})
 
 	issueID := createCommentTriggerPreviewIssue(t, "comment trigger mentioned squad", "", "")
 	content := fmt.Sprintf("[@Squad](mention://squad/%s) please take this", squadID)

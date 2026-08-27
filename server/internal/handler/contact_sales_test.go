@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 func newContactSalesRequest(body CreateContactSalesRequest) *http.Request {
@@ -48,16 +50,9 @@ func TestCreateContactSalesHappyPath(t *testing.T) {
 	body := validContactSalesRequest()
 	clearContactSalesForEmail(t, body.BusinessEmail)
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusCreated)
 	var resp ContactSalesResponse
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
+	w.Decode(&resp)
 	if resp.ID == "" {
 		t.Fatal("expected inquiry id in response")
 	}
@@ -67,60 +62,35 @@ func TestCreateContactSalesRejectsFreeEmail(t *testing.T) {
 	body := validContactSalesRequest()
 	body.BusinessEmail = "ada@gmail.com"
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesRejectsInvalidEmail(t *testing.T) {
 	body := validContactSalesRequest()
 	body.BusinessEmail = "not-an-email"
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesRejectsUnknownCompanySize(t *testing.T) {
 	body := validContactSalesRequest()
 	body.CompanySize = "ten-ish"
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesRejectsUnknownUseCase(t *testing.T) {
 	body := validContactSalesRequest()
 	body.UseCase = "world-domination"
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesMissingFirstName(t *testing.T) {
 	body := validContactSalesRequest()
 	body.FirstName = "   "
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesPerEmailRateLimit(t *testing.T) {
@@ -129,18 +99,13 @@ func TestCreateContactSalesPerEmailRateLimit(t *testing.T) {
 	clearContactSalesForEmail(t, body.BusinessEmail)
 
 	for i := 0; i < contactSalesHourlyEmailCap; i++ {
-		w := httptest.NewRecorder()
-		testHandler.CreateContactSales(w, newContactSalesRequest(body))
+		w := testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body))
 		if w.Code != http.StatusCreated {
 			t.Fatalf("iteration %d: expected 201, got %d: %s", i, w.Code, w.Body.String())
 		}
 	}
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusTooManyRequests)
 }
 
 func TestIsBusinessEmailDomain(t *testing.T) {
@@ -204,12 +169,7 @@ func TestCreateContactSalesRejectsFreeEmailWithDisplayName(t *testing.T) {
 	body := validContactSalesRequest()
 	body.BusinessEmail = "Ada Lovelace <ada@gmail.com>"
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusBadRequest)
 }
 
 func TestCreateContactSalesNormalizesDisplayNameEmail(t *testing.T) {
@@ -217,12 +177,7 @@ func TestCreateContactSalesNormalizesDisplayNameEmail(t *testing.T) {
 	body.BusinessEmail = "Ada Lovelace <ada@display-name.example>"
 	clearContactSalesForEmail(t, "ada@display-name.example")
 
-	w := httptest.NewRecorder()
-	testHandler.CreateContactSales(w, newContactSalesRequest(body))
-
-	if w.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
-	}
+	testutil.Call(t, testHandler.CreateContactSales, newContactSalesRequest(body)).Want(http.StatusCreated)
 
 	var stored string
 	if err := testPool.QueryRow(context.Background(),

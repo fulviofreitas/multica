@@ -3,9 +3,10 @@ package handler
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // Neither workspace_mcp_server nor agent_mcp_server carries a foreign key
@@ -92,8 +93,7 @@ func TestWorkspaceMcpServerCreate_CannotLandAfterWorkspaceTeardownCommits(t *tes
 		})
 		req.Header.Set("X-Workspace-ID", victimID)
 		req = withURLParam(req, "id", victimID)
-		w := httptest.NewRecorder()
-		h.CreateWorkspaceMcpServer(w, req)
+		w := testutil.Call(t, h.CreateWorkspaceMcpServer, req)
 		writerCode = w.Code
 	}()
 
@@ -182,8 +182,7 @@ func TestAgentMcpServerAdd_CannotLandAfterServerDeleteCommits(t *testing.T) {
 		req := newRequest(http.MethodPost, "/api/agents/"+agentID+"/mcp-servers",
 			map[string]any{"server_id": serverID})
 		req = withURLParam(req, "id", agentID)
-		w := httptest.NewRecorder()
-		h.AddAgentMcpServer(w, req)
+		w := testutil.Call(t, h.AddAgentMcpServer, req)
 		writerCode = w.Code
 	}()
 

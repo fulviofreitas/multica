@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // TestBatchUpdateNoMutationReturnsZero — regression for #1660.
@@ -57,12 +58,9 @@ func TestBatchUpdateNoMutationReturnsZero(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.desc, func(t *testing.T) {
-			w := httptest.NewRecorder()
+
 			req := newRequest("POST", "/api/issues/batch-update", tc.body)
-			testHandler.BatchUpdateIssues(w, req)
-			if w.Code != http.StatusOK {
-				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-			}
+			w := testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 			var resp struct {
 				Updated int `json:"updated"`
 			}
@@ -73,10 +71,10 @@ func TestBatchUpdateNoMutationReturnsZero(t *testing.T) {
 
 			// Belt and braces: confirm the issues weren't touched.
 			for _, id := range []string{a, b} {
-				gw := httptest.NewRecorder()
+
 				gr := newRequest("GET", "/api/issues/"+id, nil)
 				gr = withURLParam(gr, "id", id)
-				testHandler.GetIssue(gw, gr)
+				gw := testutil.Call(t, testHandler.GetIssue, gr)
 				var got IssueResponse
 				json.NewDecoder(gw.Body).Decode(&got)
 				if got.Status != "todo" {
@@ -95,15 +93,11 @@ func TestBatchUpdateValidUpdatesPersistAndCount(t *testing.T) {
 	t.Cleanup(func() { deleteTestIssue(t, a) })
 	t.Cleanup(func() { deleteTestIssue(t, b) })
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
 		"issue_ids": []string{a, b},
 		"updates":   map[string]any{"status": "in_progress"},
 	})
-	testHandler.BatchUpdateIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 	var resp struct {
 		Updated int `json:"updated"`
 	}
@@ -112,10 +106,10 @@ func TestBatchUpdateValidUpdatesPersistAndCount(t *testing.T) {
 		t.Errorf("expected updated=2, got %d", resp.Updated)
 	}
 	for _, id := range []string{a, b} {
-		gw := httptest.NewRecorder()
+
 		gr := newRequest("GET", "/api/issues/"+id, nil)
 		gr = withURLParam(gr, "id", id)
-		testHandler.GetIssue(gw, gr)
+		gw := testutil.Call(t, testHandler.GetIssue, gr)
 		var got IssueResponse
 		json.NewDecoder(gw.Body).Decode(&got)
 		if got.Status != "in_progress" {
@@ -131,15 +125,11 @@ func TestBatchUpdateStageOnly(t *testing.T) {
 	a := createTestIssue(t, "BU-stage A", "todo", "low")
 	t.Cleanup(func() { deleteTestIssue(t, a) })
 
-	w := httptest.NewRecorder()
 	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
 		"issue_ids": []string{a},
 		"updates":   map[string]any{"stage": 2},
 	})
-	testHandler.BatchUpdateIssues(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
+	w := testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
 	var resp struct {
 		Updated int `json:"updated"`
 	}
@@ -148,10 +138,9 @@ func TestBatchUpdateStageOnly(t *testing.T) {
 		t.Fatalf("expected updated=1 for a stage-only batch update, got %d", resp.Updated)
 	}
 
-	gw := httptest.NewRecorder()
 	gr := newRequest("GET", "/api/issues/"+a, nil)
 	gr = withURLParam(gr, "id", a)
-	testHandler.GetIssue(gw, gr)
+	gw := testutil.Call(t, testHandler.GetIssue, gr)
 	var got IssueResponse
 	json.NewDecoder(gw.Body).Decode(&got)
 	if got.Stage == nil || *got.Stage != 2 {
@@ -163,13 +152,13 @@ func TestBatchUpdateStageOnly(t *testing.T) {
 // Returns the new issue's id; caller is responsible for cleanup.
 func createTestIssue(t *testing.T, title, status, priority string) string {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":    title,
 		"status":   status,
 		"priority": priority,
 	})
-	testHandler.CreateIssue(w, req)
+	w := testutil.Call(t, testHandler.CreateIssue, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("CreateIssue %q: expected 201, got %d: %s", title, w.Code, w.Body.String())
 	}
@@ -180,10 +169,10 @@ func createTestIssue(t *testing.T, title, status, priority string) string {
 
 func deleteTestIssue(t *testing.T, id string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("DELETE", "/api/issues/"+id, nil)
 	req = withURLParam(req, "id", id)
-	testHandler.DeleteIssue(w, req)
+	testutil.Call(t, testHandler.DeleteIssue, req)
 }
 
 // --- MUL-4155: batch cross-stage child-done aggregation ---
@@ -212,15 +201,11 @@ func newStagedBatchFixture(t *testing.T) stagedBatchFixture {
 		t.Skip("database not available")
 	}
 
-	pw := httptest.NewRecorder()
 	preq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title":  "batch-stage parent " + time.Now().Format(time.RFC3339Nano),
 		"status": "in_progress",
 	})
-	testHandler.CreateIssue(pw, preq)
-	if pw.Code != http.StatusCreated {
-		t.Fatalf("create parent: expected 201, got %d: %s", pw.Code, pw.Body.String())
-	}
+	pw := testutil.Call(t, testHandler.CreateIssue, preq).Want(http.StatusCreated)
 	var parent IssueResponse
 	json.NewDecoder(pw.Body).Decode(&parent)
 
@@ -237,16 +222,13 @@ func newStagedBatchFixture(t *testing.T) stagedBatchFixture {
 	setIssueAssigneeDirect(t, parent.ID, "agent", agentID)
 
 	mkChild := func(stage int32) IssueResponse {
-		cw := httptest.NewRecorder()
+
 		creq := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 			"title":           "batch-stage child " + time.Now().Format(time.RFC3339Nano),
 			"status":          "in_progress",
 			"parent_issue_id": parent.ID,
 		})
-		testHandler.CreateIssue(cw, creq)
-		if cw.Code != http.StatusCreated {
-			t.Fatalf("create child: expected 201, got %d: %s", cw.Code, cw.Body.String())
-		}
+		cw := testutil.Call(t, testHandler.CreateIssue, creq).Want(http.StatusCreated)
 		var child IssueResponse
 		json.NewDecoder(cw.Body).Decode(&child)
 		// Set the stage directly — the barrier logic only reads issue.stage.
@@ -276,12 +258,12 @@ func newStagedBatchFixture(t *testing.T) stagedBatchFixture {
 // batchSetStatus drives BatchUpdateIssues over the given ids, in order.
 func batchSetStatus(t *testing.T, ids []string, status string) {
 	t.Helper()
-	w := httptest.NewRecorder()
+
 	req := newRequest("POST", "/api/issues/batch-update", map[string]any{
 		"issue_ids": ids,
 		"updates":   map[string]any{"status": status},
 	})
-	testHandler.BatchUpdateIssues(w, req)
+	w := testutil.Call(t, testHandler.BatchUpdateIssues, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("BatchUpdateIssues status=%q: expected 200, got %d: %s", status, w.Code, w.Body.String())
 	}

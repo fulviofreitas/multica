@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	testutil "github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // fakeRedeemer records whether the handler ever got as far as the service.
@@ -45,8 +46,7 @@ func TestRedeemWecomBindingTokenRefusesAnOversizedBody(t *testing.T) {
 	h := &Handler{WecomBindingTokens: fake}
 
 	huge := `{"token":"` + strings.Repeat("A", wecomBodyLimit*2) + `"}`
-	w := httptest.NewRecorder()
-	h.RedeemWecomBindingToken(w, redeemRequest(huge))
+	w := testutil.Call(t, h.RedeemWecomBindingToken, redeemRequest(huge))
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
@@ -63,8 +63,7 @@ func TestRedeemWecomBindingTokenAcceptsAnOrdinaryBody(t *testing.T) {
 	fake := &fakeRedeemer{}
 	h := &Handler{WecomBindingTokens: fake}
 
-	w := httptest.NewRecorder()
-	h.RedeemWecomBindingToken(w, redeemRequest(`{"token":"an-ordinary-32-byte-looking-token"}`))
+	w := testutil.Call(t, h.RedeemWecomBindingToken, redeemRequest(`{"token":"an-ordinary-32-byte-looking-token"}`))
 
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
