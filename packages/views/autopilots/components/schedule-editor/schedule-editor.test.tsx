@@ -299,6 +299,7 @@ describe("ScheduleEditor", () => {
   it("restores weekly and monthly values after switching day kinds", async () => {
     renderEditor(cron("0 9 * * 2,4,6"));
     await choose("Day pattern", "Day of month");
+    expect(screen.queryByText(/are skipped/)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Day of month"), { target: { value: "30" } });
     await choose("Day pattern", "Every day");
     await choose("Day pattern", "Days of week");
