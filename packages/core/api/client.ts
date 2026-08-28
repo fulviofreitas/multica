@@ -194,6 +194,9 @@ import type {
   ListTelegramInstallationsResponse,
   RegisterTelegramRequest,
   RedeemTelegramBindingTokenResponse,
+  DiscordInstallation,
+  ListDiscordInstallationsResponse,
+  RegisterDiscordRequest,
   Squad,
   SquadMember,
   SquadMemberStatusListResponse,
@@ -361,6 +364,10 @@ import {
   EMPTY_TELEGRAM_INSTALLATION,
   EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
+  DiscordInstallationSchema,
+  ListDiscordInstallationsResponseSchema,
+  EMPTY_DISCORD_INSTALLATION,
+  EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE,
   EMPTY_BILLING_BALANCE,
   EMPTY_BILLING_TRANSACTIONS_PAGE,
   EMPTY_BILLING_BATCHES_PAGE,
@@ -4714,5 +4721,38 @@ export class ApiClient {
       EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
       { endpoint: "POST /api/telegram/binding/redeem" },
     );
+  }
+
+  async listDiscordInstallations(workspaceId: string): Promise<ListDiscordInstallationsResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/discord/installations`);
+    return parseWithFallback(
+      raw,
+      ListDiscordInstallationsResponseSchema,
+      EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/discord/installations" },
+    );
+  }
+
+  // registerDiscordBot installs a user-supplied Discord bot for an agent.
+  // Unlike Telegram, agent_id travels in the request body — Discord has no
+  // OAuth redirect step to thread it through a query param for (see
+  // RegisterDiscordRequest in server/internal/handler/discord.go).
+  async registerDiscordBot(
+    workspaceId: string,
+    body: RegisterDiscordRequest,
+  ): Promise<DiscordInstallation> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/discord/install`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, DiscordInstallationSchema, EMPTY_DISCORD_INSTALLATION, {
+      endpoint: "POST /api/workspaces/:id/discord/install",
+    });
+  }
+
+  async deleteDiscordInstallation(workspaceId: string, installationId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/discord/installations/${installationId}`, {
+      method: "DELETE",
+    });
   }
 }

@@ -247,6 +247,11 @@ export type {
   RedeemTelegramBindingTokenResponse,
 } from "./telegram";
 export type {
+  DiscordInstallation,
+  ListDiscordInstallationsResponse,
+  RegisterDiscordRequest,
+} from "./discord";
+export type {
   Autopilot,
   AutopilotStatus,
   AutopilotExecutionMode,
