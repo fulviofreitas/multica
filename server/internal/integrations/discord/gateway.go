@@ -246,7 +246,43 @@ type GatewayConn struct {
 	seq    atomic.Int64
 	hasSeq atomic.Bool
 
+	// closedByWatchdog is the authoritative, race-free signal that a
+	// ctx-cancellation watchdog goroutine (readHello's or Run's) is the one
+	// that closed conn. It is set strictly BEFORE the watchdog's Close()
+	// call, never after, so there is a happens-before edge from the Store to
+	// the Close syscall to the blocked ReadMessage's return to the Load: by
+	// the time a read that this watchdog unblocked comes back with an
+	// error, the flag is already visible to the goroutine that reads it.
+	//
+	// Checking ctx.Err() alone (the previous approach) only proves ctx *was*
+	// cancelled by the time of the check; it does not prove ctx cancellation
+	// is *why* the pending read returned. A read can fail for an unrelated
+	// reason (peer close, network blip) microseconds before or after an
+	// unrelated ctx cancellation becomes visible on the reading goroutine,
+	// and that interleaving is exactly what made
+	// TestRun_ContextCancelUnblocksBlockedRead flaky under plain (non -race)
+	// scheduling in CI: the ctx.Err() check is a timing guess, not a
+	// synchronization point. This flag replaces the guess with an explicit
+	// fact set by the one goroutine that actually decided to close the
+	// socket for shutdown reasons.
+	//
+	// Only the ctx-driven watchdog goroutines may set this flag. In
+	// particular heartbeatLoop's zombie-connection and heartbeat-write-error
+	// close paths must NEVER set it — those are real failures, and a flag
+	// set there would make Run report a genuine outage as a clean shutdown,
+	// which is worse than the race this flag fixes. heartbeatLoop calls the
+	// shared closeConn helper directly, without touching this field.
+	closedByWatchdog atomic.Bool
+
 	writeMu sync.Mutex
+
+	// testReadEntered, when non-nil, is invoked by Run's read loop
+	// immediately before every blocking ReadMessage call. It exists solely
+	// so gateway_test.go can deterministically synchronize with "Run is
+	// genuinely parked in ReadMessage" instead of guessing with a
+	// time.Sleep; production code never sets it. The extra nil check on the
+	// hot read-loop path is negligible.
+	testReadEntered func()
 }
 
 // DispatchFunc receives each Dispatch (opcode 0) frame's event name and raw
@@ -294,6 +330,9 @@ func (gc *GatewayConn) readHello(ctx context.Context) error {
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Set the flag BEFORE Close: see GatewayConn.closedByWatchdog
+			// for why ordering here matters.
+			gc.closedByWatchdog.Store(true)
 			_ = gc.conn.Close()
 		case <-done:
 		}
@@ -305,7 +344,14 @@ func (gc *GatewayConn) readHello(ctx context.Context) error {
 	}
 	_, raw, err := gc.conn.ReadMessage()
 	if err != nil {
-		if ctx.Err() != nil {
+		if gc.closedByWatchdog.Load() || ctx.Err() != nil {
+			// DialGateway's contract (see connect.go's dial() caller) is to
+			// surface ctx.Err() here, not nil — this file's readHello has
+			// no equivalent of Run's "return nil on clean ctx cancellation"
+			// promise, and connect.go already translates this specific
+			// non-nil-but-actually-clean case itself. The flag only makes
+			// *entering* this branch race-free; it does not change what we
+			// return.
 			return ctx.Err()
 		}
 		return fmt.Errorf("discord: read hello: %w", err)
@@ -393,6 +439,10 @@ func (gc *GatewayConn) Run(ctx context.Context, onDispatch DispatchFunc) error {
 	go func() {
 		select {
 		case <-runCtx.Done():
+			// Set the flag BEFORE closing: see GatewayConn.closedByWatchdog
+			// for why the ordering here is what makes the read-error checks
+			// below race-free instead of a timing guess.
+			gc.closedByWatchdog.Store(true)
 			closeConn()
 		case <-watchdogDone:
 		}
@@ -422,15 +472,18 @@ func (gc *GatewayConn) Run(ctx context.Context, onDispatch DispatchFunc) error {
 		// traffic, which heartbeatInterval+ReadTimeoutMargin bounds.
 		deadline := gc.cfg.Now().Add(gc.heartbeatInterval + gc.cfg.ReadTimeoutMargin)
 		if err := gc.conn.SetReadDeadline(deadline); err != nil {
-			if ctx.Err() != nil {
+			if gc.closedByWatchdog.Load() || ctx.Err() != nil {
 				return nil
 			}
 			return &GatewayError{Reason: ReasonReadError, Err: fmt.Errorf("set read deadline: %w", err)}
 		}
 
+		if gc.testReadEntered != nil {
+			gc.testReadEntered()
+		}
 		_, raw, err := gc.conn.ReadMessage()
 		if err != nil {
-			if ctx.Err() != nil {
+			if gc.closedByWatchdog.Load() || ctx.Err() != nil {
 				return nil
 			}
 			// Prefer the heartbeat goroutine's verdict when both fired at

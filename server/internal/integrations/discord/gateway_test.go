@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -327,12 +328,28 @@ func TestRun_ContextCancelUnblocksBlockedRead(t *testing.T) {
 		t.Fatalf("DialGateway: %v", err)
 	}
 
+	// readEntered is a real synchronization point instead of a sleep-timed
+	// guess: gc.testReadEntered (an unexported, test-only hook on
+	// GatewayConn — see gateway.go) fires from inside Run's read loop
+	// immediately before the blocking ReadMessage call that this test needs
+	// to be genuinely parked before it cancels ctx. A fixed sleep can never
+	// prove that; a slow CI runner can make Run take arbitrarily long to
+	// reach ReadMessage.
+	readEntered := make(chan struct{})
+	var readEnteredOnce sync.Once
+	gc.testReadEntered = func() {
+		readEnteredOnce.Do(func() { close(readEntered) })
+	}
+
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	runErrCh := make(chan error, 1)
 	go func() { runErrCh <- gc.Run(runCtx, nil) }()
 
-	// Give Run a moment to actually enter ReadMessage before cancelling.
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-readEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run never entered ReadMessage")
+	}
 
 	start := time.Now()
 	cancelRun()
