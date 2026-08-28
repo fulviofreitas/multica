@@ -71,3 +71,38 @@ jobs:
       - name: Channel regression suite
         working-directory: server
         run: go test ./internal/integrations/... ./internal/migrations/... -count=1
+
+      - name: Daemon channel-type constants
+        working-directory: server
+        run: go test ./internal/daemon/execenv/ -count=1
+
+  # The Discord work spans Go and TypeScript, and the backend job above proves
+  # nothing about the shared packages or the settings UI. This job covers the
+  # halves a Go-only run would silently pass: the zod schemas that must survive
+  # backend drift, and the views that consume them.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck core + views
+        run: pnpm --filter @multica/core --filter @multica/views typecheck
+
+      - name: Test core (schemas, queries, realtime)
+        run: pnpm --filter @multica/core test
+
+      - name: Test views (settings tab, bind page)
+        run: pnpm --filter @multica/views test
+
+      - name: Lint core + views
+        run: pnpm --filter @multica/core --filter @multica/views lint
