@@ -223,10 +223,11 @@ type RouterOptions struct {
 	ChannelLeaseRedis *redis.Client
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
-	WecomMetrics *obsmetrics.WecomMetrics
-	DaemonHub    *daemonws.Hub
-	DaemonWakeup service.TaskWakeupNotifier
-	FeatureFlags *featureflag.Service
+	WecomMetrics           *obsmetrics.WecomMetrics
+	ChannelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
+	DaemonHub              *daemonws.Hub
+	DaemonWakeup           service.TaskWakeupNotifier
+	FeatureFlags           *featureflag.Service
 	// HeartbeatScheduler, when non-nil, replaces the default synchronous
 	// passthrough scheduler on the constructed Handler. main.go injects a
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
@@ -1086,7 +1087,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Typing IS available: Discord's indicator expires after ~10s, so
 			// the notifier refreshes it per session until the run settles.
 			discordTyping := discord.NewDiscordTypingNotifier(box.Open, "", nil, slog.Default())
-			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, nil, discordTyping))
+			// Verdict replies (binding prompts, offline notices). The binding
+			// minter is deliberately unset: no Discord binding service exists
+			// yet, so NeedsBinding degrades to a logged no-op rather than a
+			// nil dereference, matching telegram's pre-binding-service shape.
+			discordReplier := discord.NewOutboundReplier(discord.OutboundReplierConfig{
+				Decrypt: box.Open,
+				Logger:  slog.Default(),
+			})
+			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, discordReplier, discordTyping))
+
+			// Streaming agent replies. Resolves its destination from the
+			// per-task delivery snapshot and sends over stateless REST, so
+			// any replica can deliver - the structural difference from WeCom,
+			// whose socket-bound outbound is bug #7215.
+			discordOutbound := discord.NewOutbound(queries, box.Open, "", nil, opts.ChannelDeliveryMetrics, slog.Default())
+			discordOutbound.Register(bus)
+			h.DiscordOutbound = discordOutbound
 
 			// Per-installation inbound: the Supervisor builds + supervises
 			// one Gateway connection per active Discord installation.

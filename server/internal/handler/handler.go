@@ -346,6 +346,13 @@ type Handler struct {
 	// Nil unless MULTICA_DISCORD_SECRET_KEY is set.
 	DiscordInstall *discord.InstallService
 
+	// DiscordOutbound owns the streaming reply worker: it posts a placeholder
+	// message, edits it as the agent streams, and finalizes on EventChatDone.
+	// Delivery is stateless REST resolved from the task-delivery snapshot, so
+	// any replica can perform it - see discord/outbound.go on bug #7215.
+	// Nil unless MULTICA_DISCORD_SECRET_KEY is set.
+	DiscordOutbound *discord.Outbound
+
 	// channelFileDelivery names the channel types that can, IN THIS
 	// DEPLOYMENT, carry a file the agent produced the last hop into the
 	// conversation. It answers the claim response's
