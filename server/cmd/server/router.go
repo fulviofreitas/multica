@@ -1080,20 +1080,22 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			discordResumeCache := discord.NewResumeCache(discord.ResumeCacheConfig{})
 			discordReconnector := discord.NewReconnector(nil)
 
-			// No outbound replier exists yet (Send is a stub — see
-			// discord_channel.go's doc comment; outbound sending is a later
-			// Task Master task), so nil disables the reply path exactly as
-			// NewTelegramResolverSet did before telegramReplier existed.
 			// Typing IS available: Discord's indicator expires after ~10s, so
 			// the notifier refreshes it per session until the run settles.
 			discordTyping := discord.NewDiscordTypingNotifier(box.Open, "", nil, slog.Default())
-			// Verdict replies (binding prompts, offline notices). The binding
-			// minter is deliberately unset: no Discord binding service exists
-			// yet, so NeedsBinding degrades to a logged no-op rather than a
-			// nil dereference, matching telegram's pre-binding-service shape.
+			// Verdict replies (binding prompts, offline notices). Task Master
+			// task 8 wires the binding-token service so NeedsBinding sends a
+			// real DM bind link instead of degrading to a logged no-op —
+			// mirrors telegramBindingSvc/telegramReplier above field-for-field.
+			discordBindingSvc := discord.NewBindingTokenService(queries, pool)
+			h.DiscordBindingTokens = discordBindingSvc
 			discordReplier := discord.NewOutboundReplier(discord.OutboundReplierConfig{
+				Binding: discordBindingSvc,
 				Decrypt: box.Open,
-				Logger:  slog.Default(),
+				// The bind link (/discord/bind) is a web-app page: app URL, not
+				// the API URL. Mirrors the Telegram replier.
+				AppURL: appURLFromEnv(),
+				Logger: slog.Default(),
 			})
 			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, discordReplier, discordTyping))
 
@@ -1791,6 +1793,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// workspace-scoped, identity from the session, token proves only
 		// "this Telegram user id requested binding".
 		r.Post("/api/telegram/binding/redeem", h.RedeemTelegramBindingToken)
+		// Discord binding-token redemption. Same rationale as Telegram: not
+		// workspace-scoped, identity from the session, token proves only
+		// "this Discord user id requested binding".
+		r.Post("/api/discord/binding/redeem", h.RedeemDiscordBindingToken)
 
 		// Composio integration (MUL-3720). User-scoped (no workspace context):
 		// a connection belongs to a user. These four require a logged-in

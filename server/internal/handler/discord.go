@@ -252,3 +252,64 @@ func (h *Handler) RevokeDiscordInstallation(w http.ResponseWriter, r *http.Reque
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// RedeemDiscordBindingTokenRequest carries the raw token from the bot's
+// "link your account" DM prompt.
+type RedeemDiscordBindingTokenRequest struct {
+	Token string `json:"token"`
+}
+
+// RedeemDiscordBindingTokenResponse echoes the bound identifiers so the
+// frontend can confirm without a second fetch.
+type RedeemDiscordBindingTokenResponse struct {
+	WorkspaceID    string `json:"workspace_id"`
+	InstallationID string `json:"installation_id"`
+	DiscordUserID  string `json:"discord_user_id"`
+}
+
+// RedeemDiscordBindingToken (POST /api/discord/binding/redeem) binds the
+// Discord user id carried by the token to the logged-in Multica user. The
+// redeemer's identity comes from the session, not the token. Status codes
+// mirror the Telegram redeem handler.
+func (h *Handler) RedeemDiscordBindingToken(w http.ResponseWriter, r *http.Request) {
+	if h.DiscordBindingTokens == nil {
+		writeError(w, http.StatusServiceUnavailable, "discord integration not configured")
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	var req RedeemDiscordBindingTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+	userUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+	redeemed, err := h.DiscordBindingTokens.RedeemAndBind(r.Context(), req.Token, userUUID)
+	if err != nil {
+		switch {
+		case errors.Is(err, discord.ErrBindingTokenInvalid):
+			writeError(w, http.StatusGone, "binding token invalid or expired")
+		case errors.Is(err, discord.ErrBindingAlreadyAssigned):
+			writeError(w, http.StatusConflict, "this Discord account is already bound to a different Multica user")
+		case errors.Is(err, discord.ErrBindingNotWorkspaceMember):
+			writeError(w, http.StatusForbidden, "binding refused (are you a workspace member?)")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to redeem token")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, RedeemDiscordBindingTokenResponse{
+		WorkspaceID:    uuidToString(redeemed.WorkspaceID),
+		InstallationID: uuidToString(redeemed.InstallationID),
+		DiscordUserID:  redeemed.DiscordUserID,
+	})
+}

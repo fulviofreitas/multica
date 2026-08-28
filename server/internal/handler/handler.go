@@ -346,6 +346,10 @@ type Handler struct {
 	// Nil unless MULTICA_DISCORD_SECRET_KEY is set.
 	DiscordInstall *discord.InstallService
 
+	// DiscordBindingTokens mints/redeems the user-binding tokens behind the
+	// "link your Discord account" prompt. Nil unless Discord is configured.
+	DiscordBindingTokens *discord.BindingTokenService
+
 	// DiscordOutbound owns the streaming reply worker: it posts a placeholder
 	// message, edits it as the agent streams, and finalizes on EventChatDone.
 	// Delivery is stateless REST resolved from the task-delivery snapshot, so

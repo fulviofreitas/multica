@@ -62,6 +62,13 @@ func TestDiscordMutationHandlersRejectUnconfiguredDeployment(t *testing.T) {
 			path:   "/api/workspaces/x/discord/installations/y",
 			run:    (*Handler).RevokeDiscordInstallation,
 		},
+		{
+			name:   "redeem binding",
+			method: http.MethodPost,
+			path:   "/api/discord/binding/redeem",
+			body:   `{"token":"placeholder"}`,
+			run:    (*Handler).RedeemDiscordBindingToken,
+		},
 	}
 
 	for _, tt := range tests {
@@ -392,4 +399,78 @@ func TestRevokeDiscordInstallationDB_NotFound(t *testing.T) {
 	req.Header.Set("X-User-ID", testUserID)
 
 	testutil.Call(t, testHandler.RevokeDiscordInstallation, req).Want(http.StatusNotFound)
+}
+
+func TestRedeemDiscordBindingTokenRejectsMissingToken(t *testing.T) {
+	h := &Handler{DiscordBindingTokens: &discord.BindingTokenService{}}
+	req := testutil.JSONRequest(http.MethodPost, "/api/discord/binding/redeem", map[string]any{"token": ""})
+	req.Header.Set("X-User-ID", "44444444-4444-4444-4444-444444444444")
+	w := httptest.NewRecorder()
+
+	h.RedeemDiscordBindingToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRedeemDiscordBindingTokenRejectsMalformedBody(t *testing.T) {
+	h := &Handler{DiscordBindingTokens: &discord.BindingTokenService{}}
+	req := httptest.NewRequest(http.MethodPost, "/api/discord/binding/redeem", strings.NewReader("{not json"))
+	req.Header.Set("X-User-ID", "44444444-4444-4444-4444-444444444444")
+	w := httptest.NewRecorder()
+
+	h.RedeemDiscordBindingToken(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// ---- redeem, DB-backed (skip without DATABASE_URL) ------------------------
+
+func wireDiscordBindingTokens(t *testing.T) {
+	t.Helper()
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	previous := testHandler.DiscordBindingTokens
+	testHandler.DiscordBindingTokens = discord.NewBindingTokenService(testHandler.Queries, testPool)
+	t.Cleanup(func() { testHandler.DiscordBindingTokens = previous })
+}
+
+// TestRedeemDiscordBindingTokenDB_HappyPath exercises the full HTTP path:
+// mint a token directly against the fixture workspace (mirroring what
+// replier.go's sendBindingPrompt would trigger), then redeem it as the
+// fixture user, who is a member of that workspace.
+func TestRedeemDiscordBindingTokenDB_HappyPath(t *testing.T) {
+	wireDiscordBindingTokens(t)
+	agentID := dbfx.Agent(t, "discord-redeem-agent", "")
+	installationID := discordInstallationFixture(t, agentID, "discord-redeem-app")
+	token, err := testHandler.DiscordBindingTokens.Mint(t.Context(), parseUUID(testWorkspaceID), parseUUID(installationID), "discord-user-happy-path")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	req := testutil.JSONRequest(http.MethodPost, "/api/discord/binding/redeem", map[string]any{"token": token.Raw})
+	req.Header.Set("X-User-ID", testUserID)
+	resp := testutil.Call(t, testHandler.RedeemDiscordBindingToken, req).Want(http.StatusOK)
+
+	var out RedeemDiscordBindingTokenResponse
+	resp.JSON(&out)
+	if out.WorkspaceID != testWorkspaceID || out.DiscordUserID != "discord-user-happy-path" {
+		t.Fatalf("unexpected response: %+v", out)
+	}
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(req.Context(), `DELETE FROM channel_user_binding WHERE channel_user_id = $1`, "discord-user-happy-path")
+	})
+}
+
+func TestRedeemDiscordBindingTokenDB_UnknownTokenIsGone(t *testing.T) {
+	wireDiscordBindingTokens(t)
+
+	req := testutil.JSONRequest(http.MethodPost, "/api/discord/binding/redeem", map[string]any{"token": "no-such-token"})
+	req.Header.Set("X-User-ID", testUserID)
+
+	testutil.Call(t, testHandler.RedeemDiscordBindingToken, req).Want(http.StatusGone)
 }
