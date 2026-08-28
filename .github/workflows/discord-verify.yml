@@ -1,0 +1,73 @@
+# Focused verification for the Discord channel work on this fork.
+#
+# The repository's main ci.yml is path-filtered and broad; this workflow
+# exists so the Discord backend surface - which is the only thing this fork
+# adds - is proven against a real PostgreSQL on every push, including the
+# migrations and the DB-backed tests that cannot run in a sandbox without
+# Docker. It deliberately duplicates a small slice of ci.yml rather than
+# modifying it, so upstream syncs never conflict on the shared file.
+name: Discord Verify
+
+on:
+  push:
+    branches: [main, "feat/**", "ci/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: multica
+          POSTGRES_USER: multica
+          POSTGRES_PASSWORD: multica
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U multica -d multica"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://multica:multica@localhost:5432/multica?sslmode=disable
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: gofmt (discord + handler surface)
+        working-directory: server
+        run: |
+          unformatted=$(gofmt -l internal/integrations/discord internal/handler/discord.go internal/handler/discord_test.go cmd/server/router.go pkg/protocol/events.go)
+          if [ -n "$unformatted" ]; then echo "unformatted files:"; echo "$unformatted"; exit 1; fi
+
+      - name: go vet
+        working-directory: server
+        run: go vet ./internal/integrations/discord/ ./internal/handler/ ./cmd/server/
+
+      - name: Apply migrations
+        working-directory: server
+        run: go run ./cmd/migrate up
+
+      - name: Migration lint
+        working-directory: server
+        run: go test ./internal/migrations/ -count=1 -v
+
+      - name: Discord adapter tests (race)
+        working-directory: server
+        run: go test ./internal/integrations/discord/ -count=1 -race -v
+
+      - name: Discord handler tests
+        working-directory: server
+        run: go test ./internal/handler/ -count=1 -run Discord -v
+
+      - name: Channel regression suite
+        working-directory: server
+        run: go test ./internal/integrations/... ./internal/migrations/... -count=1
