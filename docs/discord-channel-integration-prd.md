@@ -1,6 +1,41 @@
 # PRD: Discord Channel Integration on a Multica Fork
 
-> Status: **proposal**. Written 2026-08-27 against upstream `main` @ `3d37828e9` (v0.4.35,
+> ## Outcome — what actually shipped (2026-08-28)
+>
+> Milestones 1–4 are implemented and validated by CI against `pgvector/pg17`. This
+> section records the ACTUALS against the estimates below, so the estimates can be
+> judged rather than quietly forgotten.
+>
+> | Prediction (§4, §12) | Actual |
+> |---|---|
+> | Adapter ~4.5–6k Go lines, ~45% tests | **12,562 lines, 44 files, 54% tests** — ~2× the estimate |
+> | Core + frontend ~1.5–2k TS lines | in range |
+> | External touchpoints ≥ Telegram's 66 | **83** |
+> | 4–6 calendar weeks, one engineer | one session, ~15 agent-delegated tasks |
+> | Conflict surface = §5.2's file list | **29 shared files, matching the forecast**: `router.go`, `main.go`, `handler.go`, `events.go`, `use-realtime-sync.ts`, `client.ts`, `schemas.ts`, `types/index.ts`, the four-locale docs and `meta*.json` |
+>
+> The line estimate was the weakest number in this document — it was extrapolated from
+> Telegram's shipped size without accounting for the Gateway state machine (dial,
+> heartbeat, resume cache, close-code triage, reconnect policy) having no Telegram
+> analogue at all, since long polling needs none of it.
+>
+> **Corrections made during implementation**, each recorded inline at the relevant
+> section rather than silently patched: the thread binding key (§7.3 — the composite
+> was a false carry-over from Slack/Telegram); the constraint member list (§6.2 — it had
+> not grown since migration 366 as claimed).
+>
+> **Defect CI caught that local testing could not:** the Gateway read loop inferred
+> "graceful shutdown" from `ctx.Err()` after a read failed, so a peer close landing
+> microseconds before cancellation made a clean shutdown report as a failure to the
+> Supervisor. It passed locally under `-race` and failed only on a loaded runner.
+> Fixed with an explicit `closedByWatchdog` flag set before `Close()`.
+>
+> **Still unproven:** no code has touched a real Discord Gateway. That is human-gated
+> (OQ-2, tasks 5.1–5.4) and no amount of CI substitutes for it.
+>
+> ---
+
+> Status: **implemented**. Written 2026-08-27 against upstream `main` @ `3d37828e9` (v0.4.35,
 > 2026-08-26). Per repo convention (`docs/db-backed-execution-scheduler-rfc.md` precedent;
 > MUL-5698 cleanup policy in PR #6364), this document lives in `docs/` while the work is
 > live and is deleted once the decisions are captured in code.
