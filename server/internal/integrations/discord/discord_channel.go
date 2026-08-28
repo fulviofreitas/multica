@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -55,6 +56,16 @@ type discordChannel struct {
 	// (if non-nil) for every decoded MESSAGE_CREATE dispatch. Nil-safe —
 	// this subtask does not implement inbound normalization.
 	onMessageCreate func(context.Context, MessageCreateEvent)
+
+	// restAPIBase and restClient configure the stateless REST client Send
+	// builds for outbound delivery (sender.go). Both are optional: empty
+	// base defaults to defaultAPIBase (the production Discord API host, see
+	// install.go), nil client defaults to a bounded-timeout http.Client.
+	// Tests set these to point Send at an httptest server. Deliberately NOT
+	// derived from the Gateway connection — see sender.go's package doc for
+	// why outbound must stay on stateless REST (multica-ai/multica#7215).
+	restAPIBase string
+	restClient  *http.Client
 }
 
 func (c *discordChannel) Type() channel.Type { return TypeDiscord }
@@ -82,10 +93,12 @@ func (c *discordChannel) Connect(ctx context.Context) error {
 // dingtalkChannel/slackChannel/telegramChannel Disconnect.
 func (c *discordChannel) Disconnect(ctx context.Context) error { return nil }
 
-// Send is not implemented yet. The REST outbound sender is built in a later
-// subtask (Task Master task 2, "outbound sending").
+// Send delivers an agent reply over Discord's stateless REST API
+// (sender.go) — never over c's Gateway connection. See sender.go's package
+// doc for why that separation is load-bearing, not incidental.
 func (c *discordChannel) Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
-	return channel.SendResult{}, errors.New("discord: Send not implemented yet (Task Master task 2: outbound sending)")
+	api := newDiscordAPI(c.restAPIBase, c.botToken, c.restClient)
+	return newSender(api, c.logger).Send(ctx, out)
 }
 
 // ChannelDeps are the shared dependencies the Discord Factory closes over.
