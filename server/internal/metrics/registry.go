@@ -27,13 +27,14 @@ type RegistryOptions struct {
 }
 
 type Registry struct {
-	Gatherer     prometheus.Gatherer
-	HTTP         *HTTPMetrics
-	Business     *BusinessMetrics
-	ChannelMedia *ChannelMediaReconcilerMetrics
-	ChannelLease *ChannelLeaseMetrics
-	SeatCapacity *SeatCapacityMetrics
-	Wecom        *WecomMetrics
+	Gatherer        prometheus.Gatherer
+	HTTP            *HTTPMetrics
+	Business        *BusinessMetrics
+	ChannelMedia    *ChannelMediaReconcilerMetrics
+	ChannelLease    *ChannelLeaseMetrics
+	ChannelDelivery *ChannelDeliveryMetrics
+	SeatCapacity    *SeatCapacityMetrics
+	Wecom           *WecomMetrics
 	// Sampler is non-nil only when RegistryOptions.BusinessSampler was
 	// supplied with a valid Pool. Exposed so the cmd/server entrypoint
 	// can plumb the same instance into health checks if it ever wants to.
@@ -64,6 +65,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	channelLease := NewChannelLeaseMetrics()
 	reg.MustRegister(channelLease.Collectors()...)
 
+	channelDelivery := NewChannelDeliveryMetrics()
+	reg.MustRegister(channelDelivery.Collectors()...)
+
 	seatCapacity := NewSeatCapacityMetrics()
 	reg.MustRegister(seatCapacity.Collectors()...)
 
@@ -86,14 +90,15 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 
 	return &Registry{
-		Gatherer:     reg,
-		HTTP:         httpMetrics,
-		Business:     businessMetrics,
-		ChannelMedia: channelMedia,
-		ChannelLease: channelLease,
-		SeatCapacity: seatCapacity,
-		Wecom:        wecomMetrics,
-		Sampler:      sampler,
+		Gatherer:        reg,
+		HTTP:            httpMetrics,
+		Business:        businessMetrics,
+		ChannelMedia:    channelMedia,
+		ChannelLease:    channelLease,
+		ChannelDelivery: channelDelivery,
+		SeatCapacity:    seatCapacity,
+		Wecom:           wecomMetrics,
+		Sampler:         sampler,
 	}
 }
 

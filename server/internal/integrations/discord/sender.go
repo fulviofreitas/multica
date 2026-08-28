@@ -136,6 +136,50 @@ func (a *discordAPI) CreateMessage(ctx context.Context, channelID string, payloa
 	return m, nil
 }
 
+// EditMessage edits a previously posted message via PATCH
+// /channels/{channel_id}/messages/{message_id}, mirroring CreateMessage's
+// request/error shape exactly — used by outbound.go to turn a streaming
+// placeholder into the growing transcript without posting a new message per
+// update. Discord returns the edited Message object on success, same shape
+// as CreateMessage's response.
+func (a *discordAPI) EditMessage(ctx context.Context, channelID, messageID string, payload discordMessagePayload) (discordMessageResponse, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return discordMessageResponse{}, fmt.Errorf("discord: encode edit-message payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, a.base+"/channels/"+channelID+"/messages/"+messageID, bytes.NewReader(body))
+	if err != nil {
+		return discordMessageResponse{}, fmt.Errorf("discord: build edit-message request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bot "+a.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return discordMessageResponse{}, &requestError{cause: err}
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return discordMessageResponse{}, fmt.Errorf("discord: read edit-message response (http %d): %w", resp.StatusCode, err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		ae := &apiError{Code: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			ae.RetryAfter = parseRetryAfter(resp, respBody)
+		}
+		return discordMessageResponse{}, ae
+	}
+
+	var m discordMessageResponse
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		return discordMessageResponse{}, fmt.Errorf("discord: decode edit-message response: %w", err)
+	}
+	return m, nil
+}
+
 // sender posts agent replies to Discord over the REST API. It holds nothing
 // but an *discordAPI (bounded-timeout HTTP client + bot token) and a
 // logger — see this file's package doc for why that is a hard requirement,
@@ -209,9 +253,30 @@ func (s *sender) Send(ctx context.Context, out channel.OutboundMessage) (channel
 // forever, so a message can never be silently dropped on the caller's
 // behalf: it either eventually sends or the caller learns it did not.
 func (s *sender) sendWithRetry(ctx context.Context, channelID string, payload discordMessagePayload) (discordMessageResponse, error) {
+	return s.withRetry(ctx, "send", func() (discordMessageResponse, error) {
+		return s.api.CreateMessage(ctx, channelID, payload)
+	})
+}
+
+// editWithRetry PATCHes an existing message with the same bounded
+// retryable/fatal classification and backoff schedule as sendWithRetry —
+// additive to support outbound.go's streaming-placeholder finalization
+// (turning the last streamed edit into the definitive final content) without
+// ever silently dropping it on a 429 or a transient 5xx/transport blip.
+func (s *sender) editWithRetry(ctx context.Context, channelID, messageID string, payload discordMessagePayload) (discordMessageResponse, error) {
+	return s.withRetry(ctx, "edit", func() (discordMessageResponse, error) {
+		return s.api.EditMessage(ctx, channelID, messageID, payload)
+	})
+}
+
+// withRetry is the shared bounded-retry loop behind sendWithRetry and
+// editWithRetry: identical classification (retryDelay), identical backoff
+// (backoffDelay/Discord's own Retry-After) and identical attempt cap
+// (maxSendAttempts), parameterized only by which Discord REST call to make.
+func (s *sender) withRetry(ctx context.Context, op string, do func() (discordMessageResponse, error)) (discordMessageResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxSendAttempts; attempt++ {
-		m, err := s.api.CreateMessage(ctx, channelID, payload)
+		m, err := do()
 		if err == nil {
 			return m, nil
 		}
@@ -224,13 +289,13 @@ func (s *sender) sendWithRetry(ctx context.Context, channelID string, payload di
 		if attempt == maxSendAttempts-1 {
 			break
 		}
-		s.logger.WarnContext(ctx, "discord: send retrying after transient error",
+		s.logger.WarnContext(ctx, "discord: "+op+" retrying after transient error",
 			"attempt", attempt+1, "wait", wait, "error", err)
 		if !sleepCtx(ctx, wait) {
 			return discordMessageResponse{}, ctx.Err()
 		}
 	}
-	return discordMessageResponse{}, fmt.Errorf("discord: exceeded %d send attempts: %w", maxSendAttempts, lastErr)
+	return discordMessageResponse{}, fmt.Errorf("discord: exceeded %d %s attempts: %w", maxSendAttempts, op, lastErr)
 }
 
 // retryDelay classifies err into retryable vs fatal and, for a retryable
