@@ -347,11 +347,15 @@ func TestChannelDisplayName(t *testing.T) {
 	t.Parallel()
 
 	cases := map[string]string{
-		ChannelTypeSlack:  "Slack",
-		ChannelTypeFeishu: "Feishu/Lark",
-		"":                "",
+		ChannelTypeSlack:   "Slack",
+		ChannelTypeFeishu:  "Feishu/Lark",
+		ChannelTypeDiscord: "Discord",
+		"":                 "",
 		// An unmapped channel names itself rather than reading as "unknown".
-		"discord": "discord",
+		// Keep this a discriminator this package has NO constant for — it used
+		// to be "discord", which stopped testing the fallback the moment the
+		// Discord adapter got its mapping.
+		"matrix": "matrix",
 	}
 	for in, want := range cases {
 		if got := ChannelDisplayName(in); got != want {
