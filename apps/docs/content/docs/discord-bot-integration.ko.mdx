@@ -1,0 +1,127 @@
+---
+title: Discord Bot 연동
+description: 직접 만든 Discord Bot을 Multica 에이전트에 연결해 DM, 서버 채널 @mention, 스레드, /issue에서 사용합니다.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Multica는 [Discord 개발자 포털](https://discord.com/developers/applications)에서 만든 Bot을 사용합니다. 애플리케이션 하나는 Multica 에이전트 하나에 연결됩니다. 에이전트마다 별도의 Discord identity가 필요하면 애플리케이션을 각각 만드세요.
+
+Discord 연동은 [커뮤니티가 유지관리](/community-maintained)합니다. 매 릴리스에 포함되지만 공식 지원 SLA는 제공되지 않습니다. 문제가 있으면 [GitHub issues](https://github.com/multica-ai/multica/issues)에 보고해 주세요.
+
+## 시작하기 전에
+
+- 워크스페이스 owner 또는 admin만 Bot을 연결할 수 있습니다.
+- API 서버에서 `https://discord.com`에 HTTPS로 접속할 수 있어야 합니다(REST API와 Gateway WebSocket 모두). 반대 방향은 필요하지 않습니다. 수신은 서버가 직접 맺은 아웃바운드 연결로 동작하므로 공개 URL, ingress, webhook 엔드포인트가 모두 필요 없습니다.
+- 개발자 포털에서 발급한 Bot token이 필요합니다. 비밀번호처럼 보호하세요.
+
+## 1. 애플리케이션과 Bot 만들기
+
+1. [개발자 포털](https://discord.com/developers/applications)을 열고 **New Application**을 클릭한 뒤 에이전트 이름을 붙입니다.
+2. **General Information**에서 **Application ID**를 복사합니다. Multica는 이 id로 연동을 식별하므로 애플리케이션 하나는 에이전트 하나에만 연결됩니다.
+3. **Bot**을 열고 **Reset Token**을 클릭한 뒤 표시된 token을 복사합니다. Discord는 Bot token을 한 번만 보여 주므로, 복사하지 않고 페이지를 벗어났다면 다시 reset해야 합니다.
+4. **Privileged Gateway Intent**는 모두 **꺼 둡니다**. Multica는 어느 것도 요청하지 않습니다(아래 참고).
+
+<Callout type="warning">
+token을 issue, 채팅, 로그, 코드 저장소에 남기지 마세요. 노출되었다면 개발자 포털의 **Reset Token**으로 폐기하고 새 token으로 다시 연결하세요.
+</Callout>
+
+### 특권 intent는 필요하지 않습니다
+
+Multica가 선언하는 Gateway intent는 비특권인 `GUILD_MESSAGES`와 `DIRECT_MESSAGES` 두 개뿐입니다. **Message Content**, **Server Members**, **Presence**는 꺼진 상태로 둡니다.
+
+이렇게 해도 동작하는 이유는 이 연동이 처리하는 메시지가 Message Content intent의 대상이 아니기 때문입니다. Bot에게 보낸 DM과 Bot을 @mention한 메시지는 특권 intent 부여 여부와 관계없이 본문 전체가 전달됩니다. Multica는 @mention하지 않은 채널 대화를 읽지 않으므로 그 intent도 필요하지 않습니다.
+
+꺼 두면 애플리케이션이 서버 100개를 넘었을 때 Discord의 특권 intent 심사도 발생하지 않습니다.
+
+## 2. 에이전트에 연결하기
+
+1. Multica의 **Settings → Integrations → Discord**를 엽니다.
+2. **Connect Discord**를 클릭합니다.
+3. Bot token을 붙여 넣고 **Connect**를 클릭합니다.
+
+Multica는 Discord에서 token을 검증하고 애플리케이션 id와 Bot username을 읽어 온 뒤 token을 암호화해 저장하고, 해당 연동을 위한 감독되는 Gateway 연결을 하나 시작합니다. 다른 에이전트나 워크스페이스에 연결된 Bot은 먼저 기존 연결을 해제해야 합니다.
+
+## 3. Bot을 서버에 초대하기
+
+연결이 끝나면 Multica가 해당 연동의 초대 URL을 보여 줍니다. 링크를 열고 서버를 선택한 뒤 승인하세요.
+
+초대는 `bot` scope와 여섯 개 권한만 요청합니다: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Send Messages in Threads. 그 외에는 아무것도 요청하지 않습니다. 서버에서 채널별로 Bot 권한을 제한한다면, 에이전트가 답해야 하는 모든 채널에 이 권한을 남겨 두세요.
+
+DM에는 초대가 필요 없습니다. Bot과 같은 서버에 있는 멤버는 바로 DM을 보낼 수 있습니다.
+
+## Bot 사용하기
+
+### DM
+
+Bot과의 DM을 열고 텍스트를 보냅니다. **@mention은 필요 없습니다.**
+
+### 서버 채널과 스레드
+
+서버에서 Bot은 **명시적으로 @mention된** 메시지에만 반응합니다. 이름을 직접 입력하지 말고 @mention 자동완성에서 Bot을 선택하세요. 실제 @mention일 때만 Discord가 mention token을 보내고, Multica는 Bot의 user id로 대조하므로 @mention처럼 보이는 일반 텍스트는 무시됩니다. Bot 이름을 바꿔도(서버별 닉네임 포함) 이 대조는 깨지지 않습니다.
+
+Bot을 @mention하지 않은 메시지는 에이전트를 실행하지 않고 대화 컨텍스트에도 들어가지 않습니다. 채널이나 스레드에서 이어지는 질문도 매번 새로 @mention해야 합니다.
+
+<Callout type="info">
+Bot 메시지에 답장하는 것만으로는 부족합니다. Telegram과 달리 명시적 @mention이 없는 답장은 Bot에게 보낸 것으로 처리되지 않습니다.
+</Callout>
+
+### 세션 분리
+
+- DM은 하나의 세션이며 이후 메시지도 같은 세션을 이어 갑니다.
+- 서버의 **채널**은 각각 별도의 세션입니다.
+- **스레드**도 각각 별도의 세션이며, 스레드가 시작된 채널과 분리됩니다.
+
+Discord는 채널과 스레드를 구조적으로 구분하지 않습니다(둘 다 자체 id를 가진 channel입니다). 그래서 같은 규칙이 두 동작을 함께 만들어 냅니다. 세션은 메시지가 도착한 Discord channel id로 분리됩니다.
+
+### 명령
+
+Multica는 Discord 네이티브 slash command를 **등록하지 않습니다**. 초대가 `bot` scope만 요청하고 `applications.commands`는 요청하지 않으므로 Discord의 `/` 자동완성에는 나타나지 않습니다. 일반 메시지 텍스트로 보내세요. 서버에서는 다른 메시지와 마찬가지로 Bot을 @mention해야 합니다.
+
+- **`/new` / `/new <message>`**: 비어 있는 새 Multica Chat을 만들고 해당 Discord 대화의 이후 메시지를 새 Chat으로 라우팅합니다. 메시지를 함께 보내면 새 Chat의 첫 번째 대화가 됩니다.
+- **`/clear` / `/clear <message>`**: 현재 Multica Chat을 유지하면서 다음 비어 있지 않은 메시지에 새 에이전트 컨텍스트를 적용합니다. 메시지를 함께 보내면 경계 이후의 첫 번째 대화가 됩니다.
+- **`/issue <title>`**: Multica issue를 만듭니다. 다음 줄은 선택 설명으로 사용됩니다.
+
+명령은 메시지의 첫 번째 비어 있지 않은 줄에 있어야 하며 대소문자를 구분합니다.
+
+## 계정 바인딩
+
+<Callout type="warning">
+Discord 계정 바인딩은 **아직 제공되지 않습니다**. Multica는 다른 채팅 연동과 같은 계정 바인딩 테이블로 Discord 발신자를 확인하지만, "Multica 계정 연결" 링크를 발급하는 구현이 이번 릴리스에는 Discord용으로 없습니다. 따라서 아직 바인딩하지 않은 멤버는 Discord에서 바인딩을 완료할 수 없습니다. 진행 상황은 [GitHub issues](https://github.com/multica-ai/multica/issues)를 참고하세요.
+</Callout>
+
+제공된 뒤에는 다른 플랫폼과 동일하게 동작합니다. 바인딩하지 않은 멤버의 첫 메시지에 일회용 링크가 전달되고, Bot은 그 링크를 서버 채널에 공개하지 않으며, 메시지마다 워크스페이스 멤버십을 다시 확인합니다.
+
+## 관리
+
+**Settings → Integrations → Discord**에서 연결된 Bot을 확인할 수 있습니다. owner와 admin은 연결을 해제할 수 있습니다. 해제하면 Gateway 연결이 닫히고 응답도 멈추지만, 기존 대화와 감사 기록은 유지됩니다.
+
+## 자체 호스팅 설정
+
+API 서버를 시작하기 전에 고정된 32-byte 암호화 키를 설정합니다.
+
+```dotenv
+MULTICA_DISCORD_SECRET_KEY=<base64-encoded 32-byte key>
+```
+
+`openssl rand -base64 32`로 생성할 수 있습니다. 장기적으로 유지하세요. 이 키를 잃거나 rotate하면 기존 Bot token을 복호화할 수 없어 Bot마다 다시 연결해야 합니다.
+
+이 키가 없으면 연동 전체가 비활성화됩니다. Gateway 연결이 열리지 않고 Discord 설정 탭은 읽기 전용으로 표시되며 연결 폼이 나타나지 않습니다.
+
+서버의 네트워크나 proxy가 `discord.com`에 대한 HTTPS와 WebSocket 접속을 허용해야 하며, 표준 `HTTPS_PROXY` / `NO_PROXY`를 사용할 수 있습니다.
+
+## 문제 해결
+
+- **Bot 검증 실패**: 먼저 서버 네트워크와 proxy를 확인합니다. Discord가 token을 거부한 경우에만 reset하세요.
+- **Discord 설정 탭이 읽기 전용**: API 서버에 `MULTICA_DISCORD_SECRET_KEY`가 설정되어 있지 않습니다.
+- **Gateway 연결 실패(close code 4014)**: 애플리케이션에 부여되지 않은 특권 intent를 요청했습니다. Multica는 어느 것도 요청하지 않으므로 수정된 빌드임을 뜻합니다.
+- **token 무효(close code 4004)**: 연결 후 개발자 포털에서 token을 reset했습니다. 새 token으로 다시 연결하세요.
+- **서버에서 답장 없음**: Bot이 서버에 있고 해당 채널에서 View Channels와 Send Messages 권한이 있으며, 메시지가 자동완성으로 @mention한 것인지 확인합니다.
+- **스레드에서 답장 없음**: Send Messages in Threads 권한도 필요합니다.
+- **실행되지 않음**: 에이전트의 archive 상태와 [runtime](/daemon-runtimes)을 확인합니다.
+
+## 다음 단계
+
+- [채팅 연동](/channels)
+- [채팅](/chat)
+- [Issues](/issues)

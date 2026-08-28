@@ -1,0 +1,127 @@
+---
+title: Discord Bot 連携
+description: 独自の Discord Bot を Multica エージェントに接続し、DM、サーバーチャンネルの @mention、スレッド、/issue で利用します。
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Multica は [Discord Developer Portal](https://discord.com/developers/applications) で作成した Bot を使用します。1 つのアプリケーションは 1 つの Multica エージェントに対応します。エージェントごとに独立した Discord の identity が必要な場合は、アプリケーションを個別に作成してください。
+
+Discord 連携は[コミュニティメンテナンス](/community-maintained)です。毎リリースに同梱されますが、公式のサポート SLA は付きません。問題があれば [GitHub issues](https://github.com/multica-ai/multica/issues) に報告してください。
+
+## 準備
+
+- 接続できるのはワークスペースの owner または admin です。
+- API サーバーから `https://discord.com` へ HTTPS で接続できる必要があります（REST API と Gateway WebSocket の両方）。逆方向は不要です。受信は送信側から張った接続で動くため、公開 URL・ingress・webhook エンドポイントはいずれも必要ありません。
+- Developer Portal で発行した Bot token が必要です。パスワードと同様に扱ってください。
+
+## 1. アプリケーションと Bot を作成する
+
+1. [Developer Portal](https://discord.com/developers/applications) を開き、**New Application** をクリックしてエージェント名を付けます。
+2. **General Information** の **Application ID** をコピーします。Multica はこの id で連携を識別するため、1 つのアプリケーションは 1 つのエージェントにのみ接続できます。
+3. **Bot** を開き、**Reset Token** をクリックして表示された token をコピーします。Discord は Bot token を一度しか表示しません。コピーせずに離れた場合は再度 reset してください。
+4. **Privileged Gateway Intent** はすべて**オフ**のままにします。Multica はいずれも要求しません（下記参照）。
+
+<Callout type="warning">
+token を issue、チャット、ログ、リポジトリに記録しないでください。漏えいした場合は Developer Portal の **Reset Token** で失効させ、新しい token で再接続します。
+</Callout>
+
+### 特権 intent は不要です
+
+Multica が宣言する Gateway intent は、非特権の `GUILD_MESSAGES` と `DIRECT_MESSAGES` の 2 つだけです。**Message Content**、**Server Members**、**Presence** はオフのままにします。
+
+これで動作するのは、この連携が処理対象とするメッセージが Message Content intent の対象外だからです。Bot 宛ての DM と、Bot を @mention したメッセージについては、特権 intent の付与に関係なく本文全体が届きます。Multica は @mention されていないチャンネルの会話を読まないため、そのための intent も必要ありません。
+
+オフのままにしておくと、アプリケーションが 100 サーバーを超えたときの Discord の特権 intent 審査も発生しません。
+
+## 2. エージェントに接続する
+
+1. Multica の **Settings → Integrations → Discord** を開きます。
+2. **Connect Discord** をクリックします。
+3. Bot token を貼り付け、**Connect** をクリックします。
+
+Multica は Discord で token を検証し、アプリケーション id と Bot の username を読み取り、token を暗号化保存して、その連携用に監視された Gateway 接続を 1 本開始します。他のエージェントやワークスペースに接続済みの Bot は、先に元の接続を解除してください。
+
+## 3. Bot をサーバーに招待する
+
+接続が完了すると、Multica がその連携用の招待 URL を表示します。開いてサーバーを選び、認可してください。
+
+招待が要求するのは `bot` scope と次の 6 つの権限だけです: View Channels、Send Messages、Embed Links、Attach Files、Read Message History、Send Messages in Threads。これ以外は要求しません。サーバー側でチャンネルごとに Bot の権限を制限している場合は、エージェントに応答してほしいチャンネルすべてでこれらの権限を残してください。
+
+DM に招待は不要です。Bot と同じサーバーにいるメンバーは、そのまま DM を送れます。
+
+## Bot を使う
+
+### DM
+
+Bot との DM を開いてテキストを送信します。**@mention は不要です。**
+
+### サーバーチャンネルとスレッド
+
+サーバーでは、Bot は**明示的に @mention された**メッセージにのみ反応します。名前を手入力せず、@mention のオートコンプリートから Bot を選んでください。実際の @mention のときだけ Discord は mention token を送り、Multica は Bot の user id で照合するため、@mention に見えるだけのテキストは無視されます。Bot の改名（サーバーごとのニックネームを含む）でこの照合が壊れることはありません。
+
+Bot を @mention していないメッセージはエージェントを起動せず、会話コンテキストにも入りません。チャンネルやスレッドでの続きの質問も、そのつど @mention が必要です。
+
+<Callout type="info">
+Bot のメッセージへの返信だけでは足りません。Telegram とは異なり、明示的な @mention のない返信は Bot 宛てとは扱われません。
+</Callout>
+
+### セッションの分離
+
+- DM は 1 つのセッションで、以降のメッセージも同じセッションを継続します。
+- サーバーの**チャンネル**はそれぞれ独立したセッションです。
+- **スレッド**もそれぞれ独立したセッションで、元のチャンネルとは分かれます。
+
+Discord はチャンネルとスレッドを構造的に区別しません（どちらも自分の id を持つ channel です）。そのため同じ規則が両方の挙動を生みます。セッションはメッセージが届いた Discord の channel id で分離されます。
+
+### コマンド
+
+Multica は Discord のネイティブ slash command を**登録しません**。招待が要求するのは `bot` scope だけで `applications.commands` は含めないため、Discord の `/` オートコンプリートには表示されません。通常のメッセージ本文として送信してください。サーバーでは他のメッセージと同様に Bot への @mention が必要です。
+
+- **`/new` / `/new <message>`**: 空の新しい Multica Chat を作成し、その Discord 会話の後続メッセージを新しい Chat にルーティングします。メッセージを付けた場合は最初のターンになります。
+- **`/clear` / `/clear <message>`**: 現在の Multica Chat を維持したまま、次の空でないメッセージに新しいエージェント可視コンテキストを適用します。メッセージを付けた場合は境界後の最初のターンになります。
+- **`/issue <title>`**: Multica issue を作成します。2 行目以降は任意の説明です。
+
+コマンドはメッセージの最初の空でない行に置く必要があり、大文字と小文字を区別します。
+
+## アカウント連携
+
+<Callout type="warning">
+Discord のアカウント連携は**まだ提供されていません**。Multica は他のチャット連携と共通のアカウント連携テーブルで Discord の送信者を解決しますが、「Multica アカウントを連携する」リンクを発行する仕組みは本リリースに Discord 実装がありません。そのため、まだ連携していないメンバーは Discord から連携を完了できません。進捗は [GitHub issues](https://github.com/multica-ai/multica/issues) を参照してください。
+</Callout>
+
+提供後の挙動は他プラットフォームと同じです。未連携メンバーの最初のメッセージに 1 回だけ使えるリンクが返り、Bot はそのリンクをサーバーチャンネルに公開せず、メッセージごとにワークスペースメンバーシップを再確認します。
+
+## 管理
+
+**Settings → Integrations → Discord** で接続済み Bot を確認できます。owner と admin は接続を解除できます。解除すると Gateway 接続が閉じて返信も止まりますが、会話と監査履歴は保持されます。
+
+## セルフホスト設定
+
+API サーバーの起動前に、固定の 32-byte 暗号鍵を設定します。
+
+```dotenv
+MULTICA_DISCORD_SECRET_KEY=<base64-encoded 32-byte key>
+```
+
+`openssl rand -base64 32` で生成できます。長期的に保持してください。この鍵を失う、または rotate すると既存の Bot token を復号できなくなり、Bot ごとに再接続が必要になります。
+
+この鍵が未設定の場合、連携全体が無効になります。Gateway 接続は開かれず、Discord の設定タブは読み取り専用で表示され、接続フォームは出ません。
+
+サーバーのネットワークまたは proxy が `discord.com` への HTTPS と WebSocket を許可している必要があります。Go は標準の `HTTPS_PROXY` / `NO_PROXY` を利用します。
+
+## トラブルシューティング
+
+- **Bot を検証できない**: まずサーバーのネットワークと proxy を確認します。Discord が token を拒否した場合だけ reset します。
+- **Discord の設定タブが読み取り専用**: API サーバーに `MULTICA_DISCORD_SECRET_KEY` が設定されていません。
+- **Gateway に接続できない（close code 4014）**: アプリケーションに付与されていない特権 intent を要求しています。Multica は要求しないため、改変されたビルドを示します。
+- **token が無効（close code 4004）**: 接続後に Developer Portal で token を reset しています。新しい token で再接続してください。
+- **サーバーで返信しない**: Bot がサーバーに参加していること、そのチャンネルで View Channels と Send Messages を持つこと、メッセージがオートコンプリートからの @mention であることを確認します。
+- **スレッドで返信しない**: Send Messages in Threads も必要です。
+- **実行されない**: エージェントの archive 状態と[ランタイム](/daemon-runtimes)を確認します。
+
+## 次のステップ
+
+- [チャット連携](/channels)
+- [チャット](/chat)
+- [Issues](/issues)
