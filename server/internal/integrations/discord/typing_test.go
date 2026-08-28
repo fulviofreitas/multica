@@ -1,0 +1,373 @@
+package discord
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// Canonical test layer for the Discord typing indicator (Task Master subtask
+// 3.5). No DB, no network: every server is httptest, every clock tick is a
+// short, injected duration rather than a sleep-and-hope guess.
+
+// requestLog is a small concurrency-safe recorder for observed POSTs.
+type requestLog struct {
+	mu    sync.Mutex
+	paths []string
+	auths []string
+}
+
+func (l *requestLog) record(path, auth string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.paths = append(l.paths, path)
+	l.auths = append(l.auths, auth)
+}
+
+func (l *requestLog) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.paths)
+}
+
+func (l *requestLog) last() (path, auth string, ok bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.paths) == 0 {
+		return "", "", false
+	}
+	n := len(l.paths) - 1
+	return l.paths[n], l.auths[n], true
+}
+
+func newTypingTestServer(t *testing.T, status int) (*httptest.Server, *requestLog) {
+	t.Helper()
+	log := &requestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.record(r.URL.Path, r.Header.Get("Authorization"))
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, log
+}
+
+// newTestNotifier builds a discordTypingNotifier wired to base, with a tight
+// refresh interval and safety timeout so tests run fast and deterministically
+// instead of relying on production-sized durations.
+func newTestNotifier(base string, refresh, maxLifetime time.Duration) *discordTypingNotifier {
+	n := NewDiscordTypingNotifier(nil, base, &http.Client{Timeout: time.Second}, nil).(*discordTypingNotifier)
+	n.refreshInterval = refresh
+	n.maxLifetime = maxLifetime
+	return n
+}
+
+func testInstallation(config []byte) engine.ResolvedInstallation {
+	return engine.ResolvedInstallation{
+		Platform: db.ChannelInstallation{Config: config},
+	}
+}
+
+func testInboundMessage(channelID string) channel.InboundMessage {
+	return channel.InboundMessage{
+		Source: channel.Source{ChatID: channelID, ChatType: channel.ChatTypeGroup},
+	}
+}
+
+// waitFor polls cond every 5ms until it returns true or the deadline passes,
+// avoiding a fixed sleep for conditions that usually resolve quickly.
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return cond()
+}
+
+// newTestConfig builds a stored installConfig blob whose bot token round-
+// trips to "bot-token-123" through decodeCredentials with a nil Decrypter
+// (decryptToken's nil-decrypt path treats the base64-decoded bytes as
+// plaintext directly — see config.go).
+func newTestConfig(t *testing.T) []byte {
+	t.Helper()
+	cfg, err := json.Marshal(installConfig{
+		AppID:             "app1",
+		BotTokenEncrypted: base64.StdEncoding.EncodeToString([]byte("bot-token-123")),
+	})
+	if err != nil {
+		t.Fatalf("marshal installConfig: %v", err)
+	}
+	return cfg
+}
+
+func TestDiscordTypingOnIngestedPostsImmediately(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, time.Hour, time.Hour)
+	sessionID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-1"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	if got := log.count(); got != 1 {
+		t.Fatalf("expected exactly 1 immediate POST, got %d", got)
+	}
+	path, auth, ok := log.last()
+	if !ok {
+		t.Fatalf("expected a recorded request")
+	}
+	if path != "/channels/chan-1/typing" {
+		t.Fatalf("unexpected path: %s", path)
+	}
+	if auth != "Bot bot-token-123" {
+		t.Fatalf("unexpected Authorization header: %q", auth)
+	}
+}
+
+func TestDiscordTypingRefreshesPeriodically(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 15*time.Millisecond, time.Hour)
+	sessionID := pgtype.UUID{Bytes: [16]byte{2}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-2"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	if !waitFor(t, 2*time.Second, func() bool { return log.count() >= 4 }) {
+		t.Fatalf("expected refresh loop to post repeatedly, got %d requests", log.count())
+	}
+}
+
+func TestDiscordTypingOnSettledStopsLoop(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 10*time.Millisecond, time.Hour)
+	sessionID := pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-3"), sessionID)
+
+	if !waitFor(t, time.Second, func() bool { return log.count() >= 2 }) {
+		t.Fatalf("expected at least 2 posts before settling, got %d", log.count())
+	}
+
+	n.mu.Lock()
+	loop := n.loops[sessionID]
+	n.mu.Unlock()
+	if loop == nil {
+		t.Fatalf("expected a registered loop before OnSettled")
+	}
+
+	n.OnSettled(context.Background(), sessionID)
+
+	// Deterministic exit signal instead of a sleep-and-hope: runLoop closes
+	// loop.done only after its for-select has returned.
+	select {
+	case <-loop.done:
+	case <-time.After(time.Second):
+		t.Fatalf("loop did not exit after OnSettled")
+	}
+
+	n.mu.Lock()
+	_, stillRegistered := n.loops[sessionID]
+	n.mu.Unlock()
+	if stillRegistered {
+		t.Fatalf("expected loop to be deregistered after OnSettled")
+	}
+
+	after := log.count()
+	time.Sleep(60 * time.Millisecond) // several refresh intervals
+	if got := log.count(); got != after {
+		t.Fatalf("expected no further posts after OnSettled: had %d, now %d", after, got)
+	}
+}
+
+func TestDiscordTypingSafetyTimeoutStopsForgottenLoop(t *testing.T) {
+	srv, _ := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 5*time.Millisecond, 40*time.Millisecond)
+	sessionID := pgtype.UUID{Bytes: [16]byte{4}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-4"), sessionID)
+
+	n.mu.Lock()
+	loop := n.loops[sessionID]
+	n.mu.Unlock()
+	if loop == nil {
+		t.Fatalf("expected a registered loop")
+	}
+
+	// OnSettled is deliberately never called: the safety timeout must stop
+	// the loop on its own.
+	select {
+	case <-loop.done:
+	case <-time.After(time.Second):
+		t.Fatalf("safety timeout did not stop the loop")
+	}
+
+	n.mu.Lock()
+	_, stillRegistered := n.loops[sessionID]
+	n.mu.Unlock()
+	if stillRegistered {
+		t.Fatalf("expected loop to deregister itself after the safety timeout")
+	}
+}
+
+func TestDiscordTypingConcurrentSessionsAreIndependent(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 10*time.Millisecond, time.Hour)
+	sessionA := pgtype.UUID{Bytes: [16]byte{5}, Valid: true}
+	sessionB := pgtype.UUID{Bytes: [16]byte{6}, Valid: true}
+
+	cfg := newTestConfig(t)
+	n.OnIngested(context.Background(), testInstallation(cfg), testInboundMessage("chan-a"), sessionA)
+	n.OnIngested(context.Background(), testInstallation(cfg), testInboundMessage("chan-b"), sessionB)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionB) })
+
+	if !waitFor(t, time.Second, func() bool { return log.count() >= 4 }) {
+		t.Fatalf("expected both sessions to post, got %d", log.count())
+	}
+
+	n.mu.Lock()
+	loopA := n.loops[sessionA]
+	n.mu.Unlock()
+	if loopA == nil {
+		t.Fatalf("expected session A to have a registered loop")
+	}
+
+	n.OnSettled(context.Background(), sessionA)
+	select {
+	case <-loopA.done:
+	case <-time.After(time.Second):
+		t.Fatalf("session A loop did not exit after its own OnSettled")
+	}
+
+	n.mu.Lock()
+	_, bStillRegistered := n.loops[sessionB]
+	n.mu.Unlock()
+	if !bStillRegistered {
+		t.Fatalf("settling session A must not stop session B's loop")
+	}
+
+	beforeB := log.count()
+	if !waitFor(t, time.Second, func() bool { return log.count() > beforeB }) {
+		t.Fatalf("expected session B to keep posting after session A settled")
+	}
+}
+
+func TestDiscordTypingFailingRequestIsSwallowed(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusInternalServerError)
+	n := newTestNotifier(srv.URL, time.Hour, time.Hour)
+	sessionID := pgtype.UUID{Bytes: [16]byte{7}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-5"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	if got := log.count(); got != 1 {
+		t.Fatalf("expected the POST to still be attempted once, got %d", got)
+	}
+
+	// A closed server (connection refused) must be swallowed too.
+	closedSrv, _ := newTypingTestServer(t, http.StatusOK)
+	closedSrv.Close()
+	n2 := newTestNotifier(closedSrv.URL, time.Hour, time.Hour)
+	sessionID2 := pgtype.UUID{Bytes: [16]byte{8}, Valid: true}
+
+	// Must not panic and must return promptly.
+	done := make(chan struct{})
+	go func() {
+		n2.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-6"), sessionID2)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatalf("OnIngested against a closed server did not return")
+	}
+	t.Cleanup(func() { n2.OnSettled(context.Background(), sessionID2) })
+}
+
+func TestDiscordTypingNoGoroutineLeak(t *testing.T) {
+	srv, _ := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 5*time.Millisecond, time.Hour)
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+
+	const sessions = 8
+	var uuids [sessions]pgtype.UUID
+	var loops [sessions]*discordTypingLoop
+	cfg := newTestConfig(t)
+	for i := 0; i < sessions; i++ {
+		uuids[i] = pgtype.UUID{Bytes: [16]byte{byte(20 + i)}, Valid: true}
+		n.OnIngested(context.Background(), testInstallation(cfg), testInboundMessage("chan-leak"), uuids[i])
+		n.mu.Lock()
+		loops[i] = n.loops[uuids[i]]
+		n.mu.Unlock()
+	}
+
+	for i := 0; i < sessions; i++ {
+		n.OnSettled(context.Background(), uuids[i])
+	}
+
+	for i := 0; i < sessions; i++ {
+		select {
+		case <-loops[i].done:
+		case <-time.After(time.Second):
+			t.Fatalf("session %d loop did not exit", i)
+		}
+	}
+
+	// Every loop already proved it exited via loop.done above; this is a
+	// belt-and-suspenders check that NumGoroutine settles back down too.
+	// Idle keep-alive connections held by the shared http.Client's transport
+	// close on their own schedule, so poll instead of sampling once.
+	n.client.CloseIdleConnections()
+	var after int
+	settled := waitFor(t, time.Second, func() bool {
+		runtime.GC()
+		after = runtime.NumGoroutine()
+		return after <= before+2 // +2 slack for unrelated background goroutines (GC, etc.)
+	})
+	if !settled {
+		t.Fatalf("possible goroutine leak: before=%d after=%d", before, after)
+	}
+}
+
+// TestDiscordTypingRestartReplacesStaleLoop covers the OnIngested-called-
+// twice-for-the-same-session case: the second call must stop the first
+// loop rather than leaving two loops posting for one session.
+func TestDiscordTypingRestartReplacesStaleLoop(t *testing.T) {
+	srv, log := newTypingTestServer(t, http.StatusNoContent)
+	n := newTestNotifier(srv.URL, 10*time.Millisecond, time.Hour)
+	sessionID := pgtype.UUID{Bytes: [16]byte{9}, Valid: true}
+	cfg := newTestConfig(t)
+
+	n.OnIngested(context.Background(), testInstallation(cfg), testInboundMessage("chan-7"), sessionID)
+	n.mu.Lock()
+	firstLoop := n.loops[sessionID]
+	n.mu.Unlock()
+
+	n.OnIngested(context.Background(), testInstallation(cfg), testInboundMessage("chan-7"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	select {
+	case <-firstLoop.done:
+	case <-time.After(time.Second):
+		t.Fatalf("first loop was not stopped by the restart")
+	}
+
+	if !waitFor(t, time.Second, func() bool { return log.count() >= 2 }) {
+		t.Fatalf("expected the new loop to keep posting, got %d", log.count())
+	}
+}
