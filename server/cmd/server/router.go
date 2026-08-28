@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
+	"github.com/multica-ai/multica/server/internal/integrations/discord"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
@@ -1056,6 +1057,58 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("telegram integration disabled (MULTICA_TELEGRAM_SECRET_KEY not set)")
 	}
 
+	// Discord integration (Task Master task 4). Same BYO-bot shape as
+	// Telegram: a pasted bot token, live-verified and sealed at rest, one
+	// persistent Gateway WebSocket per active installation supervised by the
+	// shared engine.Supervisor, resolvers on the generic channel_* tables.
+	// Gated by MULTICA_DISCORD_SECRET_KEY (the at-rest token encryption key);
+	// when unset the handlers return 503/configured:false and no Factory is
+	// registered — mirrors Telegram's gate exactly.
+	if discordKey, err := secretbox.LoadKey("MULTICA_DISCORD_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(discordKey)
+		if err != nil {
+			slog.Error("discord: secretbox.New failed; discord integration disabled", "error", err)
+		} else {
+			// ResumeCache and Reconnector are process-wide, keyed by
+			// installation id (see resume.go/reconnect.go): a fresh Gateway
+			// resume-session cache or IDENTIFY budget limiter for EVERY
+			// installation would defeat their purpose (resuming a dropped
+			// link, and rate-limiting IDENTIFY calls across the whole
+			// process), so exactly one of each is built here and shared by
+			// every discordChannel the Supervisor builds.
+			discordResumeCache := discord.NewResumeCache(discord.ResumeCacheConfig{})
+			discordReconnector := discord.NewReconnector(nil)
+
+			// No outbound replier exists yet (Send is a stub — see
+			// discord_channel.go's doc comment; outbound sending is a later
+			// Task Master task), so nil disables the reply path exactly as
+			// NewTelegramResolverSet did before telegramReplier existed.
+			// Typing IS available: Discord's indicator expires after ~10s, so
+			// the notifier refreshes it per session until the run settles.
+			discordTyping := discord.NewDiscordTypingNotifier(box.Open, "", nil, slog.Default())
+			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, nil, discordTyping))
+
+			// Per-installation inbound: the Supervisor builds + supervises
+			// one Gateway connection per active Discord installation.
+			discord.RegisterDiscord(channelRegistry, discord.ChannelDeps{
+				Decrypt:     box.Open,
+				Logger:      slog.Default(),
+				ResumeCache: discordResumeCache,
+				Reconnector: discordReconnector,
+			})
+
+			installSvc, ierr := discord.NewInstallService(box, nil, slog.Default())
+			if ierr != nil {
+				slog.Error("discord: InstallService init failed; install disabled", "error", ierr)
+			} else {
+				h.DiscordInstall = installSvc
+			}
+			slog.Info("discord integration enabled (per-installation gateway)")
+		}
+	} else {
+		slog.Info("discord integration disabled (MULTICA_DISCORD_SECRET_KEY not set)")
+	}
+
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
 	// composio_mcp_apps feature flag. The env var is the project-scoped key the
 	// standalone SDK authenticates Composio with (sent as x-api-key; the project
@@ -1679,6 +1732,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Delete("/telegram/installations/{installationId}", h.RevokeTelegramInstallation)
 					r.Post("/telegram/install", h.RegisterTelegramBot)
+				})
+
+				// Discord integration. Same admin/member split as Telegram:
+				// listing is member-visible so the Integrations tab renders
+				// for non-admins; install + revoke are admin-only so a
+				// non-admin member cannot connect or disconnect a bot.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/discord/installations", h.ListDiscordInstallations)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/discord/install", h.RegisterDiscordBot)
+					r.Delete("/discord/installations/{installationId}", h.RevokeDiscordInstallation)
 				})
 			})
 		})
