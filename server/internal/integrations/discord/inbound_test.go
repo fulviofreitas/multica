@@ -109,6 +109,24 @@ func TestInboundFromMessageCreate_Gating(t *testing.T) {
 			},
 			wantOK: false,
 		},
+		{
+			// Loop prevention must win even when the message would otherwise
+			// be addressed via repliedToBot: a bot replying to our bot's
+			// message (e.g. another bot, or a misbehaving relay) is still an
+			// authorship-based drop, computed before "addressed" is even
+			// evaluated in inboundFromMessageCreate.
+			name: "a reply authored by a bot is still dropped (loop prevention wins over addressed-ness)",
+			evt: MessageCreateEvent{
+				ID:               "8",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "thanks",
+				Author:           MessageAuthor{ID: "777", Username: "other-bot", Bot: true},
+				ReplyToMessageID: "parent-7",
+				ReplyToAuthorID:  testBotID,
+			},
+			wantOK: false,
+		},
 	}
 
 	for _, tc := range tests {
@@ -287,5 +305,151 @@ func TestInboundFromMessageCreate_DMFieldMapping(t *testing.T) {
 	}
 	if msg.Text != "no mention needed in a DM" {
 		t.Errorf("Text = %q, want unchanged content", msg.Text)
+	}
+}
+
+// TestInboundFromMessageCreate_ReplyToBot exercises the repliedToBot
+// disjunct of the "addressed" computation (mirrors telegram/inbound.go's
+// `addressed := chatType == channel.ChatTypeP2P || mentioned ||
+// repliedToBot`), and the ReplyTo field this adapter now populates from
+// identify.go's decoded message_reference/referenced_message.
+func TestInboundFromMessageCreate_ReplyToBot(t *testing.T) {
+	tests := []struct {
+		name             string
+		evt              MessageCreateEvent
+		wantAddressed    bool
+		wantReplyMessage string // "" means msg.ReplyTo must be nil
+		wantText         string
+	}{
+		{
+			name: "guild reply to our bot, no @-mention, is addressed",
+			evt: MessageCreateEvent{
+				ID:               "20",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "thanks for the update",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-1",
+				ReplyToAuthorID:  testBotID,
+			},
+			wantAddressed:    true,
+			wantReplyMessage: "parent-1",
+			wantText:         "thanks for the update",
+		},
+		{
+			name: "guild reply to a DIFFERENT user is not addressed, but still flows through",
+			evt: MessageCreateEvent{
+				ID:               "21",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "I agree with you",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-2",
+				ReplyToAuthorID:  "some-other-user",
+			},
+			wantAddressed:    false,
+			wantReplyMessage: "parent-2",
+			wantText:         "I agree with you",
+		},
+		{
+			name: "reply whose referenced_message is absent/null is not treated as addressed",
+			evt: MessageCreateEvent{
+				ID:               "22",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "following up",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-3",
+				ReplyToAuthorID:  "", // referenced_message absent/null -> unknown author
+			},
+			wantAddressed:    false,
+			wantReplyMessage: "parent-3",
+			wantText:         "following up",
+		},
+		{
+			name: "reply to our bot that ALSO @-mentions it is addressed exactly once, mention stripped",
+			evt: MessageCreateEvent{
+				ID:               "23",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "<@" + testBotID + "> thanks!",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-4",
+				ReplyToAuthorID:  testBotID,
+			},
+			wantAddressed:    true,
+			wantReplyMessage: "parent-4",
+			wantText:         "thanks!",
+		},
+		{
+			name: "DM reply is addressed regardless of reply target (p2p is unconditionally addressed)",
+			evt: MessageCreateEvent{
+				ID:               "24",
+				ChannelID:        "dm-chan",
+				GuildID:          "",
+				Content:          "got it",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-5",
+				ReplyToAuthorID:  "some-other-user",
+			},
+			wantAddressed:    true,
+			wantReplyMessage: "parent-5",
+			wantText:         "got it",
+		},
+		{
+			name: "message_reference present but referenced_message missing behaves like absent (no panic, not addressed)",
+			evt: MessageCreateEvent{
+				ID:               "25",
+				ChannelID:        "guild-chan",
+				GuildID:          "guild-1",
+				Content:          "hm",
+				Author:           MessageAuthor{ID: "42", Username: "someone", Bot: false},
+				ReplyToMessageID: "parent-6",
+				ReplyToAuthorID:  "",
+			},
+			wantAddressed:    false,
+			wantReplyMessage: "parent-6",
+			wantText:         "hm",
+		},
+		{
+			name: "no reply fields at all behaves exactly as before (backward-compat regression guard)",
+			evt: MessageCreateEvent{
+				ID:        "26",
+				ChannelID: "guild-chan",
+				GuildID:   "guild-1",
+				Content:   "<@" + testBotID + "> hi",
+				Author:    MessageAuthor{ID: "42", Username: "someone", Bot: false},
+			},
+			wantAddressed:    true,
+			wantReplyMessage: "",
+			wantText:         "hi",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, ok := inboundFromMessageCreate(tc.evt, testBotID)
+			if !ok {
+				t.Fatalf("inboundFromMessageCreate() ok = false, want true")
+			}
+			if msg.AddressedToBot != tc.wantAddressed {
+				t.Errorf("AddressedToBot = %v, want %v", msg.AddressedToBot, tc.wantAddressed)
+			}
+			if tc.wantText != "" && msg.Text != tc.wantText {
+				t.Errorf("Text = %q, want %q", msg.Text, tc.wantText)
+			}
+			if tc.wantReplyMessage == "" {
+				if msg.ReplyTo != nil {
+					t.Errorf("ReplyTo = %+v, want nil", msg.ReplyTo)
+				}
+				return
+			}
+			if msg.ReplyTo == nil {
+				t.Fatalf("ReplyTo = nil, want MessageID %q", tc.wantReplyMessage)
+			}
+			if msg.ReplyTo.MessageID != tc.wantReplyMessage {
+				t.Errorf("ReplyTo.MessageID = %q, want %q", msg.ReplyTo.MessageID, tc.wantReplyMessage)
+			}
+		})
 	}
 }

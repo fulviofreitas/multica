@@ -230,6 +230,108 @@ func TestDecodeDispatch_MessageCreate(t *testing.T) {
 	if mc.Author.ID != "42" || mc.Author.Username != "someuser" || mc.Author.Bot {
 		t.Errorf("MessageCreate.Author = %+v, unexpected fields", mc.Author)
 	}
+	if mc.ReplyToMessageID != "" {
+		t.Errorf("ReplyToMessageID = %q, want empty for a non-reply message (backward-compat guard)", mc.ReplyToMessageID)
+	}
+	if mc.ReplyToAuthorID != "" {
+		t.Errorf("ReplyToAuthorID = %q, want empty for a non-reply message (backward-compat guard)", mc.ReplyToAuthorID)
+	}
+}
+
+// ---- reply linkage decoding (message_reference / referenced_message) ----
+
+func TestDecodeDispatch_MessageCreate_ReplyWithReferencedMessage(t *testing.T) {
+	d, _ := json.Marshal(map[string]any{
+		"id":         "999",
+		"channel_id": "chan-1",
+		"guild_id":   "guild-1",
+		"content":    "thanks!",
+		"author": map[string]any{
+			"id": "42", "username": "someuser", "bot": false,
+		},
+		"message_reference": map[string]any{
+			"message_id": "parent-1",
+			"channel_id": "chan-1",
+			"guild_id":   "guild-1",
+		},
+		"referenced_message": map[string]any{
+			"id": "parent-1",
+			"author": map[string]any{
+				"id": "bot-id-1", "username": "multica-bot", "bot": true,
+			},
+		},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	mc := evt.MessageCreate
+	if mc.ReplyToMessageID != "parent-1" {
+		t.Errorf("ReplyToMessageID = %q, want %q", mc.ReplyToMessageID, "parent-1")
+	}
+	if mc.ReplyToAuthorID != "bot-id-1" {
+		t.Errorf("ReplyToAuthorID = %q, want %q", mc.ReplyToAuthorID, "bot-id-1")
+	}
+}
+
+func TestDecodeDispatch_MessageCreate_ReplyWithNullReferencedMessage(t *testing.T) {
+	// Discord sets referenced_message to explicit JSON null (not just
+	// omits it) when the referenced message was deleted.
+	d, _ := json.Marshal(map[string]any{
+		"id":         "999",
+		"channel_id": "chan-1",
+		"guild_id":   "guild-1",
+		"content":    "thanks!",
+		"author": map[string]any{
+			"id": "42", "username": "someuser", "bot": false,
+		},
+		"message_reference": map[string]any{
+			"message_id": "parent-1",
+		},
+		"referenced_message": nil,
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	mc := evt.MessageCreate
+	if mc.ReplyToMessageID != "parent-1" {
+		t.Errorf("ReplyToMessageID = %q, want %q", mc.ReplyToMessageID, "parent-1")
+	}
+	if mc.ReplyToAuthorID != "" {
+		t.Errorf("ReplyToAuthorID = %q, want empty when referenced_message is null (unknown, not guessed)", mc.ReplyToAuthorID)
+	}
+}
+
+func TestDecodeDispatch_MessageCreate_ReplyWithMissingReferencedMessage(t *testing.T) {
+	// message_reference present, referenced_message field entirely absent
+	// (same outcome as an explicit null: must not panic, must not guess).
+	d, _ := json.Marshal(map[string]any{
+		"id":         "999",
+		"channel_id": "chan-1",
+		"guild_id":   "guild-1",
+		"content":    "thanks!",
+		"author": map[string]any{
+			"id": "42", "username": "someuser", "bot": false,
+		},
+		"message_reference": map[string]any{
+			"message_id": "parent-1",
+		},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	mc := evt.MessageCreate
+	if mc.ReplyToMessageID != "parent-1" {
+		t.Errorf("ReplyToMessageID = %q, want %q", mc.ReplyToMessageID, "parent-1")
+	}
+	if mc.ReplyToAuthorID != "" {
+		t.Errorf("ReplyToAuthorID = %q, want empty when referenced_message is absent", mc.ReplyToAuthorID)
+	}
 }
 
 // ---- end-to-end over Run: IDENTIFY -> READY, unknown event tolerance, sequence tracking ----

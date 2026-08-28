@@ -20,10 +20,6 @@
 //     left empty here, exactly as InboundMessage's own doc comment requires
 //     of every adapter.
 //   - typing indicators (task 3.5).
-//   - reply-to-bot-message detection: MessageCreateEvent does not decode
-//     Discord's message_reference/referenced_message fields, so a reply to
-//     the bot that lacks an explicit @-mention is not detected as
-//     addressed. See the "addressed" comment in inboundFromMessageCreate.
 package discord
 
 import (
@@ -136,6 +132,14 @@ func inboundFromMessageCreate(evt MessageCreateEvent, botID string) (channel.Inb
 	// channels, with no separate thread detection needed at this layer).
 	isDM := evt.GuildID == ""
 	mentioned := mentionsBotID(evt.Content, botID)
+	// repliedToBot is true only when Discord told us, authoritatively, that
+	// the message being replied to was authored by our bot
+	// (referenced_message.author.id). It is deliberately false — not
+	// "unknown treated as true" and not resolved via a REST call — whenever
+	// referenced_message is absent or null, which Discord does whenever the
+	// referenced message was deleted. See MessageCreateEvent.ReplyToAuthorID
+	// in identify.go for the full trade-off.
+	repliedToBot := botID != "" && evt.ReplyToAuthorID != "" && evt.ReplyToAuthorID == botID
 
 	// Mention gating is NOT enforced here. The Router already owns
 	// group-mention filtering (engine/router.go: `if
@@ -160,20 +164,11 @@ func inboundFromMessageCreate(evt MessageCreateEvent, botID string) (channel.Inb
 	// unconditionally addressed — the field is documented as "meaningless
 	// for direct (p2p) chats" and the core ignores it there, so any p2p
 	// value would do, but matching Telegram's exact choice keeps adapters
-	// consistent). For a guild message, true only when it @-mentions the
-	// bot by id.
-	//
-	// Reply-to-bot-message gap: InboundMessage's own doc says
-	// AddressedToBot covers "@-mention OR reply to a bot message" (matching
-	// Telegram's repliedToBot disjunct above), but MessageCreateEvent
-	// (identify.go's parseMessageCreate) does not decode Discord's
-	// message_reference / referenced_message fields at all, and identify.go
-	// is out of scope for this subtask to edit. So a Discord message that
-	// replies to the bot without also @-mentioning it is NOT currently
-	// detected as addressed — a follow-up subtask needs to add
-	// message_reference/referenced_message decoding to identify.go and a
-	// repliedToBot disjunct here.
-	addressed := isDM || mentioned
+	// consistent). For a guild message, true when it @-mentions the bot by
+	// id OR directly replies to a message the bot authored (repliedToBot,
+	// computed above) — matching InboundMessage.AddressedToBot's own doc
+	// ("@-mention or reply to a bot message").
+	addressed := isDM || mentioned || repliedToBot
 
 	text := strings.TrimSpace(stripBotMentions(evt.Content, botID))
 
@@ -193,6 +188,20 @@ func inboundFromMessageCreate(evt MessageCreateEvent, botID string) (channel.Inb
 		EventType: "MESSAGE_CREATE",
 		GuildID:   evt.GuildID,
 	})
+
+	// ReplyTo is populated whenever this message carries a
+	// message_reference, mirroring telegram/inbound.go and
+	// slack/inbound.go/lark/feishu_channel.go, which all populate ReplyTo
+	// for any reply, not only a reply to the bot — the engine may use it
+	// for quoting/threading regardless of who authored the parent message.
+	// Discord has no separate "thread root" distinct from the immediate
+	// parent at this layer (a Discord thread is itself addressed by
+	// Source.ChatID), so RootID is left empty rather than duplicating
+	// MessageID.
+	var reply *channel.ReplyCtx
+	if evt.ReplyToMessageID != "" {
+		reply = &channel.ReplyCtx{MessageID: evt.ReplyToMessageID}
+	}
 
 	return channel.InboundMessage{
 		// Discord snowflake message ids are globally unique (unlike
@@ -221,6 +230,7 @@ func inboundFromMessageCreate(evt MessageCreateEvent, botID string) (channel.Inb
 		// mention gating; it drops+audits an unaddressed group message
 		// using exactly this verdict. See the "addressed" comment above.
 		AddressedToBot: addressed,
+		ReplyTo:        reply,
 		Raw:            raw,
 	}, true
 }

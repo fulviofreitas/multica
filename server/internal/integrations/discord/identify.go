@@ -225,6 +225,26 @@ type MessageCreateEvent struct {
 	GuildID   string
 	Content   string
 	Author    MessageAuthor
+
+	// ReplyToMessageID is message_reference.message_id: the id of the
+	// message this one replies to, or "" if this message is not a reply.
+	// Discord always includes message_reference on a reply, even when the
+	// referenced message itself was deleted — so this is populated
+	// independently of ReplyToAuthorID below.
+	ReplyToMessageID string
+
+	// ReplyToAuthorID is referenced_message.author.id: the author of the
+	// message being replied to. It is "" whenever Discord omits or nulls
+	// out referenced_message, which happens whenever the referenced
+	// message was deleted, and is not guaranteed on every reply payload in
+	// general. Callers MUST treat an empty ReplyToAuthorID as "unknown, not
+	// a bot reply" rather than falling back to a REST call to fetch the
+	// referenced message: a false negative here costs the user one extra
+	// @-mention, whereas a wrong REST-derived guess (or worse, treating
+	// "unknown" as "yes, it's the bot") risks the bot answering a reply
+	// that was actually addressed to someone else. See inbound.go's
+	// repliedToBot.
+	ReplyToAuthorID string
 }
 
 // parseMessageCreate decodes a MESSAGE_CREATE dispatch's "d" payload.
@@ -239,11 +259,26 @@ func parseMessageCreate(data json.RawMessage) (MessageCreateEvent, error) {
 			Username string `json:"username"`
 			Bot      bool   `json:"bot"`
 		} `json:"author"`
+		// MessageReference carries message_id (present on every reply,
+		// regardless of whether the referenced message still exists).
+		MessageReference *struct {
+			MessageID string `json:"message_id"`
+		} `json:"message_reference"`
+		// ReferencedMessage is Discord's full copy of the replied-to
+		// message. It is a pointer so both an absent field and an explicit
+		// JSON null (Discord's documented behavior when the referenced
+		// message was deleted) decode to nil, giving parseMessageCreate one
+		// uniform "unknown" case to handle rather than two.
+		ReferencedMessage *struct {
+			Author struct {
+				ID string `json:"id"`
+			} `json:"author"`
+		} `json:"referenced_message"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return MessageCreateEvent{}, fmt.Errorf("discord: decode MESSAGE_CREATE payload: %w", err)
 	}
-	return MessageCreateEvent{
+	evt := MessageCreateEvent{
 		ID:        raw.ID,
 		ChannelID: raw.ChannelID,
 		GuildID:   raw.GuildID,
@@ -253,7 +288,14 @@ func parseMessageCreate(data json.RawMessage) (MessageCreateEvent, error) {
 			Username: raw.Author.Username,
 			Bot:      raw.Author.Bot,
 		},
-	}, nil
+	}
+	if raw.MessageReference != nil {
+		evt.ReplyToMessageID = raw.MessageReference.MessageID
+	}
+	if raw.ReferencedMessage != nil {
+		evt.ReplyToAuthorID = raw.ReferencedMessage.Author.ID
+	}
+	return evt, nil
 }
 
 // DispatchEventKind discriminates DispatchEvent's decoded payload.

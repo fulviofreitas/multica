@@ -70,15 +70,24 @@ type discordChannel struct {
 
 func (c *discordChannel) Type() channel.Type { return TypeDiscord }
 
-// Capabilities declares what the Discord adapter supports. Discord embeds
-// could in principle map onto CapRichCard, but v1 deliberately does NOT
-// declare it: embeds degrade to plain markdown for the initial release, and
-// CapRichCard is added only once embed rendering is implemented. CapVoice is
-// also intentionally absent — voice channels are out of scope for the text
-// adapter.
+// Capabilities declares what the Discord adapter supports. The bitmask is a
+// declaration the core reads to choose a rendering, so it must describe what
+// this adapter actually does, not what Discord as a platform can do.
+//
+// CapAttachment is deliberately NOT declared even though Discord supports
+// attachments: nothing in this adapter sends or receives them. MessageCreateEvent
+// decodes no attachment fields, InboundMessage.MediaRefs is always empty, and
+// the session binder's BindMedia is a documented no-op. Declaring the bit would
+// promise a delivery the adapter cannot perform, and a caller that later reads
+// it to decide whether to send a file would have its file silently dropped.
+// Add it in the same change that implements attachments, not before.
+//
+// CapRichCard is absent for the same honesty reason: Discord embeds exist, but
+// v1 degrades rich output to markdown, so the bit goes in with embed rendering.
+// CapVoice is out of scope for a text adapter.
 func (c *discordChannel) Capabilities() channel.Capability {
 	return channel.CapText | channel.CapThreadReply | channel.CapQuoteReply |
-		channel.CapAttachment | channel.CapTypingIndicator | channel.CapMessageEdit
+		channel.CapTypingIndicator | channel.CapMessageEdit
 }
 
 // Connect dials the Gateway, IDENTIFYs (or RESUMEs, if a fresh session is

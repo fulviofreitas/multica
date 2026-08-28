@@ -76,7 +76,7 @@ func TestDiscordChannel_Capabilities(t *testing.T) {
 	got := c.Capabilities()
 
 	want := channel.CapText | channel.CapThreadReply | channel.CapQuoteReply |
-		channel.CapAttachment | channel.CapTypingIndicator | channel.CapMessageEdit
+		channel.CapTypingIndicator | channel.CapMessageEdit
 	if got != want {
 		t.Errorf("Capabilities() = %s, want %s", got, want)
 	}
@@ -85,6 +85,13 @@ func TestDiscordChannel_Capabilities(t *testing.T) {
 	}
 	if got.Has(channel.CapVoice) {
 		t.Error("Capabilities() must not declare CapVoice")
+	}
+	// The adapter sends and receives no attachments: MessageCreateEvent decodes
+	// none, MediaRefs is always empty, and BindMedia is a no-op. Declaring the
+	// bit would promise a delivery this adapter cannot perform. This assertion
+	// exists so the bit is added in the same change that implements attachments.
+	if got.Has(channel.CapAttachment) {
+		t.Error("Capabilities() must not declare CapAttachment until attachments are implemented")
 	}
 }
 
