@@ -1,0 +1,135 @@
+---
+title: Discord Bot 接入
+description: 把 Multica 智能体接入你自己的 Discord Bot，支持私信、服务器频道 @、thread 和 /issue。
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Multica 使用你在 [Discord 开发者后台](https://discord.com/developers/applications)创建的 Bot。一个应用对应一个 Multica 智能体；需要多个独立 Bot 身份时，为每个智能体分别创建一个应用。
+
+Discord 集成[由社区维护](/community-maintained)：每个版本都会随包发布，但不附带官方支持 SLA。遇到问题请提到 [GitHub issues](https://github.com/multica-ai/multica/issues)。
+
+## 开始前
+
+- 连接操作需要工作区 owner 或 admin 权限。
+- API 服务器必须能通过 HTTPS 访问 `https://discord.com`，REST API 和 Gateway WebSocket 都要能通。反过来 Discord 不需要访问你：入站走的是出站连接，因此不需要公网地址、ingress 或 webhook 入口。
+- 你需要开发者后台里的 Bot token；它等同于密码。
+
+## 1. 创建应用与 Bot
+
+1. 打开[开发者后台](https://discord.com/developers/applications)，点击 **New Application**，用智能体的名字命名。
+2. 在 **General Information** 里复制 **Application ID**。Multica 用它作为这条接入记录的标识，因此一个应用只能连接到一个智能体。
+3. 打开 **Bot**，点击 **Reset Token**，复制出现的 token。Discord 只展示一次 Bot token，没复制就离开页面的话需要再次 reset。
+4. 所有 **Privileged Gateway Intent** 都保持**关闭**。Multica 一个都不申请，原因见下。
+
+<Callout type="warning">
+不要把 token 发到 issue、聊天、日志或代码仓库。若已泄露，请在开发者后台点击 **Reset Token**，再用替换后的 token 重新连接。
+</Callout>
+
+### 不需要任何特权 intent
+
+Multica 只声明两个非特权 Gateway intent：`GUILD_MESSAGES` 和 `DIRECT_MESSAGES`。**Message Content**、**Server Members** 和 **Presence** 全部保持关闭。
+
+这样能跑通，是因为这个集成真正要处理的那些消息本来就不受 Message Content intent 限制：无论是否授予该特权 intent，Bot 都能收到发给自己的私信、以及 @ 了自己的消息的完整内容。Multica 从不读取没有 @ 它的频道消息，所以也就用不上那个 intent。
+
+保持关闭还有一个好处：应用进入 100 个以上服务器后，不会触发 Discord 的特权 intent 审核。
+
+## 2. 连接到智能体
+
+1. 在 Multica 打开 **设置 → 集成 → Discord**。
+2. 点击 **连接 Discord**。
+3. 粘贴 Bot token，然后点击 **连接**。
+
+Multica 会实时请求 Discord 验证 token，读回应用 id 和 Bot 用户名，加密保存 token，并为这条接入记录启动一条受监督的 Gateway 连接。一个 Bot 若已连接到其他智能体或工作区，必须先在原处断开。
+
+## 3. 把 Bot 邀请进服务器
+
+连接完成后，Multica 会为这条接入记录生成一个邀请链接。打开它，选择服务器并授权。
+
+邀请只申请 `bot` scope 和六项权限：View Channels、Send Messages、Embed Links、Attach Files、Read Message History、Send Messages in Threads，不申请其他任何权限。如果服务器按频道单独限制了 Bot 权限，请在期望智能体回复的每个频道里都保留这些权限。
+
+私信不需要邀请。只要 Bot 和成员在同一个服务器里，成员就可以直接私信它。
+
+## 使用 Bot
+
+### 私信
+
+打开与 Bot 的私信直接发送文字，**不需要 @**。
+
+### 服务器频道与 thread
+
+在服务器里，Bot 会响应**明确 @ 了它**的消息，也会响应对 Bot 自己消息的普通**回复**。请从 @ 的自动补全列表里选择 Bot，不要手打它的名字 —— 只有真正的 @ 才会让 Discord 带上 mention token，而 Multica 是按 Bot 的用户 id 匹配的，看起来像 @ 的纯文本会被忽略。改名（包括服务器内昵称）不会影响这个匹配。
+
+既没有 @ 也没有回复 Bot 的消息不会触发智能体，也不会进入它的对话上下文。频道或 thread 里的每一次追问都需要重新 @ 或重新回复。
+
+<Callout type="info">
+回复 Bot 的消息和 @ 它一样能发给 Bot——前提是保留 Discord 的“回复时提及（ping）”选项，这也是默认设置。如果你在回复前关掉了这个选项，Discord 就完全不会把消息内容发给 Bot（这是 Discord 平台本身的限制，不是 Multica 的选择），Bot 因此看不到任何文字、也就不会回应。如果发现回复被“无视”了，先检查一下 ping 是否还开着。
+</Callout>
+
+### 会话隔离
+
+- 一个私信是一个会话，后续消息继续同一个会话。
+- 服务器里的每个**频道**各自是一个会话。
+- 每个 **thread** 各自是一个会话，与它所在的频道分开。
+
+Discord 在结构上不区分频道和 thread —— 两者都是有自己 id 的 channel —— 所以同一条规则同时给出这两种行为：会话按消息所在的 Discord channel id 隔离。
+
+### 命令
+
+Multica **不注册** Discord 原生斜杠命令。邀请只申请 `bot` scope，不申请 `applications.commands`，因此 Discord 的 `/` 自动补全里不会出现它们。请把命令当作普通消息文字发送 —— 在服务器里同样需要先 @ Bot。
+
+- `/new` 创建一个新的空 Multica Chat，并把该 Discord 对话的后续消息路由到新 Chat；`/new <消息>` 会把消息作为新 Chat 的第一轮。
+- `/clear` 保留当前 Multica Chat，把新的智能体可见上下文应用到下一条非空消息；`/clear <消息>` 会把消息作为上下文边界后的第一轮。
+- `/issue <标题>` 创建 Multica issue，后续行作为可选描述。
+
+命令必须位于消息第一个非空行，且区分大小写。
+
+## 账号绑定
+
+Multica 通过其他聊天集成共用的那张账号绑定表来识别 Discord 发送者。未绑定成员的第一条消息不会送到智能体，而是先返回绑定提示。
+
+在**私信**中，Bot 会回复一个一次性链接，其中带有新签发的绑定 token。数据库只保存 token 的 SHA-256 哈希，因此原始值只存在于那一条消息里。链接在签发 **15 分钟**后过期：API 设定这个期限，数据库还用 `CHECK` 约束独立地做了同样的上限，token 不会超出这个窗口。再私聊一次 Bot 就能拿到新链接。
+
+在**服务器频道**中，Bot 不会发出这个链接。频道里任何能读到它的人都可以拿它去兑换，把自己的 Discord 身份绑到别人的 Multica 账号上，所以 Bot 只会提示发送者先开一个私信。
+
+兑换在一个事务里完成：消费 token、校验工作区成员身份、写入绑定记录。绑定被拒绝时（不是成员，或这个 Discord 用户 id 已经绑定到另一个 Multica 账号）会随事务一起回滚，因此失败的尝试不会消耗掉 token。被绑定的 Multica 身份始终取自已登录的会话，而不是 token 本身，所以链接泄露也只能绑定到打开它时登录的那个账号。
+
+每条消息都会重新校验工作区成员身份，而不只在绑定时校验一次。把成员移出工作区后，他的 Discord 消息会立即无法再送到智能体，不需要另外解绑。
+
+链接打开的是 Multica Web 应用里的 `/discord/bind`，和 Telegram、Slack、飞书/Lark、钉钉、企业微信一样的绑定页面。如果还没有登录，页面会先请你登录，并把 token 一起带过去，登录后回到同一个绑定页面，不需要再要一次链接。如果已经登录，打开时就直接兑换 token 并确认绑定结果。
+
+失败原因会分别说明，而不是给一句笼统的错误。一次性链接已过期或已被使用、Discord 账号已经绑定到另一个 Multica 用户、发消息的人不是该 Bot 所在工作区的成员，这三种情况在页面上各有自己的提示，便于判断是重新获取链接，还是找工作区管理员开通权限。
+
+## 管理与断开
+
+在 **设置 → 集成 → Discord** 查看所有已连接 Bot。owner 和 admin 可以断开。断开会关闭 Gateway 连接并停止后续回复，但保留 Multica 对话与审计记录。
+
+## 自托管配置
+
+启动 API 服务器前配置一个长期稳定的 32 字节加密密钥：
+
+```dotenv
+MULTICA_DISCORD_SECRET_KEY=<base64 编码的 32 字节密钥>
+```
+
+可用 `openssl rand -base64 32` 生成。丢失或轮换此密钥后，已有 Bot token 无法解密，需要逐个重新连接。
+
+未配置这个密钥时整个集成不会启用：不会建立 Gateway 连接，Discord 设置页也只读展示，不提供接入表单。
+
+服务器网络或代理还必须允许对 `discord.com` 的 HTTPS 与 WebSocket 访问；Go 会读取标准的 `HTTPS_PROXY` 和 `NO_PROXY` 环境变量。
+
+## 故障排查
+
+- **无法验证 Bot**：先检查服务器网络和代理。只有 Discord 明确拒绝 token 时才需要 reset。
+- **Discord 设置页只读**：API 服务器上没有配置 `MULTICA_DISCORD_SECRET_KEY`。
+- **Gateway 连不上（close code 4014）**：申请了应用未被授予的特权 intent。Multica 一个都不申请，出现这个说明跑的是改过的构建。
+- **token 无效（close code 4004）**：连接之后又在开发者后台 reset 了 token。请用新 token 重新连接。
+- **服务器里不回复**：确认 Bot 已加入服务器，在该频道拥有 View Channels 和 Send Messages 权限，并且消息是从自动补全里 @ 了它。
+- **thread 里不回复**：Bot 还需要 Send Messages in Threads 权限。
+- **Bot 不执行**：检查智能体是否已归档，以及它使用的[运行时](/daemon-runtimes)是否在线。
+
+## 接下来
+
+- [聊天集成](/channels) — 比较平台并理解会话与身份机制。
+- [与智能体对话](/chat) — Bot 消息如何变成智能体执行。
+- [Issues](/issues) — `/issue` 创建的工作项。
