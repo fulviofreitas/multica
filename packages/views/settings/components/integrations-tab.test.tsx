@@ -61,6 +61,10 @@ vi.mock("./telegram-tab", () => ({
   TelegramTab: () => <div data-testid="telegram-tab" />,
 }));
 
+vi.mock("./discord-tab", () => ({
+  DiscordTab: () => <div data-testid="discord-tab" />,
+}));
+
 import { IntegrationsTab } from "./integrations-tab";
 
 afterEach(cleanup);
@@ -103,7 +107,7 @@ describe("Settings IntegrationsTab", () => {
   it("shows each channel description below its icon and title", () => {
     renderTab();
 
-    for (const channel of ["lark", "slack", "dingtalk", "wecom", "telegram"]) {
+    for (const channel of ["lark", "slack", "dingtalk", "wecom", "telegram", "discord"]) {
       const icon = screen.getByTestId(`integration-channel-icon-${channel}`);
       const title = icon.closest("h3");
       const description = title?.nextElementSibling;
@@ -122,7 +126,7 @@ describe("Settings IntegrationsTab", () => {
   it("gives every channel its own brand mark", () => {
     renderTab();
 
-    const shapes = ["lark", "slack", "dingtalk", "wecom", "telegram"].map(
+    const shapes = ["lark", "slack", "dingtalk", "wecom", "telegram", "discord"].map(
       (channel) => screen.getByTestId(`integration-channel-icon-${channel}`).innerHTML,
     );
 
