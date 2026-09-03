@@ -117,9 +117,103 @@ func TestChannelCarriesFiles(t *testing.T) {
 // it into the wecom conversation".
 func TestEveryKnownChannelHasADisplayName(t *testing.T) {
 	t.Parallel()
-	for _, ct := range []string{ChannelTypeSlack, ChannelTypeFeishu, ChannelTypeWecom} {
+	for _, ct := range []string{ChannelTypeSlack, ChannelTypeFeishu, ChannelTypeWecom, ChannelTypeDingtalk, ChannelTypeDiscord} {
 		if name := ChannelDisplayName(ct); name == ct {
 			t.Errorf("channel %q has no display name — the brief would name it %q", ct, name)
 		}
+	}
+}
+
+// The wire string is a contract with the server, which stamps
+// `chat_channel_type` from channel_installation.channel_type. Discord's
+// canonical definition is discord.TypeDiscord in
+// server/internal/integrations/discord/config.go; the daemon may not import
+// that package (see the doc comment on the const block), so the agreement is
+// pinned here as a literal instead.
+func TestChannelTypeWireStrings(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ got, want string }{
+		{ChannelTypeSlack, "slack"},
+		{ChannelTypeFeishu, "feishu"},
+		{ChannelTypeWecom, "wecom"},
+		{ChannelTypeDingtalk, "dingtalk"},
+		{ChannelTypeDiscord, "discord"},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("wire string = %q, want %q", tc.got, tc.want)
+		}
+	}
+}
+
+// SurfacePersistsTranscript decides whether the agent is told it can read its
+// own conversation back with `multica chat history`. A false negative is not
+// cosmetic: the agent is instructed that the transcript is unavailable on a
+// surface that in fact stored every turn, and it re-asks the user for context
+// it already has.
+//
+// Discord's session binder appends through engine.ChatSession.AppendUserMessage
+// (integrations/discord/resolvers.go), the shared writer behind chat_message,
+// so it must answer true. Slack is the one adapter that reads the live channel
+// instead, so it must answer false.
+func TestSurfacePersistsTranscript(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		channelType string
+		want        bool
+	}{
+		{name: "web chat has no channel and is always readable", channelType: "", want: true},
+		{name: "feishu persists", channelType: ChannelTypeFeishu, want: true},
+		{name: "wecom persists", channelType: ChannelTypeWecom, want: true},
+		{name: "dingtalk persists", channelType: ChannelTypeDingtalk, want: true},
+		{name: "discord persists via the shared AppendUserMessage path", channelType: ChannelTypeDiscord, want: true},
+		{name: "slack reads the live channel instead", channelType: ChannelTypeSlack, want: false},
+		{
+			// An adapter this daemon build predates. The conservative answer
+			// is "not readable": telling an agent to read back a transcript
+			// that is not there is worse than withholding a pointer.
+			name:        "an unknown channel type is not promised a transcript",
+			channelType: "matrix",
+			want:        false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := SurfacePersistsTranscript(tc.channelType); got != tc.want {
+				t.Errorf("SurfacePersistsTranscript(%q) = %v, want %v", tc.channelType, got, tc.want)
+			}
+		})
+	}
+}
+
+// Discord gets no branch in AudienceOf or ChannelCarriesFiles, and these rows
+// pin that as a decision rather than an omission. AudienceOf keys off chat_type,
+// which the Discord adapter persists on every binding
+// (discordSessionRouting -> channel_chat_session_binding.chat_type), so the
+// existing chat_type branches already classify a Discord DM as direct and a
+// guild channel or thread as group. ChannelCarriesFiles deliberately takes the
+// server's word for every non-empty channel type; adding `case
+// ChannelTypeDiscord: return true` here would be a claim about every deployment
+// running the adapter, including those with no object storage.
+func TestDiscordNeedsNoAudienceOrDeliveryBranch(t *testing.T) {
+	t.Parallel()
+
+	if got := AudienceOf(ChannelTypeDiscord, ChatTypeP2P); got != ChatAudienceDirect {
+		t.Errorf("AudienceOf(discord, p2p) = %v, want direct", got)
+	}
+	if got := AudienceOf(ChannelTypeDiscord, ChatTypeGroup); got != ChatAudienceGroup {
+		t.Errorf("AudienceOf(discord, group) = %v, want group", got)
+	}
+	if got := AudienceOf(ChannelTypeDiscord, ""); got != ChatAudienceUnknown {
+		t.Errorf("AudienceOf(discord, \"\") = %v, want unknown", got)
+	}
+
+	if got := ChannelCarriesFiles(ChannelTypeDiscord, true); !got {
+		t.Error("ChannelCarriesFiles(discord, true) = false, want true — the server's verdict is the only input")
+	}
+	if got := ChannelCarriesFiles(ChannelTypeDiscord, false); got {
+		t.Error("ChannelCarriesFiles(discord, false) = true, want false — no channel-type inference")
 	}
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composiointeg "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
+	"github.com/multica-ai/multica/server/internal/integrations/discord"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
@@ -238,10 +239,11 @@ type RouterOptions struct {
 
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
-	WecomMetrics *obsmetrics.WecomMetrics
-	DaemonHub    *daemonws.Hub
-	DaemonWakeup service.TaskWakeupNotifier
-	FeatureFlags *featureflag.Service
+	WecomMetrics           *obsmetrics.WecomMetrics
+	ChannelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
+	DaemonHub              *daemonws.Hub
+	DaemonWakeup           service.TaskWakeupNotifier
+	FeatureFlags           *featureflag.Service
 	// HeartbeatScheduler, when non-nil, replaces the default synchronous
 	// passthrough scheduler on the constructed Handler. main.go injects a
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
@@ -1112,6 +1114,84 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("telegram integration disabled (MULTICA_TELEGRAM_SECRET_KEY not set)")
 	}
 
+	// Discord integration (Task Master task 4). Same BYO-bot shape as
+	// Telegram: a pasted bot token, live-verified and sealed at rest, one
+	// persistent Gateway WebSocket per active installation supervised by the
+	// shared engine.Supervisor, resolvers on the generic channel_* tables.
+	// Gated by MULTICA_DISCORD_SECRET_KEY (the at-rest token encryption key);
+	// when unset the handlers return 503/configured:false and no Factory is
+	// registered — mirrors Telegram's gate exactly.
+	if discordKey, err := secretbox.LoadKey("MULTICA_DISCORD_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(discordKey)
+		if err != nil {
+			slog.Error("discord: secretbox.New failed; discord integration disabled", "error", err)
+		} else {
+			// ResumeCache and Reconnector are process-wide, keyed by
+			// installation id (see resume.go/reconnect.go): a fresh Gateway
+			// resume-session cache or IDENTIFY budget limiter for EVERY
+			// installation would defeat their purpose (resuming a dropped
+			// link, and rate-limiting IDENTIFY calls across the whole
+			// process), so exactly one of each is built here and shared by
+			// every discordChannel the Supervisor builds.
+			discordResumeCache := discord.NewResumeCache(discord.ResumeCacheConfig{})
+			discordReconnector := discord.NewReconnector(nil)
+
+			// Typing IS available: Discord's indicator expires after ~10s, so
+			// the notifier refreshes it per session until the run settles.
+			discordTyping := discord.NewDiscordTypingNotifier(box.Open, "", nil, slog.Default())
+			// Settle the indicator on a run's terminal bus event. The engine's
+			// OnSettled only fires when NO task was enqueued, so a run that DID
+			// enqueue a task would otherwise refresh until the safety timeout;
+			// subscribing to the task-lifecycle bus (as slackTyping does) clears
+			// it on completion/failure/cancellation. Registered before
+			// discordOutbound so the indicator clears ahead of the reply (bus
+			// delivery is synchronous, in subscription order).
+			discordTyping.Register(bus)
+			// Verdict replies (binding prompts, offline notices). Task Master
+			// task 8 wires the binding-token service so NeedsBinding sends a
+			// real DM bind link instead of degrading to a logged no-op —
+			// mirrors telegramBindingSvc/telegramReplier above field-for-field.
+			discordBindingSvc := discord.NewBindingTokenService(queries, pool)
+			h.DiscordBindingTokens = discordBindingSvc
+			discordReplier := discord.NewOutboundReplier(discord.OutboundReplierConfig{
+				Binding: discordBindingSvc,
+				Decrypt: box.Open,
+				// The bind link (/discord/bind) is a web-app page: app URL, not
+				// the API URL. Mirrors the Telegram replier.
+				AppURL: appURLFromEnv(),
+				Logger: slog.Default(),
+			})
+			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, discordReplier, discordTyping))
+
+			// Streaming agent replies. Resolves its destination from the
+			// per-task delivery snapshot and sends over stateless REST, so
+			// any replica can deliver - the structural difference from WeCom,
+			// whose socket-bound outbound is bug #7215.
+			discordOutbound := discord.NewOutbound(queries, box.Open, "", nil, opts.ChannelDeliveryMetrics, slog.Default())
+			discordOutbound.Register(bus)
+			h.DiscordOutbound = discordOutbound
+
+			// Per-installation inbound: the Supervisor builds + supervises
+			// one Gateway connection per active Discord installation.
+			discord.RegisterDiscord(channelRegistry, discord.ChannelDeps{
+				Decrypt:     box.Open,
+				Logger:      slog.Default(),
+				ResumeCache: discordResumeCache,
+				Reconnector: discordReconnector,
+			})
+
+			installSvc, ierr := discord.NewInstallService(box, nil, slog.Default())
+			if ierr != nil {
+				slog.Error("discord: InstallService init failed; install disabled", "error", ierr)
+			} else {
+				h.DiscordInstall = installSvc
+			}
+			slog.Info("discord integration enabled (per-installation gateway)")
+		}
+	} else {
+		slog.Info("discord integration disabled (MULTICA_DISCORD_SECRET_KEY not set)")
+	}
+
 	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
 	// composio_mcp_apps feature flag. The env var is the project-scoped key the
 	// standalone SDK authenticates Composio with (sent as x-api-key; the project
@@ -1736,6 +1816,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/telegram/installations/{installationId}", h.RevokeTelegramInstallation)
 					r.Post("/telegram/install", h.RegisterTelegramBot)
 				})
+
+				// Discord integration. Same admin/member split as Telegram:
+				// listing is member-visible so the Integrations tab renders
+				// for non-admins; install + revoke are admin-only so a
+				// non-admin member cannot connect or disconnect a bot.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/discord/installations", h.ListDiscordInstallations)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/discord/install", h.RegisterDiscordBot)
+					r.Delete("/discord/installations/{installationId}", h.RevokeDiscordInstallation)
+				})
 			})
 		})
 
@@ -1763,6 +1857,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// workspace-scoped, identity from the session, token proves only
 		// "this Telegram user id requested binding".
 		r.Post("/api/telegram/binding/redeem", h.RedeemTelegramBindingToken)
+		// Discord binding-token redemption. Same rationale as Telegram: not
+		// workspace-scoped, identity from the session, token proves only
+		// "this Discord user id requested binding".
+		r.Post("/api/discord/binding/redeem", h.RedeemDiscordBindingToken)
 
 		// Composio integration (MUL-3720). User-scoped (no workspace context):
 		// a connection belongs to a user. These four require a logged-in

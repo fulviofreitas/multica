@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
+	"github.com/multica-ai/multica/server/internal/integrations/discord"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -335,6 +336,27 @@ type Handler struct {
 	// The process owner starts and joins it; the synchronous event bus only
 	// enqueues EventChatDone work.
 	TelegramOutbound *telegram.Outbound
+
+	// DiscordInstall owns the at-rest encryption of a pasted Discord bot
+	// token and its live verification against the Discord API (PrepareInstall).
+	// It does NOT hold a *db.Queries or tx starter — the discord package's
+	// Register function takes h.Queries/h.TxStarter as separate arguments —
+	// so list/get/revoke go through the generic channel_installation queries
+	// scoped by channel_type=discord.TypeDiscord directly in discord.go, the
+	// same way this field's presence/absence is the only "configured" signal.
+	// Nil unless MULTICA_DISCORD_SECRET_KEY is set.
+	DiscordInstall *discord.InstallService
+
+	// DiscordBindingTokens mints/redeems the user-binding tokens behind the
+	// "link your Discord account" prompt. Nil unless Discord is configured.
+	DiscordBindingTokens *discord.BindingTokenService
+
+	// DiscordOutbound owns the streaming reply worker: it posts a placeholder
+	// message, edits it as the agent streams, and finalizes on EventChatDone.
+	// Delivery is stateless REST resolved from the task-delivery snapshot, so
+	// any replica can perform it - see discord/outbound.go on bug #7215.
+	// Nil unless MULTICA_DISCORD_SECRET_KEY is set.
+	DiscordOutbound *discord.Outbound
 
 	// channelFileDelivery names the channel types that can, IN THIS
 	// DEPLOYMENT, carry a file the agent produced the last hop into the

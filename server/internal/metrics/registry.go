@@ -20,12 +20,13 @@ type RegistryOptions struct {
 }
 
 type Registry struct {
-	Gatherer     prometheus.Gatherer
-	HTTP         *HTTPMetrics
-	Business     *BusinessMetrics
-	ChannelMedia *ChannelMediaReconcilerMetrics
-	ChannelLease *ChannelLeaseMetrics
-	Wecom        *WecomMetrics
+	Gatherer        prometheus.Gatherer
+	HTTP            *HTTPMetrics
+	Business        *BusinessMetrics
+	ChannelMedia    *ChannelMediaReconcilerMetrics
+	ChannelLease    *ChannelLeaseMetrics
+	ChannelDelivery *ChannelDeliveryMetrics
+	Wecom           *WecomMetrics
 }
 
 func NewRegistry(opts RegistryOptions) *Registry {
@@ -52,6 +53,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	channelLease := NewChannelLeaseMetrics()
 	reg.MustRegister(channelLease.Collectors()...)
 
+	channelDelivery := NewChannelDeliveryMetrics()
+	reg.MustRegister(channelDelivery.Collectors()...)
+
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
 
@@ -66,12 +70,13 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	}
 
 	return &Registry{
-		Gatherer:     reg,
-		HTTP:         httpMetrics,
-		Business:     businessMetrics,
-		ChannelMedia: channelMedia,
-		ChannelLease: channelLease,
-		Wecom:        wecomMetrics,
+		Gatherer:        reg,
+		HTTP:            httpMetrics,
+		Business:        businessMetrics,
+		ChannelMedia:    channelMedia,
+		ChannelLease:    channelLease,
+		ChannelDelivery: channelDelivery,
+		Wecom:           wecomMetrics,
 	}
 }
 

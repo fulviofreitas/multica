@@ -555,6 +555,7 @@ func main() {
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
+	var channelDeliveryMetrics *obsmetrics.ChannelDeliveryMetrics
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
 			Pool:     pool,
@@ -568,6 +569,7 @@ func main() {
 		channelMediaMetrics = metricsRegistry.ChannelMedia
 		channelLeaseMetrics = metricsRegistry.ChannelLease
 		wecomMetrics = metricsRegistry.Wecom
+		channelDeliveryMetrics = metricsRegistry.ChannelDelivery
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -597,18 +599,19 @@ func main() {
 	}
 
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
-		HTTPMetrics:         httpMetrics,
-		BusinessMetrics:     businessMetrics,
-		ChannelLeaseMetrics: channelLeaseMetrics,
-		ChannelLeaseRedis:   channelLeaseRedis,
-		WecomMetrics:        wecomMetrics,
-		DaemonHub:           daemonHub,
-		DaemonWakeup:        daemonWakeup,
-		WecomSenders:        wecomSenders,
-		WecomRelayOutbound:  wecomRelayOutbound,
-		FeatureFlags:        flags,
-		HeartbeatScheduler:  heartbeatScheduler,
-		LLMMaxRetries:       llmMaxRetries,
+		HTTPMetrics:            httpMetrics,
+		BusinessMetrics:        businessMetrics,
+		ChannelLeaseMetrics:    channelLeaseMetrics,
+		ChannelLeaseRedis:      channelLeaseRedis,
+		WecomMetrics:           wecomMetrics,
+		ChannelDeliveryMetrics: channelDeliveryMetrics,
+		DaemonHub:              daemonHub,
+		DaemonWakeup:           daemonWakeup,
+		WecomSenders:           wecomSenders,
+		WecomRelayOutbound:     wecomRelayOutbound,
+		FeatureFlags:           flags,
+		HeartbeatScheduler:     heartbeatScheduler,
+		LLMMaxRetries:          llmMaxRetries,
 	})
 
 	srv := newMainHTTPServer(":"+port, r)
@@ -669,6 +672,9 @@ func main() {
 	}
 	if h.TelegramOutbound != nil {
 		h.TelegramOutbound.Start(sweepCtx)
+	}
+	if h.DiscordOutbound != nil {
+		h.DiscordOutbound.Start(sweepCtx)
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
@@ -791,6 +797,11 @@ func main() {
 		JoinTelegram: func() {
 			if h.TelegramOutbound != nil && !h.TelegramOutbound.WaitWithTimeout(5*time.Second) {
 				slog.Warn("telegram outbound workers did not exit within shutdown timeout")
+			}
+		},
+		JoinDiscord: func() {
+			if h.DiscordOutbound != nil && !h.DiscordOutbound.WaitWithTimeout(5*time.Second) {
+				slog.Warn("discord outbound workers did not exit within shutdown timeout")
 			}
 		},
 		// Joined so the lease renewer can issue a final release before exit;
