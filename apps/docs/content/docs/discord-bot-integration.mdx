@@ -1,0 +1,135 @@
+---
+title: Discord Bot
+description: Connect a Multica agent to your own Discord bot for direct messages, server channel mentions, threads, and /issue.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Multica uses a bot that you create in the [Discord developer portal](https://discord.com/developers/applications). One application maps to one Multica agent. Create a separate application for each agent that needs its own Discord identity.
+
+Discord support is [community-maintained](/community-maintained): it ships in every release, but it carries no official support SLA. Report problems in [GitHub issues](https://github.com/multica-ai/multica/issues).
+
+## Before you start
+
+- A Multica workspace owner or admin must connect the bot.
+- The API server must be able to reach `https://discord.com` over HTTPS, both for the REST API and for the Gateway WebSocket. Discord is not required to reach you: inbound runs on an outbound connection, so no public URL, ingress, or webhook endpoint is needed.
+- You need the bot token from the developer portal. Treat it as a password.
+
+## 1. Create the application and bot
+
+1. Open the [developer portal](https://discord.com/developers/applications) and click **New Application**. Name it after the agent.
+2. Copy the **Application ID** from **General Information**. Multica keys the installation by this id, so one application can be connected to one agent only.
+3. Open **Bot** and click **Reset Token**, then copy the token that appears. Discord shows a bot token exactly once — if you navigate away without copying it, reset it again.
+4. Leave every **Privileged Gateway Intent** switched **off**. Multica does not request any of them; see below.
+
+<Callout type="warning">
+Never paste the token into an issue, chat message, log, or source repository. If it is exposed, use **Reset Token** in the developer portal, then reconnect the bot with the replacement token.
+</Callout>
+
+### No privileged intents are required
+
+Multica declares exactly two non-privileged Gateway intents: `GUILD_MESSAGES` and `DIRECT_MESSAGES`. **Message Content**, **Server Members**, and **Presence** stay off.
+
+That works because Discord exempts the messages this integration acts on from the Message Content intent: a bot always receives the full content of direct messages sent to it and of messages that @-mention it, whether or not the privileged intent is granted. Multica never reads unaddressed channel chatter, so it never needs the intent that would let it.
+
+Keeping the intent off also keeps the bot out of Discord's privileged-intent verification review once an application is in more than 100 servers.
+
+## 2. Connect it to an agent
+
+1. In Multica, open **Settings → Integrations → Discord**.
+2. Click **Connect Discord**.
+3. Paste the bot token and click **Connect**.
+
+Multica calls Discord to verify the token, reads back the application id and bot username, encrypts the token, and starts one supervised Gateway connection for the installation. A bot already connected to another agent or workspace must be disconnected there first.
+
+## 3. Invite the bot to a server
+
+After the bot is connected, Multica shows a generated invite URL for the installation. Open it, choose the server, and authorize.
+
+The invite requests the `bot` scope and exactly six permissions: View Channels, Send Messages, Embed Links, Attach Files, Read Message History, and Send Messages in Threads. Nothing else is asked for. If your server restricts the bot per channel, keep those permissions in every channel where the team expects the agent to answer.
+
+Direct messages need no invite. A member can DM the bot as soon as it shares a server with them.
+
+## Use the bot
+
+### Direct messages
+
+Open a DM with the bot and send text. **No @-mention is required.**
+
+### Server channels and threads
+
+In a server, the bot reacts to messages that **explicitly @-mention it**, and also to a normal **reply** to one of its own messages. Pick the bot from the mention autocomplete rather than typing its name — Discord only sends a real mention token when the mention is a genuine one, and Multica matches on the bot's user id, so plain text that merely looks like a mention is ignored. Renaming the bot, including a per-server nickname, never breaks this.
+
+Messages that do neither never trigger the agent and are not added to its conversation context. Follow-ups in a channel or thread each need a fresh mention or reply.
+
+<Callout type="info">
+Replying to one of the bot's messages addresses it, the same as an @-mention — as long as Discord's "ping reply" option is left on, which is the default. If you turn that option off before replying, Discord withholds the message text from the bot entirely (this is a Discord platform restriction, not a Multica choice), so there is nothing for the agent to answer and the bot does not respond. If a reply seems to be ignored, check that the ping is still enabled.
+</Callout>
+
+### Session isolation
+
+- A DM is one session, continued across messages.
+- Each server **channel** is its own session.
+- Each **thread** is its own session, separate from the channel it was started from.
+
+Discord makes no structural distinction between a channel and a thread — both are channels with their own id — so the same rule produces both behaviors: sessions are keyed by the Discord channel id the message arrived in.
+
+### Commands
+
+Multica does **not** register native Discord slash commands. The invite asks for the `bot` scope only, not `applications.commands`, so nothing appears in Discord's `/` autocomplete. Send the commands as ordinary message text instead — in a server, prefixed with an @-mention of the bot, as with any other message.
+
+- `/new` creates a new empty Multica Chat and routes later messages in that Discord conversation to it. `/new <message>` creates the Chat with that message as its first turn.
+- `/clear` keeps the current Multica Chat and applies a fresh agent-visible context to the next non-empty message. `/clear <message>` uses that message as the first turn after the context boundary.
+- `/issue <title>` creates a Multica issue; following lines are used as its optional description.
+
+A command must be on the first non-empty line of the message and is case-sensitive.
+
+## Account binding
+
+Multica resolves a Discord sender through the same account-binding table every other chat integration uses. The first message from an unbound member never reaches the agent; it produces a binding prompt instead.
+
+In a **direct message**, the bot replies with a single-use link carrying a freshly minted binding token. Only the token's SHA-256 hash is stored, so the raw value exists in that one message and nowhere else. It expires **15 minutes** after it is minted: the API sets that deadline and the database independently caps it with a `CHECK` constraint, so a token cannot outlive the window. Message the bot again to get a fresh link.
+
+In a **server channel**, the bot never posts the link. Anyone who can read the channel could redeem it and bind their own Discord identity to someone else's Multica account, so the bot only replies asking the sender to open a direct message first.
+
+Redemption is transactional: the token is consumed, workspace membership is verified, and the binding row is written in one transaction. A refused bind — a non-member, or a Discord user id already bound to a different Multica user — rolls back with it, so a failed attempt does not burn the token. The Multica identity being bound always comes from the authenticated session, never from the token, so a leaked link cannot bind any account other than the one signed in when it is opened.
+
+Workspace membership is re-checked on **every** inbound message, not only at bind time. Removing someone from the workspace stops their Discord messages from reaching the agent immediately; there is no separate unbinding step.
+
+The link opens `/discord/bind` in the Multica web app, the same kind of bind page Telegram, Slack, Feishu/Lark, DingTalk, and WeCom have. If you are not signed in yet, the page asks you to sign in first and carries the token through, so you land back on the bind page and the bind completes without a second link. If you are already signed in, it redeems the token on arrival and confirms the binding.
+
+Failures are named rather than generic. An expired or already-used link, a Discord account already bound to a different Multica user, and a sender who is not a member of the bot's workspace each get their own message on that page, so it is clear whether to ask for a fresh link or to ask a workspace admin for access.
+
+## Manage connections
+
+Open **Settings → Integrations → Discord** to view connected bots. Owners and admins can disconnect one. Disconnecting closes the Gateway connection and stops outbound replies, but preserves Multica conversations and audit records.
+
+## Self-hosting setup
+
+Set a stable 32-byte encryption key before starting the API server:
+
+```dotenv
+MULTICA_DISCORD_SECRET_KEY=<base64-encoded 32-byte key>
+```
+
+Generate one with `openssl rand -base64 32`. Keep it long-term: losing or rotating it makes existing bot tokens unreadable and requires reconnecting each bot.
+
+Without this key the integration stays off entirely — no Gateway connection is opened and the Discord settings tab renders read-only instead of offering an install form.
+
+The server's network or proxy must allow HTTPS and WebSocket access to `discord.com`; Go honors the standard `HTTPS_PROXY` and `NO_PROXY` environment variables.
+
+## Troubleshooting
+
+- **Bot cannot be verified**: first check server connectivity and proxy settings. Reset the token only when Discord itself rejects the current one.
+- **Discord settings tab is read-only**: `MULTICA_DISCORD_SECRET_KEY` is not set on the API server.
+- **Gateway will not connect (close code 4014)**: a privileged intent was requested that the application has not been granted. Multica requests none, so this indicates a modified build.
+- **Invalid token (close code 4004)**: the token was reset in the developer portal after it was connected. Reconnect the bot with the new token.
+- **No reply in a server**: confirm the bot is in the server, has View Channels and Send Messages in that specific channel, and that the message @-mentions it from the autocomplete.
+- **No reply in a thread**: the bot additionally needs Send Messages in Threads.
+- **Bot does not run**: check whether the agent is archived and whether its [runtime](/daemon-runtimes) is online.
+
+## Next steps
+
+- [Chat integrations](/channels) — compare platforms and understand session and identity handling.
+- [Chat](/chat) — how bot messages become agent runs.
+- [Issues](/issues) — the work created by `/issue`.

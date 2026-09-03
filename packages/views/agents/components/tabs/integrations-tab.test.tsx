@@ -94,6 +94,13 @@ vi.mock("@multica/core/telegram", () => ({
   }),
 }));
 
+vi.mock("@multica/core/discord", () => ({
+  discordInstallationsOptions: () => ({
+    queryKey: ["discord", "installations"],
+    queryFn: vi.fn(),
+  }),
+}));
+
 vi.mock("@multica/core/dingtalk", () => ({
   dingtalkInstallationsOptions: () => ({
     queryKey: ["dingtalk", "installations"],
@@ -166,6 +173,12 @@ vi.mock("../../../settings/components/wecom-tab", () => ({
 vi.mock("../../../settings/components/telegram-tab", () => ({
   TelegramAgentBindButton: ({ agentId }: { agentId: string }) => (
     <div data-testid="telegram-bind-button" data-agent-id={agentId} />
+  ),
+}));
+
+vi.mock("../../../settings/components/discord-tab", () => ({
+  DiscordAgentBindButton: ({ agentId }: { agentId: string }) => (
+    <div data-testid="discord-bind-button" data-agent-id={agentId} />
   ),
 }));
 
@@ -275,10 +288,14 @@ describe("IntegrationsTab", () => {
     expect(screen.getByText("Lark")).toBeTruthy();
     expect(screen.getByText("Slack")).toBeTruthy();
     expect(screen.getByText("Telegram")).toBeTruthy();
+    expect(screen.getByText("Discord")).toBeTruthy();
     expect(screen.getByText(/Telegram bot.*\/issue.*reply stream live/i)).toBeTruthy();
     expect(screen.getByTestId("lark-bind-button").getAttribute("data-agent-id")).toBe("agent-1");
     expect(screen.getByTestId("slack-bind-button").getAttribute("data-agent-id")).toBe("agent-1");
     expect(screen.getByTestId("telegram-bind-button").getAttribute("data-agent-id")).toBe(
+      "agent-1",
+    );
+    expect(screen.getByTestId("discord-bind-button").getAttribute("data-agent-id")).toBe(
       "agent-1",
     );
   });
@@ -561,12 +578,13 @@ describe("IntegrationsTab", () => {
     expect(screen.queryByTestId("slack-bind-button")).toBeNull();
     expect(screen.queryByTestId("wecom-bind-button")).toBeNull();
     expect(screen.queryByTestId("telegram-bind-button")).toBeNull();
+    expect(screen.queryByTestId("discord-bind-button")).toBeNull();
   });
 
   it("lets a non-admin agent owner bind Lark and DingTalk", () => {
     // The agent's owner (user-1) is only a plain workspace member. Lark and
     // DingTalk both authorize the target agent's owner through canManageAgent;
-    // Slack, WeCom and Telegram remain workspace owner/admin-only.
+    // Slack, WeCom, Telegram and Discord remain workspace owner/admin-only.
     membersRef.current = [{ user_id: "user-1", role: "member" }];
     renderTab(<IntegrationsTab agent={agent} />);
     const larkButton = screen.getByTestId("lark-bind-button");
@@ -576,10 +594,11 @@ describe("IntegrationsTab", () => {
     expect(screen.queryByTestId("slack-bind-button")).toBeNull();
     expect(screen.queryByTestId("wecom-bind-button")).toBeNull();
     expect(screen.queryByTestId("telegram-bind-button")).toBeNull();
-    // The Slack, WeCom and Telegram sections fall back to the shared members note.
+    expect(screen.queryByTestId("discord-bind-button")).toBeNull();
+    // The Slack, WeCom, Telegram and Discord sections fall back to the shared members note.
     expect(
       screen.getAllByText(/Only workspace owners and admins can manage this connection/i),
-    ).toHaveLength(3);
+    ).toHaveLength(4);
   });
 
   it("renders the bind entry (not coming-soon) when installs are unavailable but the agent is already bound", () => {

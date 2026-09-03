@@ -43,6 +43,9 @@ import type {
   TelegramInstallation,
   ListTelegramInstallationsResponse,
   RedeemTelegramBindingTokenResponse,
+  DiscordInstallation,
+  ListDiscordInstallationsResponse,
+  RedeemDiscordBindingTokenResponse,
   GroupedIssuesResponse,
   GitHubConnectResponse,
   GitHubPullRequest,
@@ -3160,6 +3163,56 @@ export const EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE: RedeemTelegramBinding
   workspace_id: "",
   installation_id: "",
   telegram_user_id: "",
+};
+
+export const DiscordInstallationSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  agent_id: z.string().default(""),
+  app_id: z.string().default(""),
+  bot_username: z.string().default(""),
+  installer_user_id: z.string().default(""),
+  status: z.string().default("revoked"),
+  installed_at: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  invite_url: z.string().default(""),
+}).loose();
+
+export const EMPTY_DISCORD_INSTALLATION: DiscordInstallation = {
+  id: "",
+  workspace_id: "",
+  agent_id: "",
+  app_id: "",
+  bot_username: "",
+  installer_user_id: "",
+  status: "revoked",
+  installed_at: "",
+  created_at: "",
+  updated_at: "",
+  invite_url: "",
+};
+
+export const ListDiscordInstallationsResponseSchema = z.object({
+  installations: z.array(DiscordInstallationSchema).default([]),
+  configured: z.boolean().default(false),
+}).loose();
+
+export const EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE: ListDiscordInstallationsResponse = {
+  installations: [],
+  configured: false,
+};
+
+export const RedeemDiscordBindingTokenResponseSchema = z.object({
+  workspace_id: z.string().default(""),
+  installation_id: z.string().default(""),
+  discord_user_id: z.string().default(""),
+}).loose();
+
+export const EMPTY_REDEEM_DISCORD_BINDING_TOKEN_RESPONSE: RedeemDiscordBindingTokenResponse = {
+  workspace_id: "",
+  installation_id: "",
+  discord_user_id: "",
 };
 
 // Skills. Introduced for `POST /api/skills/:id/refresh` (update a skill from

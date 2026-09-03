@@ -13,6 +13,10 @@ import {
   EMPTY_TELEGRAM_INSTALLATION,
   EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE,
   EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE,
+  DiscordInstallationSchema,
+  ListDiscordInstallationsResponseSchema,
+  EMPTY_DISCORD_INSTALLATION,
+  EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE,
   AgentTaskListSchema,
   AutopilotQuotaUsageSchema,
   AutopilotRunSchema,
@@ -1903,6 +1907,103 @@ describe("Telegram installation schemas", () => {
         { endpoint: "POST /api/telegram/binding/redeem" },
       ),
     ).toEqual(EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE);
+  });
+});
+
+// Discord drives the same connect/disabled/revoked UI decisions as Telegram.
+// The wire shape deliberately has no token field (server-internal), and
+// `configured: false` (MULTICA_DISCORD_SECRET_KEY unset) must render a
+// disabled state, not an error — see server/internal/handler/discord.go.
+describe("Discord installation schemas", () => {
+  it("parses a well-formed installation", () => {
+    const parsed = DiscordInstallationSchema.parse({
+      id: "i1",
+      workspace_id: "w1",
+      agent_id: "a1",
+      app_id: "998877",
+      bot_username: "multica-bot",
+      installer_user_id: "u1",
+      status: "active",
+      installed_at: "2026-01-01T00:00:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      invite_url: "https://discord.com/oauth2/authorize?client_id=998877",
+    });
+    expect(parsed.bot_username).toBe("multica-bot");
+    expect(parsed.status).toBe("active");
+    expect(parsed.invite_url).toBe("https://discord.com/oauth2/authorize?client_id=998877");
+  });
+
+  it("defaults incomplete data to the disconnected state", () => {
+    const parsed = DiscordInstallationSchema.parse({ id: "i1" });
+    expect(parsed.status).toBe("revoked");
+    expect(parsed.app_id).toBe("");
+    expect(parsed.bot_username).toBe("");
+    expect(parsed.invite_url).toBe("");
+
+    const list = ListDiscordInstallationsResponseSchema.parse({});
+    expect(list).toEqual({ installations: [], configured: false });
+  });
+
+  it("treats a null installation field as an object-shaped miss, not a crash", () => {
+    // null where an object is expected must fail this row's validation and
+    // fall back, never throw past the caller.
+    const result = DiscordInstallationSchema.safeParse(null);
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects the wrong type for a scalar field instead of coercing it", () => {
+    const result = DiscordInstallationSchema.safeParse({ id: "i1", status: 42 });
+    expect(result.success).toBe(false);
+  });
+
+  it("keeps unknown forward-compatible installation fields (installed clients see newer backends)", () => {
+    const parsed = DiscordInstallationSchema.parse({ id: "i1", future_field: "keep" });
+    expect((parsed as unknown as { future_field?: string }).future_field).toBe("keep");
+  });
+
+  it("renders the disabled state, not an error, when the deployment has no secret key configured", () => {
+    const parsed = ListDiscordInstallationsResponseSchema.parse({
+      installations: [],
+      configured: false,
+    });
+    expect(parsed.configured).toBe(false);
+    expect(parsed.installations).toEqual([]);
+  });
+
+  it("tolerates a missing installations array alongside configured: false", () => {
+    const parsed = ListDiscordInstallationsResponseSchema.parse({ configured: false });
+    expect(parsed.installations).toEqual([]);
+  });
+
+  it("falls back safely for malformed list and install responses", () => {
+    expect(
+      parseWithFallback(
+        "not json",
+        ListDiscordInstallationsResponseSchema,
+        EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE,
+        { endpoint: "GET /api/workspaces/:id/discord/installations" },
+      ),
+    ).toEqual(EMPTY_LIST_DISCORD_INSTALLATIONS_RESPONSE);
+
+    expect(
+      parseWithFallback(42, DiscordInstallationSchema, EMPTY_DISCORD_INSTALLATION, {
+        endpoint: "POST /api/workspaces/:id/discord/install",
+      }),
+    ).toEqual(EMPTY_DISCORD_INSTALLATION);
+
+    expect(
+      parseWithFallback(null, DiscordInstallationSchema, EMPTY_DISCORD_INSTALLATION, {
+        endpoint: "POST /api/workspaces/:id/discord/install",
+      }),
+    ).toEqual(EMPTY_DISCORD_INSTALLATION);
+  });
+
+  it("never carries a token-shaped field on the parsed installation", () => {
+    // The server response has no token; guard against ever adding one here.
+    const parsed = DiscordInstallationSchema.parse({ id: "i1" });
+    expect("bot_token" in parsed).toBe(false);
+    expect("token" in parsed).toBe(false);
   });
 });
 

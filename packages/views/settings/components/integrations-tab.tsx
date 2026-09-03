@@ -8,6 +8,7 @@ import { DingTalkTab } from "./dingtalk-tab";
 import { VCSTab } from "./vcs-tab";
 import { WecomTab } from "./wecom-tab";
 import { TelegramTab } from "./telegram-tab";
+import { DiscordTab } from "./discord-tab";
 import { ApiError } from "@multica/core/api";
 import { composioToolkitsOptions } from "@multica/core/composio";
 import { useConfigStore, useFeatureEnabled } from "@multica/core/config";
@@ -18,8 +19,9 @@ import { IntegrationChannelIcon } from "./integration-channel-icon";
 
 // Integrations is the umbrella tab for third-party platform connections.
 // GitHub has its own top-level tab (see github-tab.tsx); everything else
-// — currently Lark, Composio, Slack, Telegram, the self-hosted Git providers
-// (Forgejo / Gitea / GitLab), and WeCom smart-bot, with Linear etc. to follow —
+// — currently Lark, Composio, Slack, Telegram, Discord, the self-hosted Git
+// providers (Forgejo / Gitea / GitLab), and WeCom smart-bot, with Linear etc.
+// to follow —
 // lives in here under its own section heading so additional integrations slot
 // in without changing the IA. IntegrationsTab is just the host; each
 // integration owns its own description and install flow.
@@ -105,6 +107,17 @@ export function IntegrationsTab() {
         description={t(($) => $.telegram.page_description)}
       >
         <TelegramTab />
+      </SettingsSection>
+      <SettingsSection
+        title={
+          <span className="flex items-center gap-2">
+            <IntegrationChannelIcon channel="discord" />
+            {t(($) => $.discord.section_title)}
+          </span>
+        }
+        description={t(($) => $.discord.page_description)}
+      >
+        <DiscordTab />
       </SettingsSection>
     </SettingsTab>
   );

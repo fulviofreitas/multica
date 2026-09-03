@@ -510,6 +510,32 @@ describe("ApiClient schema fallback", () => {
     });
   });
 
+  describe("Discord integration", () => {
+    it("falls back safely when the redeem response is malformed", async () => {
+      stubFetchJson({ workspace_id: 123 });
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.redeemDiscordBindingToken("bind-token")).resolves.toEqual({
+        workspace_id: "",
+        installation_id: "",
+        discord_user_id: "",
+      });
+    });
+
+    it("preserves fields on a well-formed redeem response", async () => {
+      stubFetchJson({
+        workspace_id: "ws-1",
+        installation_id: "inst-1",
+        discord_user_id: "discord-1",
+      });
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.redeemDiscordBindingToken("bind-token")).resolves.toEqual({
+        workspace_id: "ws-1",
+        installation_id: "inst-1",
+        discord_user_id: "discord-1",
+      });
+    });
+  });
+
   describe("listDingTalkGroups", () => {
     it("preserves bot activity metadata for each group relationship", async () => {
       stubFetchJson({
