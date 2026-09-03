@@ -170,6 +170,17 @@ services:
       # in the database, so this single deployment-wide key is all the operator
       # needs to set here.
       MULTICA_SLACK_SECRET_KEY: ${MULTICA_SLACK_SECRET_KEY:-}
+      # Discord bot integration. MULTICA_DISCORD_SECRET_KEY is the opt-in:
+      # unset = integration disabled, and the Discord settings tab renders
+      # read-only with an operator hint instead of an install form. It is a
+      # base64-encoded 32-byte key (openssl rand -base64 32) that encrypts each
+      # installation's bot token at rest; the bot token itself is brought by
+      # each workspace admin from the Discord developer portal and stored
+      # encrypted in the database, so this single deployment-wide key is all
+      # the operator sets here. Inbound is an outbound Gateway WebSocket, so
+      # no public ingress or webhook URL is needed.
+      # See docs/discord-bot-integration.
+      MULTICA_DISCORD_SECRET_KEY: ${MULTICA_DISCORD_SECRET_KEY:-}
       # Self-hosted Git provider integration (Forgejo / Gitea / GitLab). This
       # is a self-host-only feature, so the compose file turns it on by default;
       # the managed cloud leaves it unset (off). It still needs a valid
@@ -194,6 +205,16 @@ services:
       # for a debugging session and unset it when that session ends, because
       # what it records is user message content.
       MULTICA_WECOM_TRACE: ${MULTICA_WECOM_TRACE:-}
+      # Telegram bot integration. MULTICA_TELEGRAM_SECRET_KEY is the opt-in:
+      # unset = integration disabled. It encrypts each installation's bot token
+      # at rest, the same shape as the other community channels above. Without
+      # this line the key set in .env never reaches the container, so the
+      # Telegram tab could not be enabled in a self-hosted deployment.
+      MULTICA_TELEGRAM_SECRET_KEY: ${MULTICA_TELEGRAM_SECRET_KEY:-}
+      # DingTalk smart-bot integration. MULTICA_DINGTALK_SECRET_KEY is the
+      # opt-in: unset = integration disabled. It encrypts each installation's
+      # bot credentials at rest. Same missing-forward fix as Telegram above.
+      MULTICA_DINGTALK_SECRET_KEY: ${MULTICA_DINGTALK_SECRET_KEY:-}
     restart: unless-stopped
 
   frontend:
