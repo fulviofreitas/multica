@@ -74,14 +74,36 @@ func chunkMessage(text string, maxChars int) []string {
 // closing marker with no code between the two. Reopening eagerly in that
 // case manufactured a content-free ```lang\n``` chunk that the model never
 // wrote — cosmetically wrong (an empty code block in the middle of the
-// conversation) even though no real content was lost. Buffering the reopen
-// (and any blank lines) until the first real content line lets us detect
-// that situation: if the very next non-blank line turns out to be the
-// fence's own close, the whole segment is discarded — both the never-needed
-// reopen and the now-redundant closing marker — since the PREVIOUS chunk
-// already terminated the fence with its own synthetic close. If discarding
-// leaves a chunk with nothing else in it, the chunk itself is dropped
-// instead of being emitted as an empty message.
+// conversation) even though no real content was lost.
+//
+// A carried-over (open==true entering the chunk) fence is "undecided"
+// until one of exactly three things resolves it, and each must be handled
+// deliberately — silently falling through any of them either manufactures
+// a content-free fence or drops real source lines:
+//
+//  1. Real (non-blank, non-fence) content arrives: the reopen was needed,
+//     so commit it — write the ```lang marker, then any blank lines that
+//     were buffered ahead of it, then the content itself.
+//  2. The fence's OWN closing marker arrives first: if nothing at all
+//     (not even a blank line) was buffered, the reopen would have wrapped
+//     zero content — discard it and the marker together, since the
+//     PREVIOUS chunk's synthetic close already terminated the fence. But
+//     if blank lines WERE buffered first, they are real source content
+//     (e.g. a blank-line gap inside a code block) and must not be
+//     dropped just because no non-blank line preceded the close — commit
+//     the reopen and those buffered lines before writing the close.
+//  3. The chunk simply ends with the fence still open (continuing into
+//     the next chunk) and nothing was ever committed: this happens when
+//     an entire chunk is blank lines carved out of the middle of a
+//     fenced block by chunkMessage's split. Those blank lines are real
+//     content too — commit the reopen and the buffered lines before
+//     appending the trailing synthetic close.
+//
+// In short: "pending" (buffered blank lines awaiting a decision) must
+// never be discarded while non-empty. It is only ever safe to drop
+// pending, and skip writing a reopen at all, when it is completely empty
+// — meaning the inherited fence's own closing marker was the very first
+// thing seen, with truly nothing (not even a blank line) in between.
 func balanceFences(chunks []string) []string {
 	open := false
 	lang := ""
@@ -90,13 +112,27 @@ func balanceFences(chunks []string) []string {
 	for _, chunk := range chunks {
 		var outLines []string
 		// pending buffers lines seen while a fence carried over from the
-		// previous chunk hasn't yet been committed (i.e. no real code line
-		// has justified writing its ```lang reopen marker). Only blank
-		// lines can end up here: the moment a fence marker or a non-blank
-		// line is seen, the segment resolves one way or the other and
-		// pending is drained or dropped.
+		// previous chunk (or opened earlier in this chunk) hasn't yet been
+		// committed. Only blank lines can end up here: the moment a fence
+		// marker or a non-blank line is seen, commit (below) resolves the
+		// segment one way or the other.
 		var pending []string
 		committed := !open // no reopen is owed if nothing was open coming in
+
+		// commit writes the buffered ```lang reopen marker plus any
+		// buffered blank lines, if a reopen is still owed. It is a no-op
+		// once committed is already true, so every exit path below can
+		// call it unconditionally right before it needs pending resolved,
+		// without needing to know which of the three cases applies.
+		commit := func() {
+			if committed {
+				return
+			}
+			outLines = append(outLines, "```"+lang)
+			outLines = append(outLines, pending...)
+			pending = nil
+			committed = true
+		}
 
 		lines := strings.Split(chunk, "\n")
 		for _, line := range lines {
@@ -105,26 +141,31 @@ func balanceFences(chunks []string) []string {
 
 			switch {
 			case isFence && open:
-				open = false
-				if !committed {
-					// The reopened fence closes with nothing in between —
-					// drop the buffered blank lines and this marker rather
-					// than emitting an empty fenced block. The inherited
-					// fence's debt is now settled either way, so committed
-					// must flip to true here too: leaving it false would
-					// make the NEXT line re-enter the "commit a reopen"
-					// path in the default case below with a stale (already
-					// cleared) lang, manufacturing a bogus lone "```" right
-					// before ordinary prose and leaving a later fence in
-					// this same chunk unterminated.
-					pending = nil
+				if !committed && len(pending) == 0 {
+					// Exit path 2, nothing-at-all case: the inherited
+					// fence's own close is the very first thing in this
+					// chunk. Reopening it would have wrapped zero
+					// content, so discard the (empty) reopen and this
+					// now-redundant marker together — the PREVIOUS
+					// chunk's synthetic close already terminated the
+					// fence.
+					open = false
 					lang = ""
 					committed = true
 					continue
 				}
+				// Exit path 2, blank-lines-buffered case (commit flushes
+				// them), or an ordinary close of a fence that already
+				// had real content (commit is a no-op here).
+				commit()
+				open = false
 				lang = ""
 				outLines = append(outLines, line)
 			case isFence && !open:
+				// Opening a fence. Any carried-over segment is always
+				// fully resolved (committed==true) by the time open can
+				// be false here, since every path above that sets
+				// open=false also leaves committed==true.
 				open = true
 				lang = strings.TrimPrefix(trimmed, "```")
 				outLines = append(outLines, line)
@@ -133,24 +174,26 @@ func balanceFences(chunks []string) []string {
 			case trimmed == "":
 				pending = append(pending, line)
 			default:
-				// First real content since the fence reopened: commit the
-				// reopen marker and any buffered blank lines ahead of it.
-				outLines = append(outLines, "```"+lang)
-				outLines = append(outLines, pending...)
-				pending = nil
-				committed = true
+				// Exit path 1: real content resolves the reopen.
+				commit()
 				outLines = append(outLines, line)
 			}
 		}
 
 		if open {
+			// Exit path 3: the fence is still open at the end of this
+			// chunk (continuing into the next one). If it was never
+			// committed, the whole chunk was blank lines buffered in
+			// pending — flush them before appending this chunk's own
+			// trailing close, instead of letting them vanish.
+			commit()
 			outLines = append(outLines, "```")
 		}
 
 		if len(outLines) == 0 {
-			// Everything in this chunk was the discarded tail of a fence
-			// that turned out to need no reopening — skip it instead of
-			// emitting an empty message.
+			// Everything in this chunk was the discarded (truly empty)
+			// tail of a fence that turned out to need no reopening — skip
+			// it instead of emitting an empty message.
 			continue
 		}
 		out = append(out, strings.Join(outLines, "\n"))

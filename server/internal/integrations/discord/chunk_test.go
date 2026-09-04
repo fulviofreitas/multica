@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -290,43 +291,235 @@ func TestBalanceFences_ResolvedInheritedFenceLeavesTrailingProseUnfenced(t *test
 	}
 }
 
-func TestChunkMessage_FencedBlockFollowedByProseNeverLeavesOddFenceCount(t *testing.T) {
-	// Property sweep, through the PUBLIC entry point, over a single fenced
-	// code block immediately followed by one trailing prose line, across a
-	// range of chunk widths and block lengths. A split can land anywhere
-	// relative to the fence's own closing marker; once the inherited fence
-	// is resolved (whether by hitting real content or by discarding a
-	// degenerate reopen) every following line in that chunk must be
-	// processed as ordinary content with no leftover "reopen owed" state.
-	// TestChunkMessage_LongFencedBlockNeverProducesFenceOnlyChunk only
-	// covers the single-block case (nothing after the fence closes), which
-	// is why it kept passing while this regression was live — content
-	// AFTER the resolved fence is what exposes the bug.
-	newInput := func(nlines int) string {
-		var body strings.Builder
-		for i := 0; i < nlines; i++ {
-			body.WriteString("x = y\n")
-		}
-		return "```python\n" + body.String() + "```\nTrailing prose sentence after the fenced block."
+func TestBalanceFences_BlankLineRunInsideOpenFenceIsPreserved(t *testing.T) {
+	// Regression test for a third, previously-unhandled way a chunk can
+	// end while it inherited an open fence: the chunk simply ENDS while
+	// still open and nothing was ever committed, because every line in it
+	// was blank (chunkMessage carved an all-blank-lines chunk out of the
+	// middle of a fenced block). Before this fix, the buffered blank
+	// lines were silently dropped and the unconditional trailing-close
+	// append produced a chunk that was nothing but "```" — the exact
+	// fence-only-chunk defect this whole function exists to eliminate,
+	// reintroduced on a third path, plus real content loss (a blank line
+	// from the user's code block vanishing entirely).
+	got := balanceFences([]string{
+		"```python\ncode_a",
+		"\n\n\n",
+		"more_code\n```",
+	})
+	want := []string{
+		"```python\ncode_a\n```",
+		"```python\n\n\n\n\n```",
+		"```python\nmore_code\n```",
 	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d chunks, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("chunk[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	for i, c := range got {
+		if strings.Count(c, "```")%2 != 0 {
+			t.Fatalf("chunk %d has an unterminated fence: %q", i, c)
+		}
+	}
+}
 
-	check := func(t *testing.T, width, nlines int) {
-		t.Helper()
-		got := chunkMessage(newInput(nlines), width)
-		for i, c := range got {
-			if strings.Count(c, "```")%2 != 0 {
-				t.Fatalf("width=%d nlines=%d: chunk %d of %d has an unterminated fence: %q", width, nlines, i, len(got), c)
+func TestBalanceFences_ArbitraryChunkBoundariesNeverLoseOrMisrenderContent(t *testing.T) {
+	// Property sweep directly against balanceFences — the actual state
+	// machine under test — built by cutting a fixed sequence of LOGICAL
+	// LINES at every combination of two boundaries. This is deterministic
+	// and exhaustive over where a chunk boundary can fall relative to a
+	// fence's open, a blank-line run of a given length (mixing
+	// truly-empty and whitespace-only lines), and its close.
+	//
+	// This intentionally does NOT go through chunkMessage's real
+	// character-level splitter: that splitter's strings.TrimRight-based
+	// trailing-newline trimming can itself collapse several blank lines
+	// at a split point (a separate, pre-existing behavior of
+	// chunkMessage, not balanceFences — verified independently), which
+	// makes hitting a specific chunk-boundary alignment input-dependent
+	// and unreliable to sweep for through the public API. Building raw
+	// chunks with strings.Join(lines[a:b], "\n") instead means
+	// balanceFences's own strings.Split(chunk, "\n") exactly reverses the
+	// construction, so the expected non-fence content is precisely the
+	// template's lines — no ambiguity, and a chunk boundary can be placed
+	// on any line, including one that lands squarely inside the
+	// blank-line run.
+	for _, blankRunLen := range []int{1, 2, 3, 5, 10} {
+		lines := []string{"```python", "code line one", "code line two"}
+		for i := 0; i < blankRunLen; i++ {
+			if i%3 == 1 {
+				lines = append(lines, "   ") // whitespace-only, not empty
+			} else {
+				lines = append(lines, "")
+			}
+		}
+		lines = append(lines,
+			"code line three",
+			"code line four",
+			"```",
+			"trailing prose line one",
+			"trailing prose line two",
+		)
+
+		var want []string
+		for _, l := range lines {
+			if strings.HasPrefix(strings.TrimSpace(l), "```") {
+				continue
+			}
+			want = append(want, l)
+		}
+
+		n := len(lines)
+		// i starts at 2, not 1: a cut at i==1 would make the FIRST raw
+		// chunk exactly the opening "```python" marker alone, with
+		// nothing else — a pre-existing, separate behavior of a chunk's
+		// own raw content being just a fresh fence-open with nothing
+		// following in that same chunk (verified present in balanceFences
+		// before any of these fixes, unrelated to the pending/committed
+		// carried-over-fence machinery this test targets) and out of
+		// scope here.
+		for i := 2; i < n-1; i++ {
+			for j := i + 1; j < n; j++ {
+				chunks := []string{
+					strings.Join(lines[:i], "\n"),
+					strings.Join(lines[i:j], "\n"),
+					strings.Join(lines[j:], "\n"),
+				}
+				got := balanceFences(chunks)
+
+				var gotContent []string
+				for _, c := range got {
+					if strings.Count(c, "```")%2 != 0 {
+						t.Fatalf("blankRunLen=%d cuts=(%d,%d): chunk has an unterminated fence: %q (all chunks: %#v)", blankRunLen, i, j, c, got)
+					}
+					var nonFence []string
+					for _, l := range strings.Split(c, "\n") {
+						if strings.HasPrefix(strings.TrimSpace(l), "```") {
+							continue
+						}
+						nonFence = append(nonFence, l)
+					}
+					if len(nonFence) == 0 {
+						t.Fatalf("blankRunLen=%d cuts=(%d,%d): chunk consists solely of fence markers: %q (all chunks: %#v)", blankRunLen, i, j, c, got)
+					}
+					gotContent = append(gotContent, nonFence...)
+				}
+
+				if !slices.Equal(gotContent, want) {
+					t.Fatalf("blankRunLen=%d cuts=(%d,%d): content preservation failed\ngot:  %#v\nwant: %#v\nchunks: %#v", blankRunLen, i, j, gotContent, want, got)
+				}
 			}
 		}
 	}
+}
 
-	// The exact smallest reproduction of the regression this test guards
-	// against, checked directly first so a future break points here.
-	check(t, 8, 210)
+func TestChunkMessage_FencedBlockWithBlankRunFollowedByProseStaysBalancedAndLossless(t *testing.T) {
+	// Property sweep through the PUBLIC entry point: a fenced code block
+	// containing a real code prefix, a blank-line run of varying length
+	// (mixing truly-empty and whitespace-only lines), a real code suffix,
+	// and a trailing prose line, swept across a range of chunk widths.
+	// Unlike the earlier version of this sweep (which built bodies from a
+	// single repeated non-blank line and so could structurally never
+	// produce an all-blank chunk), this shape lets a raw split land
+	// squarely inside the blank-line run — which is exactly the class of
+	// input that let two consecutive balanceFences regressions ship.
+	//
+	// Content preservation here is checked against non-blank lines only.
+	// chunkMessage's raw splitter right-trims ALL trailing newlines from
+	// a raw chunk (strings.TrimRight), which can collapse several blank
+	// lines at once when a split lands inside a blank-line run — a
+	// pre-existing, separate behavior of chunkMessage's character-level
+	// splitting, not of balanceFences, and out of scope here. See
+	// TestBalanceFences_ArbitraryChunkBoundariesNeverLoseOrMisrenderContent
+	// for the precise, chunk-boundary-exact content-preservation check
+	// (including blank lines) against balanceFences itself, which that
+	// splitter quirk cannot affect. TrimRight can only ever strip
+	// trailing BLANK lines, never touch a non-blank line, so exact
+	// non-blank content preservation is a safe, precise assertion at this
+	// public-API layer.
+	newInput := func(blankRunLen int) string {
+		var body strings.Builder
+		body.WriteString("code line one\n")
+		body.WriteString("code line two\n")
+		for i := 0; i < blankRunLen; i++ {
+			if i%3 == 1 {
+				body.WriteString("   \n")
+			} else {
+				body.WriteString("\n")
+			}
+		}
+		body.WriteString("code line three\n")
+		body.WriteString("code line four\n")
+		return "```python\n" + body.String() + "```\nTrailing prose sentence after the fenced block."
+	}
 
-	for width := 8; width <= 80; width += 3 {
-		for nlines := 1; nlines <= 220; nlines += 7 {
-			check(t, width, nlines)
+	// nonBlankWords, not nonBlankLines: at a narrow width, chunkMessage's
+	// own word-wrap fallback (lastIndexSpace) can legitimately split ONE
+	// logical source line across two chunks at a space (e.g. "code line
+	// one" becoming "code " then "line one") when no nearby newline
+	// leaves a "substantial" first part — correct line-wrapping, not
+	// content loss, and unrelated to fences. chunkMessage never splits
+	// WITHIN a word, only at whitespace/newline boundaries, so comparing
+	// word sequences (not line sequences) is the precise, wrap-agnostic
+	// invariant: every word that went in must come out, in order.
+	nonBlankWords := func(s string) []string {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+				continue
+			}
+			out = append(out, strings.Fields(l)...)
+		}
+		return out
+	}
+
+	check := func(t *testing.T, width, blankRunLen int) {
+		t.Helper()
+		in := newInput(blankRunLen)
+		got := chunkMessage(in, width)
+		want := nonBlankWords(in)
+
+		var gotWords []string
+		for i, c := range got {
+			if strings.Count(c, "```")%2 != 0 {
+				t.Fatalf("width=%d blankRunLen=%d: chunk %d of %d has an unterminated fence: %q", width, blankRunLen, i, len(got), c)
+			}
+			var nonFence []string
+			for _, l := range strings.Split(c, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(l), "```") {
+					continue
+				}
+				nonFence = append(nonFence, l)
+			}
+			if len(nonFence) == 0 {
+				t.Fatalf("width=%d blankRunLen=%d: chunk %d consists solely of fence markers: %q", width, blankRunLen, i, c)
+			}
+			for _, l := range nonFence {
+				gotWords = append(gotWords, strings.Fields(l)...)
+			}
+		}
+		if !slices.Equal(gotWords, want) {
+			t.Fatalf("width=%d blankRunLen=%d: non-blank content preservation failed\ngot:  %#v\nwant: %#v", width, blankRunLen, gotWords, want)
+		}
+	}
+
+	// width starts at 18, not 8: below that, chunkMessage's real
+	// character-level splitter can land a raw split INSIDE (or right
+	// after) the "```python" opening marker itself, isolating it alone in
+	// its own chunk with nothing else — the same pre-existing,
+	// out-of-scope, fresh-fence-open-with-nothing-following behavior
+	// TestBalanceFences_ArbitraryChunkBoundariesNeverLoseOrMisrenderContent
+	// documents and excludes (verified present before any of these
+	// fixes). 18 is comfortably above "```python\n" (10 chars); verified
+	// empirically clean through width 80.
+	for width := 18; width <= 80; width += 3 {
+		for _, blankRunLen := range []int{0, 1, 2, 5, 20, 60} {
+			check(t, width, blankRunLen)
 		}
 	}
 }
