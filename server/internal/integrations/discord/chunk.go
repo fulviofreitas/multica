@@ -67,41 +67,85 @@ func chunkMessage(text string, maxChars int) []string {
 // the next chunk — so every chunk Discord receives has its own complete,
 // balanced set of fences, and the code styling never leaks into the
 // surrounding prose of later chunks.
+//
+// The reopen is deferred rather than written unconditionally: chunkMessage
+// picks split points purely by UTF-16 budget, with no awareness of fence
+// state, so a split can land immediately BEFORE the fence's own original
+// closing marker with no code between the two. Reopening eagerly in that
+// case manufactured a content-free ```lang\n``` chunk that the model never
+// wrote — cosmetically wrong (an empty code block in the middle of the
+// conversation) even though no real content was lost. Buffering the reopen
+// (and any blank lines) until the first real content line lets us detect
+// that situation: if the very next non-blank line turns out to be the
+// fence's own close, the whole segment is discarded — both the never-needed
+// reopen and the now-redundant closing marker — since the PREVIOUS chunk
+// already terminated the fence with its own synthetic close. If discarding
+// leaves a chunk with nothing else in it, the chunk itself is dropped
+// instead of being emitted as an empty message.
 func balanceFences(chunks []string) []string {
 	open := false
 	lang := ""
 	out := make([]string, 0, len(chunks))
 
 	for _, chunk := range chunks {
-		var b strings.Builder
-		if open {
-			b.WriteString("```")
-			b.WriteString(lang)
-			b.WriteString("\n")
-		}
+		var outLines []string
+		// pending buffers lines seen while a fence carried over from the
+		// previous chunk hasn't yet been committed (i.e. no real code line
+		// has justified writing its ```lang reopen marker). Only blank
+		// lines can end up here: the moment a fence marker or a non-blank
+		// line is seen, the segment resolves one way or the other and
+		// pending is drained or dropped.
+		var pending []string
+		committed := !open // no reopen is owed if nothing was open coming in
 
 		lines := strings.Split(chunk, "\n")
-		for i, line := range lines {
+		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "```") {
-				if open {
-					open = false
+			isFence := strings.HasPrefix(trimmed, "```")
+
+			switch {
+			case isFence && open:
+				open = false
+				if !committed {
+					// The reopened fence closes with nothing in between —
+					// drop the buffered blank lines and this marker rather
+					// than emitting an empty fenced block.
+					pending = nil
 					lang = ""
-				} else {
-					open = true
-					lang = strings.TrimPrefix(trimmed, "```")
+					continue
 				}
-			}
-			b.WriteString(line)
-			if i < len(lines)-1 {
-				b.WriteString("\n")
+				lang = ""
+				outLines = append(outLines, line)
+			case isFence && !open:
+				open = true
+				lang = strings.TrimPrefix(trimmed, "```")
+				outLines = append(outLines, line)
+			case committed:
+				outLines = append(outLines, line)
+			case trimmed == "":
+				pending = append(pending, line)
+			default:
+				// First real content since the fence reopened: commit the
+				// reopen marker and any buffered blank lines ahead of it.
+				outLines = append(outLines, "```"+lang)
+				outLines = append(outLines, pending...)
+				pending = nil
+				committed = true
+				outLines = append(outLines, line)
 			}
 		}
 
 		if open {
-			b.WriteString("\n```")
+			outLines = append(outLines, "```")
 		}
-		out = append(out, b.String())
+
+		if len(outLines) == 0 {
+			// Everything in this chunk was the discarded tail of a fence
+			// that turned out to need no reopening — skip it instead of
+			// emitting an empty message.
+			continue
+		}
+		out = append(out, strings.Join(outLines, "\n"))
 	}
 	return out
 }

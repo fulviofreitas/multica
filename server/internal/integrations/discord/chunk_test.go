@@ -163,6 +163,82 @@ func TestChunkMessage_CodeFenceSpanningSplitReopensWithSameLanguage(t *testing.T
 	}
 }
 
+func TestChunkMessage_LongFencedBlockNeverProducesFenceOnlyChunk(t *testing.T) {
+	// Reproduces a confirmed, DB-settled production defect: a single
+	// balanced ```python ... ``` fenced block of 12,511 characters — long
+	// enough that splitting at maxMessageChars (1900) lands the final split
+	// immediately before the block's own closing fence marker, with no code
+	// left between the two. balanceFences used to reopen the fence there
+	// anyway, manufacturing a trailing chunk that was nothing but
+	// "```python\n```" — an empty code block the model never sent.
+	var body strings.Builder
+	line := "x = compute_something(a, b, c)  # some comment padding here\n"
+	const targetTotal = 12511
+	const fenceOverhead = len("```python\n") + len("\n```")
+	for body.Len()+len(line) <= targetTotal-fenceOverhead {
+		body.WriteString(line)
+	}
+	for body.Len() < targetTotal-fenceOverhead {
+		body.WriteByte('z')
+	}
+	in := "```python\n" + body.String() + "\n```"
+	if len(in) != targetTotal {
+		t.Fatalf("test setup produced %d chars, want %d", len(in), targetTotal)
+	}
+
+	got := chunkMessage(in, maxMessageChars)
+	if len(got) < 2 {
+		t.Fatalf("expected the block to split into multiple chunks, got %d", len(got))
+	}
+
+	for i, c := range got {
+		// No chunk may exceed the UTF-16 unit budget.
+		if utf16Units(c) > maxMessageChars {
+			t.Fatalf("chunk %d exceeds maxMessageChars (%d units): %q", i, utf16Units(c), c)
+		}
+		// Every chunk's fences must be balanced.
+		if strings.Count(c, "```")%2 != 0 {
+			t.Fatalf("chunk %d has an unterminated fence: %q", i, c)
+		}
+		// No chunk may consist solely of fence markers and/or a language
+		// tag — that is exactly the manufactured-empty-code-block defect.
+		onlyFenceContent := true
+		for _, l := range strings.Split(c, "\n") {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+				continue
+			}
+			onlyFenceContent = false
+			break
+		}
+		if onlyFenceContent {
+			t.Fatalf("chunk %d consists solely of fence markers/language tag: %q", i, c)
+		}
+	}
+
+	// No content loss: stripping the fence-marker/language-tag scaffolding
+	// balanceFences injects from every chunk and rejoining must reproduce
+	// the original code body verbatim.
+	var reassembled strings.Builder
+	for _, c := range got {
+		for _, l := range strings.Split(c, "\n") {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+				continue
+			}
+			reassembled.WriteString(l)
+			reassembled.WriteString("\n")
+		}
+	}
+	// chunkMessage right-trims trailing newlines off of raw split pieces
+	// (see its TrimRight call), so compare content modulo trailing newlines
+	// rather than requiring byte-for-byte whitespace fidelity at the very
+	// end of the message.
+	if got, want := strings.TrimRight(reassembled.String(), "\n"), strings.TrimRight(body.String(), "\n"); got != want {
+		t.Fatalf("code content was altered by fence rebalancing:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 func TestChunkMessage_MultipleCompleteFencesAcrossChunksStayBalanced(t *testing.T) {
 	// Two SEPARATE, already-complete code blocks, each short enough on its
 	// own, but combined they exceed the limit and must split between the
