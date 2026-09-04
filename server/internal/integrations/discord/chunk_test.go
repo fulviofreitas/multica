@@ -239,6 +239,98 @@ func TestChunkMessage_LongFencedBlockNeverProducesFenceOnlyChunk(t *testing.T) {
 	}
 }
 
+func TestBalanceFences_ResolvedInheritedFenceDoesNotManufactureStrayMarker(t *testing.T) {
+	// Regression test for a bug introduced by the fix for the fence-only
+	// chunk defect (see TestChunkMessage_LongFencedBlockNeverProducesFenceOnlyChunk):
+	// discarding a degenerate (content-free) inherited fence must mark the
+	// chunk's reopen debt as settled. Before this test's fix, "committed"
+	// stayed false for the rest of the chunk, so the NEXT line re-entered
+	// the "commit a reopen" path with a stale (already-cleared) language
+	// tag — writing a standalone "```" immediately before ordinary prose
+	// (styling it as code) and leaving a LATER, genuinely new fence in the
+	// same chunk unterminated.
+	got := balanceFences([]string{
+		"```python\ncode_a",
+		"```\nSome prose here\n```js\ncode_b",
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %#v", len(got), got)
+	}
+	if strings.Count(got[1], "```")%2 != 0 {
+		t.Fatalf("chunk[1] has an unterminated fence: %q", got[1])
+	}
+	want := "Some prose here\n```js\ncode_b\n```"
+	if got[1] != want {
+		t.Fatalf("chunk[1] = %q, want %q", got[1], want)
+	}
+}
+
+func TestBalanceFences_ResolvedInheritedFenceLeavesTrailingProseUnfenced(t *testing.T) {
+	// Regression test: a chunk whose only fence-related content is the
+	// inherited fence's own closing marker, followed by trailing prose with
+	// no further fence markers at all, must end with an EVEN fence count
+	// (zero, here). Before the "committed" fix, the discarded inherited
+	// fence left the chunk with one orphaned marker worth of state, so the
+	// chunk closed with an ODD fence count — exactly the "unterminated
+	// fence leaks code styling into the rest of the conversation" failure
+	// mode balanceFences's doc comment says it exists to prevent.
+	got := balanceFences([]string{
+		"```python\ncode_a",
+		"```\nSome trailing prose",
+	})
+	if len(got) != 2 {
+		t.Fatalf("expected 2 chunks, got %d: %#v", len(got), got)
+	}
+	if strings.Count(got[1], "```")%2 != 0 {
+		t.Fatalf("chunk[1] has an unterminated fence: %q", got[1])
+	}
+	want := "Some trailing prose"
+	if got[1] != want {
+		t.Fatalf("chunk[1] = %q, want %q", got[1], want)
+	}
+}
+
+func TestChunkMessage_FencedBlockFollowedByProseNeverLeavesOddFenceCount(t *testing.T) {
+	// Property sweep, through the PUBLIC entry point, over a single fenced
+	// code block immediately followed by one trailing prose line, across a
+	// range of chunk widths and block lengths. A split can land anywhere
+	// relative to the fence's own closing marker; once the inherited fence
+	// is resolved (whether by hitting real content or by discarding a
+	// degenerate reopen) every following line in that chunk must be
+	// processed as ordinary content with no leftover "reopen owed" state.
+	// TestChunkMessage_LongFencedBlockNeverProducesFenceOnlyChunk only
+	// covers the single-block case (nothing after the fence closes), which
+	// is why it kept passing while this regression was live — content
+	// AFTER the resolved fence is what exposes the bug.
+	newInput := func(nlines int) string {
+		var body strings.Builder
+		for i := 0; i < nlines; i++ {
+			body.WriteString("x = y\n")
+		}
+		return "```python\n" + body.String() + "```\nTrailing prose sentence after the fenced block."
+	}
+
+	check := func(t *testing.T, width, nlines int) {
+		t.Helper()
+		got := chunkMessage(newInput(nlines), width)
+		for i, c := range got {
+			if strings.Count(c, "```")%2 != 0 {
+				t.Fatalf("width=%d nlines=%d: chunk %d of %d has an unterminated fence: %q", width, nlines, i, len(got), c)
+			}
+		}
+	}
+
+	// The exact smallest reproduction of the regression this test guards
+	// against, checked directly first so a future break points here.
+	check(t, 8, 210)
+
+	for width := 8; width <= 80; width += 3 {
+		for nlines := 1; nlines <= 220; nlines += 7 {
+			check(t, width, nlines)
+		}
+	}
+}
+
 func TestChunkMessage_MultipleCompleteFencesAcrossChunksStayBalanced(t *testing.T) {
 	// Two SEPARATE, already-complete code blocks, each short enough on its
 	// own, but combined they exceed the limit and must split between the

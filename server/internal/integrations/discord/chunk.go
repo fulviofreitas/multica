@@ -109,9 +109,17 @@ func balanceFences(chunks []string) []string {
 				if !committed {
 					// The reopened fence closes with nothing in between —
 					// drop the buffered blank lines and this marker rather
-					// than emitting an empty fenced block.
+					// than emitting an empty fenced block. The inherited
+					// fence's debt is now settled either way, so committed
+					// must flip to true here too: leaving it false would
+					// make the NEXT line re-enter the "commit a reopen"
+					// path in the default case below with a stale (already
+					// cleared) lang, manufacturing a bogus lone "```" right
+					// before ordinary prose and leaving a later fence in
+					// this same chunk unterminated.
 					pending = nil
 					lang = ""
+					committed = true
 					continue
 				}
 				lang = ""
