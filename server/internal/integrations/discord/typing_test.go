@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +73,17 @@ func newTypingTestServer(t *testing.T, status int) (*httptest.Server, *requestLo
 // instead of relying on production-sized durations.
 func newTestNotifier(base string, refresh, maxLifetime time.Duration) *discordTypingNotifier {
 	n := NewDiscordTypingNotifier(nil, base, &http.Client{Timeout: time.Second}, nil)
+	n.refreshInterval = refresh
+	n.maxLifetime = maxLifetime
+	return n
+}
+
+// newTestNotifierWithLogger is newTestNotifier plus an injected logger, for
+// tests that need to capture what postTyping logs rather than only what it
+// POSTs. newCapturingLogger (connect_test.go) is the logger this is meant to
+// be paired with.
+func newTestNotifierWithLogger(base string, refresh, maxLifetime time.Duration, logger *slog.Logger) *discordTypingNotifier {
+	n := NewDiscordTypingNotifier(nil, base, &http.Client{Timeout: time.Second}, logger)
 	n.refreshInterval = refresh
 	n.maxLifetime = maxLifetime
 	return n
@@ -470,5 +483,76 @@ func TestDiscordTypingRestartReplacesStaleLoop(t *testing.T) {
 
 	if !waitFor(t, time.Second, func() bool { return log.count() >= 2 }) {
 		t.Fatalf("expected the new loop to keep posting, got %d", log.count())
+	}
+}
+
+// TestDiscordTypingSuccessfulRefreshLogsPositiveSignal is the gap this task
+// exists to close: before postTyping's Debug "refresh posted" line, a
+// successful typing POST was completely silent — postTyping only ever
+// logged failures — so a live-Gateway validation run had no way to tell
+// "the refresh fired" from "nothing happened at all" apart from watching
+// Discord's UI directly. This asserts the positive signal exists, is
+// distinguishable from the failure line, and never leaks the bot token.
+func TestDiscordTypingSuccessfulRefreshLogsPositiveSignal(t *testing.T) {
+	srv, _ := newTypingTestServer(t, http.StatusNoContent)
+	logger, buf := newCapturingLogger(slog.LevelDebug)
+	n := newTestNotifierWithLogger(srv.URL, time.Hour, time.Hour, logger)
+	sessionID := pgtype.UUID{Bytes: [16]byte{30}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-success"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	got := buf.String()
+	if !strings.Contains(got, "discord typing: refresh posted") {
+		t.Fatalf("expected a \"refresh posted\" log line for a successful POST, got: %s", got)
+	}
+	if strings.Contains(got, "non-2xx") || strings.Contains(got, "failed") {
+		t.Errorf("a successful POST must not also log a failure line: %s", got)
+	}
+	if strings.Contains(got, "bot-token-123") {
+		t.Errorf("captured log contains the bot token, want it never logged: %s", got)
+	}
+	if !strings.Contains(got, "chan-success") {
+		t.Errorf("expected the channel id in the refresh-posted line for correlation, got: %s", got)
+	}
+}
+
+// TestDiscordTypingFailedRefreshDoesNotLogSuccessSignal is the complement:
+// the two outcomes (successful refresh vs. failed refresh) must be
+// distinguishable purely by which line appears, since both are otherwise
+// silent to anything but the log.
+func TestDiscordTypingFailedRefreshDoesNotLogSuccessSignal(t *testing.T) {
+	srv, _ := newTypingTestServer(t, http.StatusInternalServerError)
+	logger, buf := newCapturingLogger(slog.LevelDebug)
+	n := newTestNotifierWithLogger(srv.URL, time.Hour, time.Hour, logger)
+	sessionID := pgtype.UUID{Bytes: [16]byte{31}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-fail"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	got := buf.String()
+	if !strings.Contains(got, "discord typing: non-2xx response") {
+		t.Fatalf("expected the existing non-2xx failure line, got: %s", got)
+	}
+	if strings.Contains(got, "refresh posted") {
+		t.Errorf("a failed POST must not also log the success signal: %s", got)
+	}
+}
+
+// TestDiscordTypingRefreshPostedIsDebugNotWarnOrInfo guards the log-level
+// choice itself: this line fires every discordTypingRefreshInterval for
+// every in-flight run, so it must stay below the level a production
+// deployment normally captures, unlike the existing failure lines (Warn).
+func TestDiscordTypingRefreshPostedIsDebugNotWarnOrInfo(t *testing.T) {
+	srv, _ := newTypingTestServer(t, http.StatusNoContent)
+	logger, buf := newCapturingLogger(slog.LevelInfo) // production-typical level
+	n := newTestNotifierWithLogger(srv.URL, time.Hour, time.Hour, logger)
+	sessionID := pgtype.UUID{Bytes: [16]byte{32}, Valid: true}
+
+	n.OnIngested(context.Background(), testInstallation(newTestConfig(t)), testInboundMessage("chan-quiet"), sessionID)
+	t.Cleanup(func() { n.OnSettled(context.Background(), sessionID) })
+
+	if got := buf.String(); strings.Contains(got, "refresh posted") {
+		t.Errorf("refresh-posted line was emitted at Info level, want Debug (would flood production logs at 1/8s per in-flight run): %s", got)
 	}
 }

@@ -114,8 +114,30 @@ func (c *discordChannel) connect(ctx context.Context) error {
 					c.onMessageCreate(ctx, *evt.MessageCreate)
 				}
 			case EventUnhandled:
-				// Expected and frequent (Discord sends many event types
-				// this integration does not act on yet); never an error.
+				if evt.EventName == "RESUMED" {
+					// Discord's RESUMED dispatch is the direct confirmation
+					// that THIS connection's opcode 6 RESUME (resume.go)
+					// succeeded: session continuity was preserved instead of
+					// falling back to a fresh IDENTIFY, which instead
+					// produces the EventReady branch's "session ready" line
+					// above. Before this line, a successful RESUME was
+					// completely unobservable — the only prior signal was
+					// the absence of a "disconnected, will attempt resume"
+					// follow-up, which proves nothing (see this package's
+					// remediation notes: two live disconnects were each
+					// followed by "session ready", which only ever fires on
+					// a fresh IDENTIFY, so it was impossible to tell from
+					// logs alone whether RESUME was even attempted).
+					// "RESUMED" is not decoded into its own DispatchEventKind
+					// by identify.go (out of this task's file scope), so it
+					// is recognized here by its raw event name instead.
+					log.Info("discord gateway: session resumed",
+						"installation_id", idStr,
+					)
+				}
+				// Otherwise expected and frequent (Discord sends many event
+				// types this integration does not act on yet); never an
+				// error.
 			}
 		},
 		func(eventName string, decodeErr error) {
@@ -167,11 +189,28 @@ func (c *discordChannel) connect(ctx context.Context) error {
 		if sessionEntry != nil {
 			c.resumeCache.Clear(c.installationID, sessionEntry)
 		}
-		log.Warn("discord gateway: disconnected, fresh identify required",
-			"installation_id", idStr,
-			"close_code", decision.CloseCodeName,
-			"err", runErr.Error(),
-		)
+		if initialEntry != nil {
+			// dial() only returns a non-nil initialEntry when THIS
+			// connection attempted RESUME (see dial's doc comment), so
+			// landing here means that attempt was rejected — the answer to
+			// the other half of the previously-unobservable "does resume
+			// ever actually work?" question (see the RESUMED branch above).
+			// A generic "disconnected, fresh identify required" line would
+			// not distinguish this from a fresh-IDENTIFY session going bad
+			// on its own (e.g. an invalid_seq close with no resume attempt
+			// in this cycle at all).
+			log.Warn("discord gateway: resume rejected, fresh identify required",
+				"installation_id", idStr,
+				"close_code", decision.CloseCodeName,
+				"err", runErr.Error(),
+			)
+		} else {
+			log.Warn("discord gateway: disconnected, fresh identify required",
+				"installation_id", idStr,
+				"close_code", decision.CloseCodeName,
+				"err", runErr.Error(),
+			)
+		}
 	default: // ActionResume
 		// Leave the cache intact: the next attempt should retry RESUME
 		// against the same session.

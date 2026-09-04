@@ -6,9 +6,12 @@ package discord
 // real network access to Discord happens anywhere in this file.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +33,53 @@ func newTestChannel(t *testing.T, gatewayURL string) *discordChannel {
 		gatewayURL:     gatewayURL,
 		installationID: testInstallationID(t, 1),
 	}
+}
+
+// newTestChannelWithLogger is newTestChannel plus an injected logger, for
+// tests that need to assert on what connect() logs (see newCapturingLogger)
+// rather than only on the frames it exchanges or the cache state it leaves
+// behind.
+func newTestChannelWithLogger(t *testing.T, gatewayURL string, logger *slog.Logger) *discordChannel {
+	t.Helper()
+	c := newTestChannel(t, gatewayURL)
+	c.logger = logger
+	return c
+}
+
+// syncBuffer is a mutex-guarded bytes.Buffer. connect() logs from the
+// goroutine running gc.Run's read loop while a test's own goroutine polls
+// the buffer's contents (see waitFor) — a plain bytes.Buffer is not safe for
+// that concurrent Write/String access, and -race catches it immediately.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// newCapturingLogger builds an *slog.Logger backed by a text handler that
+// writes to an in-memory, concurrency-safe buffer, so tests can assert on
+// the exact log lines a code path emits instead of inferring success from
+// side effects alone. Reused by typing_test.go — same package, one
+// definition (mirrors how fakeClock/testInstallationID in resume_test.go
+// are shared across this package's test files). level filters what the
+// handler emits, the same way a production logger's configured level would
+// suppress Debug output; a test asserting on a Debug-only line must pass
+// slog.LevelDebug explicitly.
+func newCapturingLogger(level slog.Level) (*slog.Logger, *syncBuffer) {
+	buf := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: level}))
+	return logger, buf
 }
 
 // readFrame reads and decodes one Gateway frame the client sent.
@@ -124,7 +174,8 @@ func TestConnect_HappyPath_ReadyMessageThenCtxCancelReturnsNil(t *testing.T) {
 		answerHeartbeats(conn)
 	})
 
-	c := newTestChannel(t, wsURL(srv.URL))
+	logger, buf := newCapturingLogger(slog.LevelInfo)
+	c := newTestChannelWithLogger(t, wsURL(srv.URL), logger)
 	msgCh := make(chan MessageCreateEvent, 1)
 	c.onMessageCreate = func(_ context.Context, evt MessageCreateEvent) {
 		msgCh <- evt
@@ -146,6 +197,21 @@ func TestConnect_HappyPath_ReadyMessageThenCtxCancelReturnsNil(t *testing.T) {
 	entry, ok := c.resumeCache.Load(c.installationID)
 	if !ok || entry.SessionID != "sess-happy" {
 		t.Fatalf("resumeCache.Load = (%+v, %v), want the stored READY session", entry, ok)
+	}
+
+	// A fresh IDENTIFY's READY must log "session ready" and must NOT log
+	// "session resumed" (that line is reserved for an actual RESUMED
+	// dispatch — see TestConnect_ResumeSucceeds_LogsSessionResumed) — the two
+	// outcomes must be distinguishable from the log alone.
+	got := buf.String()
+	if !strings.Contains(got, "discord gateway: session ready") {
+		t.Fatalf("expected a \"session ready\" log line after READY, got: %s", got)
+	}
+	if strings.Contains(got, "session resumed") {
+		t.Errorf("a fresh-IDENTIFY READY must not also log \"session resumed\": %s", got)
+	}
+	if strings.Contains(got, "test-token") {
+		t.Errorf("captured log contains the bot token, want it never logged: %s", got)
 	}
 
 	cancel()
@@ -271,7 +337,8 @@ func TestConnect_FreshIdentifyDecision_ClearsCache(t *testing.T) {
 		_ = conn.WriteMessage(websocket.TextMessage, frame)
 	})
 
-	c := newTestChannel(t, wsURL(srv.URL))
+	logger, buf := newCapturingLogger(slog.LevelInfo)
+	c := newTestChannelWithLogger(t, wsURL(srv.URL), logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -282,6 +349,19 @@ func TestConnect_FreshIdentifyDecision_ClearsCache(t *testing.T) {
 	}
 	if _, ok := c.resumeCache.Load(c.installationID); ok {
 		t.Error("resumeCache entry was kept, want it cleared for an ActionFreshIdentify outcome")
+	}
+
+	// This connection dialed via a fresh IDENTIFY (no cached entry existed
+	// when dial() ran), so its own session going invalid must log the
+	// generic line, NOT the resume-specific one — see
+	// TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated for
+	// the case dial() DID attempt RESUME.
+	got := buf.String()
+	if !strings.Contains(got, "discord gateway: disconnected, fresh identify required") {
+		t.Fatalf("expected the generic fresh-identify line, got: %s", got)
+	}
+	if strings.Contains(got, "resume rejected") {
+		t.Errorf("no RESUME was attempted this cycle, must not log \"resume rejected\": %s", got)
 	}
 }
 
@@ -411,5 +491,105 @@ func TestConnect_WithCachedEntry_DialsResumeURLAndSendsOpResume(t *testing.T) {
 	case <-errCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("connect did not return after ctx cancellation")
+	}
+}
+
+// ---- resume outcome observability ----
+//
+// The three tests below are this task's core deliverable: before them,
+// nothing in this package's test suite ever inspected a captured log line,
+// so a successful RESUME, a fresh-IDENTIFY session, and a rejected RESUME
+// falling back to fresh IDENTIFY were equally "passing" from a test's point
+// of view even though only the log output can tell a human (or a live
+// validation run) which one actually happened. resume_test.go and
+// reconnect_test.go own resume.go/reconnect.go's own tests, but neither
+// file holds a logger — connect.go is the only place in this package's
+// scope that logs a reconnect outcome, so that is where these live.
+
+// TestConnect_ResumeSucceeds_LogsSessionResumed is the positive case this
+// task exists to make observable: a RESUME (opcode 6) that Discord actually
+// honors (a RESUMED dispatch, no READY) must log a distinct "session
+// resumed" line, never the fresh-IDENTIFY "session ready" line.
+func TestConnect_ResumeSucceeds_LogsSessionResumed(t *testing.T) {
+	srv := newFakeGateway(t, func(conn *websocket.Conn) {
+		sendHello(t, conn, 5000)
+		readOpFrame(t, conn, opResume)
+		// A RESUMED dispatch carries an empty payload; only "t" matters here.
+		sendDispatch(t, conn, 100, "RESUMED", map[string]any{})
+		answerHeartbeats(conn)
+	})
+
+	logger, buf := newCapturingLogger(slog.LevelInfo)
+	// gatewayURL deliberately unreachable: a resumable cache entry must make
+	// connect dial ResumeGatewayURL instead (same setup as
+	// TestConnect_WithCachedEntry_DialsResumeURLAndSendsOpResume).
+	c := newTestChannelWithLogger(t, "ws://127.0.0.1:0", logger)
+	c.resumeCache.Store(c.installationID, "sess-cached", wsURL(srv.URL), 42)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.connect(ctx) }()
+
+	if !waitFor(t, 2*time.Second, func() bool {
+		return strings.Contains(buf.String(), "discord gateway: session resumed")
+	}) {
+		t.Fatalf("expected a \"session resumed\" log line after RESUMED, got: %s", buf.String())
+	}
+	got := buf.String()
+	if strings.Contains(got, "session ready") {
+		t.Errorf("a successful RESUME must not also log \"session ready\" (that's the fresh-IDENTIFY signal): %s", got)
+	}
+	if strings.Contains(got, "test-token") || strings.Contains(got, "sess-cached") {
+		t.Errorf("captured log contains a credential or the Discord session id, want neither ever logged: %s", got)
+	}
+
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connect did not return after ctx cancellation")
+	}
+}
+
+// TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated covers
+// the other previously-unobservable outcome: dial() attempted RESUME, and
+// Discord answered with Invalid Session (resumable=false), forcing a fresh
+// IDENTIFY next attempt. This must log a line distinguishable from a fresh-
+// IDENTIFY session invalidating on its own (no resume ever attempted this
+// cycle — see TestConnect_FreshIdentifyDecision_ClearsCache's log
+// assertions), so an operator/live-test can tell "resume was tried and
+// Discord said no" from "the fresh session went bad".
+func TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated(t *testing.T) {
+	srv := newFakeGateway(t, func(conn *websocket.Conn) {
+		sendHello(t, conn, 5000)
+		readOpFrame(t, conn, opResume)
+		time.Sleep(20 * time.Millisecond)
+		// opInvalidSession with resumable=false: Discord rejects the RESUME.
+		d, _ := json.Marshal(false)
+		frame, _ := json.Marshal(gatewayFrame{Op: opInvalidSession, D: d})
+		_ = conn.WriteMessage(websocket.TextMessage, frame)
+	})
+
+	logger, buf := newCapturingLogger(slog.LevelInfo)
+	c := newTestChannelWithLogger(t, "ws://127.0.0.1:0", logger)
+	c.resumeCache.Store(c.installationID, "sess-cached", wsURL(srv.URL), 42)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := c.connect(ctx)
+	if err == nil {
+		t.Fatal("connect() = nil, want an error (invalid_session, not resumable)")
+	}
+	if _, ok := c.resumeCache.Load(c.installationID); ok {
+		t.Error("resumeCache entry was kept, want it cleared for an ActionFreshIdentify outcome")
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "discord gateway: resume rejected, fresh identify required") {
+		t.Fatalf("expected the resume-attempted fresh-identify line, got: %s", got)
+	}
+	if strings.Contains(got, "test-token") || strings.Contains(got, "sess-cached") {
+		t.Errorf("captured log contains a credential or the Discord session id, want neither ever logged: %s", got)
 	}
 }

@@ -1,3 +1,12 @@
+// reconnect_test.go exercises the reconnect POLICY layer (reconnect.go,
+// subtask 2.5): close-code classification and IDENTIFY-budget spacing.
+// reconnect.go itself holds no logger — it only classifies and decides, it
+// never logs — so the log-observability tests proving a rejected-RESUME
+// fresh-identify decision is distinguishable in logs from a fresh-IDENTIFY
+// session invalidating on its own live in connect_test.go instead, where
+// the decision this file computes is actually logged. See
+// TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated and
+// TestConnect_FreshIdentifyDecision_ClearsCache.
 package discord
 
 import (

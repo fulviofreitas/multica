@@ -155,7 +155,7 @@ func (n *discordTypingNotifier) OnIngested(ctx context.Context, inst engine.Reso
 	n.loops[sessionID] = loop
 	n.mu.Unlock()
 
-	n.postTyping(loopCtx, creds.BotToken, channelID)
+	n.postTyping(loopCtx, sessionID, creds.BotToken, channelID)
 	go n.runLoop(loopCtx, sessionID, loop, creds.BotToken, channelID)
 }
 
@@ -250,7 +250,7 @@ func (n *discordTypingNotifier) runLoop(ctx context.Context, sessionID pgtype.UU
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.postTyping(ctx, token, channelID)
+			n.postTyping(ctx, sessionID, token, channelID)
 		}
 	}
 }
@@ -272,7 +272,13 @@ func (n *discordTypingNotifier) clearLoop(sessionID pgtype.UUID, loop *discordTy
 // (install.go). Every failure (build, transport, non-2xx) is logged and
 // swallowed — never returned, never panics — since a typing indicator must
 // never block or fail message ingestion.
-func (n *discordTypingNotifier) postTyping(ctx context.Context, token, channelID string) {
+//
+// A successful POST also logs, at Debug — see the "refresh posted" line
+// below for why. sessionID is Multica's own internal chat-session id (the
+// map key runLoop/OnIngested already use), not any Discord credential or
+// Gateway session identifier, so logging it carries no privacy concern; it
+// exists purely to correlate this POST with the loop that issued it.
+func (n *discordTypingNotifier) postTyping(ctx context.Context, sessionID pgtype.UUID, token, channelID string) {
 	reqCtx, cancel := context.WithTimeout(ctx, discordTypingPostTimeout)
 	defer cancel()
 
@@ -295,5 +301,20 @@ func (n *discordTypingNotifier) postTyping(ctx context.Context, token, channelID
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		n.logger.WarnContext(ctx, "discord typing: non-2xx response",
 			"status", resp.StatusCode, "body", strings.TrimSpace(string(body)))
+		return
 	}
+
+	// Before this line, a successful refresh was completely silent: only
+	// postTyping's failure paths logged anything, so an all-quiet log window
+	// was indistinguishable from "every refresh actually fired" (see this
+	// file's package doc and the live-validation finding it cites). Debug,
+	// not Info/Warn: this fires every discordTypingRefreshInterval (8s) for
+	// every in-flight run, which would flood production logs at a louder
+	// level, but a live timed re-test can turn Debug on for one installation
+	// and finally see the positive signal it needs to correlate against.
+	n.logger.DebugContext(ctx, "discord typing: refresh posted",
+		"session_id", util.UUIDToString(sessionID),
+		"channel_id", channelID,
+		"status", resp.StatusCode,
+	)
 }

@@ -4,6 +4,14 @@ package discord
 // (resume.go, subtask 2.4). Cache tests are pure (no network); the RESUME
 // frame-content and sequence-priming tests reuse the in-process fake
 // Gateway pattern from gateway_test.go.
+//
+// resume.go itself holds no logger, so the log-observability tests for a
+// successful RESUME (a RESUMED dispatch) and a rejected RESUME falling back
+// to fresh IDENTIFY live in connect_test.go instead — see
+// TestConnect_ResumeSucceeds_LogsSessionResumed and
+// TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated,
+// connect.go being the only place in this package that actually logs a
+// reconnect outcome.
 
 import (
 	"context"
