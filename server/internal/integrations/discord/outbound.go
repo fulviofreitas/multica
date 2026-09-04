@@ -319,11 +319,18 @@ func (o *Outbound) pushPartial(ctx context.Context, target *replyTarget, st *str
 		st.mu.Unlock()
 	}()
 
-	text := snapshot
-	if chunks := chunkMessage(formatDiscordMarkdown(text), maxMessageChars); len(chunks) > 0 {
+	// text stays "" when the accumulated snapshot so far is blank/
+	// whitespace-only (formats down to nothing chunkMessage will emit) —
+	// there is nothing visible to show yet. Falling back to the raw,
+	// unfiltered formatDiscordMarkdown(snapshot) here (as this used to do)
+	// would hand Discord exactly the whitespace-only body this whole fix
+	// exists to prevent; leaving text == "" instead lets both branches
+	// below make the correct call: the first-flush branch's
+	// firstNonEmptyDiscord falls back to the "…" placeholder, and the
+	// edit branch skips the PATCH outright.
+	text := ""
+	if chunks := chunkMessage(formatDiscordMarkdown(snapshot), maxMessageChars); len(chunks) > 0 {
 		text = chunks[0]
-	} else {
-		text = formatDiscordMarkdown(text)
 	}
 
 	api := newDiscordAPI(o.apiBase, target.botToken, o.client)
@@ -341,6 +348,17 @@ func (o *Outbound) pushPartial(ctx context.Context, target *replyTarget, st *str
 		st.messageID = m.ID
 		st.lastEdit = o.now()
 		st.mu.Unlock()
+		return
+	}
+
+	if text == "" {
+		// The stream has produced nothing visible since the placeholder
+		// was posted (or momentarily regressed to blank) — skip the PATCH
+		// rather than send Discord a body it will reject with 400. The
+		// placeholder already on Discord (the "…" placeholder or the last
+		// non-blank snapshot) stays visible, exactly as if this throttled
+		// tick had been skipped entirely; the next partial (or the
+		// definitive EventChatDone send) will supersede it.
 		return
 	}
 
@@ -419,7 +437,19 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 	st := o.takeStream(key)
 	chunks := chunkMessage(formatDiscordMarkdown(content), maxMessageChars)
 	if len(chunks) == 0 {
-		chunks = []string{""}
+		// content was non-empty (handleChatDone's own content == "" check
+		// above already filtered that case), but formatDiscordMarkdown +
+		// chunkMessage reduced it to nothing chunkMessage will emit — e.g.
+		// a whitespace-only agent turn, or Discord markdown formatting
+		// stripping it down to blank. Treat this exactly like the
+		// content == "" branch above: nothing to deliver, so just drop the
+		// stream state and return. Do not RecordReplyDelivered("failed") —
+		// nothing was attempted, so that would misreport a turn that
+		// legitimately had nothing to say as a broken send and skew
+		// alerting off a false signal — and do not RecordReplyDelivered
+		// ("delivered") either, since no message was actually posted.
+		o.clearStream(key)
+		return
 	}
 
 	snd := newSender(newDiscordAPI(o.apiBase, target.botToken, o.client), o.logger)

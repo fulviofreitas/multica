@@ -12,6 +12,16 @@ import "strings"
 // of blank lines never reaches Discord's API, which rejects an empty
 // message body outright.
 //
+// This "no blank chunk" invariant holds on EVERY return path, including the
+// short-circuit below for text that already fits in one chunk: a caller
+// that hands chunkMessage a whitespace-only string (or maxChars <= 0, which
+// disables splitting but must not disable the emptiness guarantee) gets nil
+// back, not a single chunk containing nothing Discord would accept. Callers
+// must treat a nil/empty result as "nothing to deliver", not as license to
+// synthesize their own empty chunk to send — see outbound.go's finalize/
+// pushPartial and sender.go's Send for how each caller's shape handles
+// that.
+//
 // The unit-counting and newline-preference logic mirrors
 // telegram/sender.go's chunkMessage: Discord's stated 2000-character limit,
 // like Telegram's, is counted in UTF-16 code units, so a message heavy with
@@ -21,6 +31,9 @@ import "strings"
 // fence-balancing markers this function adds after the initial cut.
 func chunkMessage(text string, maxChars int) []string {
 	if maxChars <= 0 || utf16Units(text) <= maxChars {
+		if strings.TrimSpace(text) == "" {
+			return nil
+		}
 		return []string{text}
 	}
 

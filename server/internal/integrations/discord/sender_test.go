@@ -247,6 +247,60 @@ func TestSend_NoGatewayConnectionRequired(t *testing.T) {
 	}
 }
 
+// TestSender_Send_WhitespaceOnlyUnderBudgetTextDeliversNothing covers Gap 2
+// at the Send call site: a short whitespace-only body takes chunkMessage's
+// early-return path (it fits under maxMessageChars in one piece). Before
+// the chunk.go fix, that path returned the raw text unfiltered, and Send
+// posted it to Discord verbatim — a guaranteed 400. Send must now treat
+// "nothing deliverable" as a legitimate empty success, not synthesize an
+// empty chunk to send (the len(chunks) == 0 fallback this pins the removal
+// of).
+func TestSender_Send_WhitespaceOnlyUnderBudgetTextDeliversNothing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not call Discord for a whitespace-only body")
+	}))
+	defer ts.Close()
+
+	s := newTestSender(ts)
+	result, err := s.Send(context.Background(), channel.OutboundMessage{
+		ChatID: "chan-1",
+		Text:   "\n\n\n",
+	})
+	if err != nil {
+		t.Fatalf("Send returned an error for a legitimate empty reply: %v", err)
+	}
+	if result.MessageID != "" || len(result.MessageIDs) != 0 {
+		t.Fatalf("result = %#v, want a zero-value SendResult (nothing was delivered)", result)
+	}
+}
+
+// TestSender_Send_AllBlankOverBudgetTextDeliversNothing covers Gap 1 at the
+// Send call site: text long enough to force chunkMessage's splitting loop,
+// entirely blank, so every raw split piece is empty/whitespace-only and
+// dropBlankChunks removes them all, driving chunkMessage's result to
+// len == 0. Before the call-site fix, Send's own
+// `if len(chunks) == 0 { chunks = []string{""} }` fallback resurrected a
+// single empty chunk and posted it — the bug simply moved from chunkMessage
+// into the caller that was supposed to consume its guarantee.
+func TestSender_Send_AllBlankOverBudgetTextDeliversNothing(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("must not call Discord for an all-blank over-budget body")
+	}))
+	defer ts.Close()
+
+	s := newTestSender(ts)
+	result, err := s.Send(context.Background(), channel.OutboundMessage{
+		ChatID: "chan-1",
+		Text:   strings.Repeat("\n", 3000),
+	})
+	if err != nil {
+		t.Fatalf("Send returned an error for a legitimate empty reply: %v", err)
+	}
+	if result.MessageID != "" || len(result.MessageIDs) != 0 {
+		t.Fatalf("result = %#v, want a zero-value SendResult (nothing was delivered)", result)
+	}
+}
+
 func TestSender_Send_MissingChannelID(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("must not call Discord when the destination channel id is missing")

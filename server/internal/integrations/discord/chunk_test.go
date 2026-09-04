@@ -15,6 +15,34 @@ func TestChunkMessage_UnderLimitSingleChunk(t *testing.T) {
 	}
 }
 
+// TestChunkMessage_WhitespaceOnlyUnderBudgetReturnsNoChunks pins the T12
+// follow-up fix: a whitespace-only body short enough to take the
+// early-return path (it already fits within maxChars, so the splitting
+// loop and dropBlankChunks never run) must not come back as a single
+// blank chunk. Before this fix, the early return handed back
+// []string{text} unconditionally, so callers building on the (previously
+// true) assumption that a non-empty chunkMessage result never contains a
+// blank chunk would still get one here.
+func TestChunkMessage_WhitespaceOnlyUnderBudgetReturnsNoChunks(t *testing.T) {
+	for _, in := range []string{"", "   ", "\n\n\n", "\t \n"} {
+		got := chunkMessage(in, maxMessageChars)
+		if len(got) != 0 {
+			t.Fatalf("chunkMessage(%q) = %#v, want no chunks", in, got)
+		}
+	}
+}
+
+// TestChunkMessage_AllBlankOverBudgetReturnsNoChunks is the splitting-loop
+// counterpart: text long enough to force chunkMessage's window-based split,
+// entirely blank, so every raw piece dropBlankChunks removes leaves the
+// result empty rather than a slice of blank chunks.
+func TestChunkMessage_AllBlankOverBudgetReturnsNoChunks(t *testing.T) {
+	got := chunkMessage(strings.Repeat("\n", 3000), maxMessageChars)
+	if len(got) != 0 {
+		t.Fatalf("chunkMessage(all-blank, over budget) = %#v, want no chunks", got)
+	}
+}
+
 func TestChunkMessage_OverLimitSplitsOnNewline(t *testing.T) {
 	// Two paragraphs, each individually short, separated by a newline. The
 	// combined text exceeds a small limit and must split AT the newline

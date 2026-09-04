@@ -202,6 +202,17 @@ func newSender(api *discordAPI, logger *slog.Logger) *sender {
 // retry. Only the first chunk carries out.ReplyTo as a quote reference. The
 // returned SendResult.MessageIDs holds every posted chunk's id in order;
 // MessageID holds the LAST one, mirroring telegram.sender.Send.
+//
+// If out.Text is empty or formats/chunks down to nothing chunkMessage will
+// emit (whitespace-only text), Send posts nothing and returns a zero-value
+// SendResult with a nil error — mirroring telegram.sender.Send, whose
+// equivalent for-range over chunkMessage's result already does exactly this
+// (an empty chunk slice means the loop body never runs). This is a
+// legitimate "delivered nothing" outcome, not a failure: there is no
+// destination-resolution or API problem to report, only an empty reply, so
+// synthesizing a placeholder chunk to send (as this used to do) would just
+// manufacture the empty Discord message body this whole path exists to
+// avoid.
 func (s *sender) Send(ctx context.Context, out channel.OutboundMessage) (channel.SendResult, error) {
 	if s.api == nil {
 		return channel.SendResult{}, errors.New("discord: api client not configured")
@@ -218,9 +229,6 @@ func (s *sender) Send(ctx context.Context, out channel.OutboundMessage) (channel
 	}
 
 	chunks := chunkMessage(formatDiscordMarkdown(out.Text), maxMessageChars)
-	if len(chunks) == 0 {
-		chunks = []string{""}
-	}
 
 	var ids []string
 	replyTo := out.ReplyTo

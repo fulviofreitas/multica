@@ -316,6 +316,44 @@ func TestOutbound_StreamPartials_PlaceholderPostedOnceEditsThrottled(t *testing.
 	}
 }
 
+// TestOutbound_StreamPartial_WhitespaceOnlySnapshotPostsPlaceholderNotBlankBody
+// covers Gap 2 at the pushPartial call site: the FIRST accumulated
+// streaming snapshot is whitespace-only (a plausible early state — the
+// agent's first emitted tokens are blank lines before real text starts).
+// Before the call-site fix, the "else" branch of pushPartial's chunking
+// check fell back to the raw, unfiltered formatDiscordMarkdown(text),
+// which firstNonEmptyDiscord treats as non-empty (it checks a != "", and a
+// whitespace-only string is != "") — so the placeholder POST carried a
+// whitespace-only body instead of falling back to streamPlaceholder.
+func TestOutbound_StreamPartial_WhitespaceOnlySnapshotPostsPlaceholderNotBlankBody(t *testing.T) {
+	srv, log := newOutboundTestServer(t, nil)
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 46)
+	taskID := dbidTestUUID(47)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-partial-whitespace",
+	})
+
+	o := newOutbound(t, srv.URL, q, nil)
+
+	o.handleTaskMessage(events.Event{TaskID: util.UUIDToString(taskID), Payload: protocol.TaskMessagePayload{
+		TaskID: util.UUIDToString(taskID), Type: "text", Content: "\n\n\n",
+	}})
+
+	posted := log.snapshot()
+	if len(posted) != 1 {
+		t.Fatalf("expected exactly 1 placeholder POST, got %d: %#v", len(posted), posted)
+	}
+	if got := posted[0].payload.Content; strings.TrimSpace(got) == "" {
+		t.Fatalf("placeholder body = %q, must never be empty/whitespace-only", got)
+	}
+	if got := posted[0].payload.Content; got != streamPlaceholder {
+		t.Fatalf("placeholder body = %q, want the stream placeholder %q for a whitespace-only snapshot", got, streamPlaceholder)
+	}
+}
+
 // ---- finalize (EventChatDone) ----
 
 func TestOutbound_Finalize_SingleChunk(t *testing.T) {
@@ -608,6 +646,105 @@ func TestOutbound_ChatDone_EmptyContentSkipsDelivery(t *testing.T) {
 	}
 	if metrics.generatedCount() != 0 {
 		t.Fatalf("generated count = %d, want 0 for empty content", metrics.generatedCount())
+	}
+}
+
+// TestOutbound_Finalize_WhitespaceOnlyContentSkipsDeliveryWithoutFailureMetric
+// covers Gap 2 from the T12 follow-up review at the finalize call site
+// itself, not just chunkMessage in isolation: content here is NOT the exact
+// "" the content == "" check above filters (chatDoneContent's own payload
+// content is a short run of blank lines), so handleChatDone's early return
+// does NOT fire and finalize's own chunkMessage call is what must catch it.
+// Before the call-site fix, chunkMessage's early-return path handed this
+// straight through as a single whitespace-only chunk, and finalize posted
+// it to Discord verbatim — a guaranteed 400.
+func TestOutbound_Finalize_WhitespaceOnlyContentSkipsDeliveryWithoutFailureMetric(t *testing.T) {
+	srv, log := newOutboundTestServer(t, nil)
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 40)
+	taskID := dbidTestUUID(41)
+	sessionID := dbidTestUUID(42)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-whitespace-under",
+	})
+
+	metrics := &recordingMetrics{}
+	o := newOutbound(t, srv.URL, q, metrics)
+	o.Start(context.Background())
+
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, "\n\n\n"),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	if got := log.snapshot(); len(got) != 0 {
+		t.Fatalf("expected no HTTP calls for whitespace-only content, got %d: %#v", len(got), got)
+	}
+	// content != "" here, so the turn WAS generated — RecordReplyGenerated
+	// fires before finalize's own blank check runs, and that is correct:
+	// the agent did produce a turn, only chunking discovered it carried
+	// nothing deliverable.
+	if metrics.generatedCount() != 1 {
+		t.Fatalf("generated count = %d, want 1", metrics.generatedCount())
+	}
+	if got := metrics.deliveredCount("discord:failed"); got != 0 {
+		t.Fatalf("delivered{failed} count = %d, want 0: nothing was attempted, so this must not be reported as a failure", got)
+	}
+	if got := metrics.deliveredCount("discord:delivered"); got != 0 {
+		t.Fatalf("delivered{delivered} count = %d, want 0: nothing was actually posted", got)
+	}
+}
+
+// TestOutbound_Finalize_AllBlankOverBudgetContentSkipsDeliveryWithoutFailureMetric
+// covers Gap 1 at the finalize call site: content long enough to force
+// chunkMessage's splitting loop, entirely blank, so every raw split piece
+// is empty/whitespace-only and dropBlankChunks removes them all — driving
+// chunkMessage's result to len == 0 exactly like the over-budget
+// reproduction in chunk_test.go. Before the call-site fix, finalize's own
+// `if len(chunks) == 0 { chunks = []string{""} }` fallback resurrected a
+// single empty chunk and posted it, regardless of how chunkMessage itself
+// behaved.
+func TestOutbound_Finalize_AllBlankOverBudgetContentSkipsDeliveryWithoutFailureMetric(t *testing.T) {
+	srv, log := newOutboundTestServer(t, nil)
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 43)
+	taskID := dbidTestUUID(44)
+	sessionID := dbidTestUUID(45)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-whitespace-over",
+	})
+
+	metrics := &recordingMetrics{}
+	o := newOutbound(t, srv.URL, q, metrics)
+	o.Start(context.Background())
+
+	blank := strings.Repeat("\n", 3000)
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, blank),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	if got := log.snapshot(); len(got) != 0 {
+		t.Fatalf("expected no HTTP calls for an all-blank over-budget reply, got %d: %#v", len(got), got)
+	}
+	if metrics.generatedCount() != 1 {
+		t.Fatalf("generated count = %d, want 1", metrics.generatedCount())
+	}
+	if got := metrics.deliveredCount("discord:failed"); got != 0 {
+		t.Fatalf("delivered{failed} count = %d, want 0: nothing was attempted, so this must not be reported as a failure", got)
+	}
+	if got := metrics.deliveredCount("discord:delivered"); got != 0 {
+		t.Fatalf("delivered{delivered} count = %d, want 0: nothing was actually posted", got)
 	}
 }
 
