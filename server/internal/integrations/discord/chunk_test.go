@@ -524,6 +524,100 @@ func TestChunkMessage_FencedBlockWithBlankRunFollowedByProseStaysBalancedAndLoss
 	}
 }
 
+func TestChunkMessage_LongBlankRunBetweenProseNeverEmitsEmptyChunk(t *testing.T) {
+	// Reproduces the confirmed production defect: a raw split window that
+	// lands entirely inside a long run of blank lines (no fence involved
+	// at all) collapses to "" via chunkMessage's TrimRight, and nothing
+	// downstream used to filter it out. Discord rejects an empty (or
+	// whitespace-only) message body with a 400, so this either fails
+	// delivery outright or silently drops a chunk from the middle of an
+	// otherwise successful multi-part reply.
+	in := "prose before.\n" + strings.Repeat("\n", 3000) + "prose after."
+
+	got := chunkMessage(in, maxMessageChars)
+	if len(got) < 2 {
+		t.Fatalf("expected the blank run to force multiple chunks, got %d: %#v", len(got), got)
+	}
+	for i, c := range got {
+		if strings.TrimSpace(c) == "" {
+			t.Fatalf("chunk %d is empty or whitespace-only: %q (all chunks: %#v)", i, c, got)
+		}
+	}
+}
+
+func TestChunkMessage_LongBlankRunBetweenProsePreservesNonBlankContent(t *testing.T) {
+	// Companion to the regression test above: dropping the blank-only
+	// middle chunk must not touch either surrounding piece of real prose.
+	before := "prose before."
+	after := "prose after."
+	in := before + "\n" + strings.Repeat("\n", 3000) + after
+
+	got := chunkMessage(in, maxMessageChars)
+
+	joined := strings.Join(got, "")
+	if !strings.Contains(joined, before) {
+		t.Fatalf("lost leading prose: joined chunks = %q, want to contain %q", joined, before)
+	}
+	if !strings.Contains(joined, after) {
+		t.Fatalf("lost trailing prose: joined chunks = %q, want to contain %q", joined, after)
+	}
+	if got[0] != before {
+		t.Fatalf("first chunk = %q, want unaltered %q", got[0], before)
+	}
+	if last := got[len(got)-1]; last != after {
+		t.Fatalf("last chunk = %q, want unaltered %q", last, after)
+	}
+}
+
+func TestChunkMessage_BlankRunInsideFenceNeverEmitsEmptyChunkAndStaysBalanced(t *testing.T) {
+	// The fenced counterpart of the two tests above: a long blank-line run
+	// INSIDE a fenced code block, long enough that a raw split window can
+	// land entirely inside it. Unlike the non-fenced case, that blank run
+	// is real code content (see balanceFences's doc comment, exit path 3)
+	// and must survive wrapped in its own reopened/closed fence pair, not
+	// be dropped by dropBlankChunks — which only removes chunks that
+	// balanceFences left genuinely blank, i.e. ones that never touched a
+	// fence.
+	var body strings.Builder
+	body.WriteString("code line one\n")
+	body.WriteString("code line two\n")
+	body.WriteString(strings.Repeat("\n", 3000))
+	body.WriteString("code line three\n")
+	body.WriteString("code line four\n")
+	in := "```python\n" + body.String() + "```\nTrailing prose after the block."
+
+	got := chunkMessage(in, maxMessageChars)
+	if len(got) < 2 {
+		t.Fatalf("expected the blank run to force multiple chunks, got %d", len(got))
+	}
+
+	var nonFenceWords []string
+	for i, c := range got {
+		if strings.TrimSpace(c) == "" {
+			t.Fatalf("chunk %d is empty or whitespace-only: %q (all chunks: %#v)", i, c, got)
+		}
+		if strings.Count(c, "```")%2 != 0 {
+			t.Fatalf("chunk %d has an unterminated fence: %q", i, c)
+		}
+		for _, l := range strings.Split(c, "\n") {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+				continue
+			}
+			nonFenceWords = append(nonFenceWords, strings.Fields(l)...)
+		}
+	}
+
+	want := []string{
+		"code", "line", "one", "code", "line", "two",
+		"code", "line", "three", "code", "line", "four",
+		"Trailing", "prose", "after", "the", "block.",
+	}
+	if !slices.Equal(nonFenceWords, want) {
+		t.Fatalf("non-blank content preservation failed\ngot:  %#v\nwant: %#v", nonFenceWords, want)
+	}
+}
+
 func TestChunkMessage_MultipleCompleteFencesAcrossChunksStayBalanced(t *testing.T) {
 	// Two SEPARATE, already-complete code blocks, each short enough on its
 	// own, but combined they exceed the limit and must split between the

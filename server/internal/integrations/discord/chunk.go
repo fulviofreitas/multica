@@ -6,7 +6,11 @@ import "strings"
 // units, on rune boundaries only, then re-balances fenced code blocks across
 // the resulting pieces so a split that falls inside a ``` fence never leaves
 // an unterminated block in one chunk (which would render the REST of the
-// conversation as code in Discord's client — see balanceFences).
+// conversation as code in Discord's client — see balanceFences), and finally
+// drops any chunk that is still empty or whitespace-only (see
+// dropBlankChunks) so a raw split window that landed entirely inside a run
+// of blank lines never reaches Discord's API, which rejects an empty
+// message body outright.
 //
 // The unit-counting and newline-preference logic mirrors
 // telegram/sender.go's chunkMessage: Discord's stated 2000-character limit,
@@ -57,7 +61,46 @@ func chunkMessage(text string, maxChars int) []string {
 		chunks = append(chunks, strings.TrimRight(string(runes[:end]), "\n"))
 		runes = runes[end:]
 	}
-	return balanceFences(chunks)
+	return dropBlankChunks(balanceFences(chunks))
+}
+
+// dropBlankChunks removes any chunk that is empty or whitespace-only after
+// fence balancing. Discord's REST API rejects such a body with a 400
+// ("Cannot send an empty message"), so without this pass a raw split window
+// that lands entirely inside a run of blank lines — chunkMessage's
+// TrimRight collapses that window to "" — reaches the wire as a literal
+// empty chunk and fails delivery, or silently vanishes from the middle of
+// an otherwise successful multi-part reply.
+//
+// This runs AFTER balanceFences, not as a pre-filter on the raw split
+// pieces, and that ordering is load-bearing: balanceFences's own doc
+// comment (exit path 3 in particular) explains why a blank-line run carved
+// out of the MIDDLE of a fenced code block is real source content that
+// must survive as its own chunk, wrapped in a freshly reopened/closed
+// fence pair. Filtering raw pieces before balanceFences ever saw them would
+// delete those blank lines from the fenced block's reconstructed content —
+// resurrecting the content-loss defect balanceFences was fixed to prevent.
+//
+// Filtering the balanceFences OUTPUT instead is safe because of how that
+// function resolves a carried-over or freshly opened fence: every exit
+// path that keeps a fence's content writes at least the ```lang reopen
+// marker (and, for an all-blank inherited chunk, the buffered blank lines
+// themselves) before the chunk is emitted, so a fenced blank run always
+// comes out non-blank — it has fence markers. A chunk that's still
+// whitespace-only by the time it reaches here therefore never touched a
+// fence at all; it is pure prose that happened to be all newlines, and
+// dropping it loses no visible information once separated from the prose
+// around it (see chunkMessage's own doc comment for the underlying budget
+// heuristic that can produce such a window).
+func dropBlankChunks(chunks []string) []string {
+	out := chunks[:0]
+	for _, c := range chunks {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // balanceFences walks chunks in order, tracking whether a ``` fence is open
