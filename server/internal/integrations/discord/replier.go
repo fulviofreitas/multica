@@ -86,14 +86,15 @@ type OutboundReplierConfig struct {
 	APIBase     string
 	HTTPClient  *http.Client
 	Logger      *slog.Logger
-	// Queries mirrors slack.OutboundReplierConfig.Queries: when set, post
+	// Queries mirrors slack.OutboundReplierConfig.Queries exactly: post
 	// (below) records every delivered verdict-ack in the same
 	// channel_outbound_message ledger the EventChatDone finalize path
-	// (outbound.go) writes to. Left nil, control-acks simply are not
-	// ledgered — matching Binding's own documented "not yet wired" degrade
-	// above, since router.go's discord.NewOutboundReplier call site is out
-	// of this change's file scope (see
-	// docs/discord-outbound-persistence-parity-decision-2026-09-04.md).
+	// (outbound.go) writes to. router.go's discord.NewOutboundReplier call
+	// site sets this to the shared *db.Queries, the same way it wires
+	// slack.NewOutboundReplier's Queries field — see
+	// docs/discord-outbound-persistence-parity-decision-2026-09-04.md. Left
+	// nil (e.g. in a test), control-acks simply are not ledgered, matching
+	// Binding's own documented degrade-without-config behavior above.
 	Queries *db.Queries
 }
 

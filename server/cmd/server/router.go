@@ -1158,8 +1158,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				Decrypt: box.Open,
 				// The bind link (/discord/bind) is a web-app page: app URL, not
 				// the API URL. Mirrors the Telegram replier.
-				AppURL: appURLFromEnv(),
-				Logger: slog.Default(),
+				AppURL:  appURLFromEnv(),
+				Queries: queries,
+				Logger:  slog.Default(),
 			})
 			channelRouter.Register(discord.TypeDiscord, discord.NewDiscordResolverSet(queries, pool, discordReplier, discordTyping))
 

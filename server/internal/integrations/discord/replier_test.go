@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
@@ -55,6 +57,48 @@ func (f *fakeControlAckLedger) snapshot() []db.RecordChannelOutboundMessageParam
 	defer f.mu.Unlock()
 	out := make([]db.RecordChannelOutboundMessageParams, len(f.recorded))
 	copy(out, f.recorded)
+	return out
+}
+
+// dbExecCall records one db.DBTX.Exec invocation.
+type dbExecCall struct {
+	query string
+	args  []interface{}
+}
+
+// fakeReplierDBTX fakes db.DBTX (Exec/Query/QueryRow) so a real *db.Queries
+// — built with db.New the same way router.go builds the shared `queries`
+// value — can be wired into OutboundReplierConfig.Queries without a
+// database. This is the production-wiring counterpart to
+// fakeControlAckLedger above: it proves the real generated
+// RecordChannelOutboundMessage method (not just something satisfying
+// controlAckLedger) gets invoked end-to-end when a replier is constructed
+// the way router.go constructs discordReplier.
+type fakeReplierDBTX struct {
+	mu    sync.Mutex
+	execs []dbExecCall
+}
+
+func (f *fakeReplierDBTX) Exec(_ context.Context, query string, args ...interface{}) (pgconn.CommandTag, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execs = append(f.execs, dbExecCall{query: query, args: args})
+	return pgconn.CommandTag{}, nil
+}
+
+func (f *fakeReplierDBTX) Query(context.Context, string, ...interface{}) (pgx.Rows, error) {
+	return nil, errors.New("fakeReplierDBTX: Query not implemented")
+}
+
+func (f *fakeReplierDBTX) QueryRow(context.Context, string, ...interface{}) pgx.Row {
+	panic("fakeReplierDBTX: QueryRow not implemented — no replier code path should call it")
+}
+
+func (f *fakeReplierDBTX) execsSnapshot() []dbExecCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]dbExecCall, len(f.execs))
+	copy(out, f.execs)
 	return out
 }
 
@@ -354,10 +398,9 @@ func TestReplier_Post_LedgerWriteFailureDoesNotFailReply(t *testing.T) {
 }
 
 // TestReplier_Post_NoLedgerConfigured_DoesNotPanic guards the nil-safety fix
-// documented on NewOutboundReplier: an unconfigured Queries (the production
-// default until router.go's discord.NewOutboundReplier call site is wired,
-// which is out of this change's file scope) must degrade to skipping the
-// ledger write, not panic on a typed-nil interface.
+// documented on NewOutboundReplier: an unconfigured Queries (e.g. a test
+// that omits it) must degrade to skipping the ledger write, not panic on a
+// typed-nil interface.
 func TestReplier_Post_NoLedgerConfigured_DoesNotPanic(t *testing.T) {
 	srv, got := newReplierTestServer(t, nil)
 	r := NewOutboundReplier(OutboundReplierConfig{Decrypt: nil, APIBase: srv.URL, HTTPClient: srv.Client()})
@@ -370,5 +413,71 @@ func TestReplier_Post_NoLedgerConfigured_DoesNotPanic(t *testing.T) {
 	}
 	if got.Content != "no ledger configured" {
 		t.Fatalf("posted content = %q", got.Content)
+	}
+}
+
+// TestReplier_ProductionWiring_QueriesConfigRecordsControlAck is the
+// positive counterpart to the no-ledger-configured test above: it proves
+// router.go's actual wiring — discord.NewOutboundReplier(discord.OutboundReplierConfig{
+// ..., Queries: queries, ...}), mirroring slack.NewOutboundReplier's own
+// Queries: queries — takes effect. It builds a real *db.Queries (db.New)
+// over a fake DBTX rather than a fake controlAckLedger, so it exercises the
+// actual generated RecordChannelOutboundMessage method, not just something
+// satisfying the interface. Without this test, a future refactor that
+// silently dropped the Queries field from router.go's literal (or from
+// NewOutboundReplier's wiring) would compile and pass every other test in
+// this file, since none of them construct the replier with a real Queries
+// value.
+func TestReplier_ProductionWiring_QueriesConfigRecordsControlAck(t *testing.T) {
+	srv, got := newReplierTestServer(t, func(discordMessagePayload) (int, discordMessageResponse) {
+		return http.StatusOK, discordMessageResponse{ID: "msg-prod-wired-1"}
+	})
+	dbtx := &fakeReplierDBTX{}
+	queries := db.New(dbtx)
+
+	r := NewOutboundReplier(OutboundReplierConfig{
+		Decrypt: nil, APIBase: srv.URL, HTTPClient: srv.Client(),
+		Queries: queries,
+	})
+	inst := replierTestInstallation(t)
+	msg := channel.InboundMessage{Source: channel.Source{ChatID: "chan-prod-wired", ChatType: channel.ChatTypeP2P}}
+	res := engine.Result{
+		Outcome:              engine.OutcomeAgentOffline,
+		ChannelBindingID:     dbidTestUUID(65),
+		ChannelRouteRevision: 4,
+	}
+
+	if err := r.post(context.Background(), inst, msg, res, "hello"); err != nil {
+		t.Fatalf("post returned %v", err)
+	}
+	if got.Content != "hello" {
+		t.Fatalf("posted content = %q, want %q", got.Content, "hello")
+	}
+
+	execs := dbtx.execsSnapshot()
+	if len(execs) != 1 {
+		t.Fatalf("expected exactly 1 Exec call through the production-shaped *db.Queries, got %d: %#v", len(execs), execs)
+	}
+	call := execs[0]
+	if !strings.Contains(call.query, "channel_outbound_message") {
+		t.Fatalf("exec query = %q, want the channel_outbound_message insert", call.query)
+	}
+	if len(call.args) != 7 {
+		t.Fatalf("exec args = %#v, want 7 positional params (installation_id, channel_type, channel_message_id, binding_id, route_revision, task_id, outbound_kind)", call.args)
+	}
+	if call.args[1] != string(TypeDiscord) {
+		t.Fatalf("channel_type arg = %v, want %q", call.args[1], TypeDiscord)
+	}
+	if call.args[2] != "msg-prod-wired-1" {
+		t.Fatalf("channel_message_id arg = %v, want %q (the id Discord's REST call returned)", call.args[2], "msg-prod-wired-1")
+	}
+	if call.args[3] != res.ChannelBindingID {
+		t.Fatalf("binding_id arg = %v, want %v", call.args[3], res.ChannelBindingID)
+	}
+	if call.args[4] != res.ChannelRouteRevision {
+		t.Fatalf("route_revision arg = %v, want %v", call.args[4], res.ChannelRouteRevision)
+	}
+	if call.args[6] != "control_ack" {
+		t.Fatalf("outbound_kind arg = %v, want %q (matching slack's own kind value)", call.args[6], "control_ack")
 	}
 }
