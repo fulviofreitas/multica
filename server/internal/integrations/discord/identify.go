@@ -235,6 +235,27 @@ type MessageCreateEvent struct {
 	Content   string
 	Author    MessageAuthor
 
+	// Type is Discord's own "type" field
+	// (https://discord.com/developers/docs/resources/message#message-object-message-types):
+	// 0 (DEFAULT) for an ordinary user message, 19 (REPLY) for a reply, and a
+	// range of other values for messages Discord itself generates — a thread
+	// creation notice, a member join notice, a pin notice, and so on. These
+	// SYSTEM messages arrive over the same MESSAGE_CREATE dispatch as a real
+	// user message and structurally look identical to one with nothing to
+	// say: no mentions, no content (Discord does not grant the
+	// MESSAGE_CONTENT exemption to a system message the same way it does to
+	// one that @-mentions the bot), authored by a non-bot Author in some
+	// cases. Before this field existed, nothing in a decoded
+	// MessageCreateEvent — or in anything logged about one — could tell that
+	// case apart from a real user message that happened to carry no mentions
+	// and no content, which is exactly the ambiguity that made a prior
+	// investigation into unexplained "not_addressed_in_group" drops
+	// inconclusive: the ad-hoc probe used for that investigation did not
+	// capture "type" either, so the evidence it produced could not rule out
+	// "these were SYSTEM messages all along". Decoding it here closes that
+	// gap for good, independent of whether tracing (trace.go) is turned on.
+	Type int
+
 	// Mentions is Discord's own "mentions" array: the users Discord
 	// resolved as mentioned by this message, independent of whatever
 	// tokens happen to appear in Content. This is the AUTHORITATIVE
@@ -275,6 +296,19 @@ type MessageCreateEvent struct {
 	// that was actually addressed to someone else. See inbound.go's
 	// repliedToBot.
 	ReplyToAuthorID string
+
+	// HasMessageReference reports whether the payload carried a
+	// message_reference object AT ALL, independent of whether that object's
+	// message_id happened to be present. ReplyToMessageID cannot stand in
+	// for this: it is set from message_reference.message_id, so it is empty
+	// both when message_reference is entirely absent (not a reply) and,
+	// theoretically, when message_reference is present but omits
+	// message_id (a shape this integration has not observed but which the
+	// diagnostic in trace.go should not silently misreport as "no
+	// reference" if it ever occurs). Structural diagnostics need the
+	// distinction; the addressing logic in inbound.go does not, which is why
+	// it was never added there.
+	HasMessageReference bool
 }
 
 // parseMessageCreate decodes a MESSAGE_CREATE dispatch's "d" payload.
@@ -284,7 +318,17 @@ func parseMessageCreate(data json.RawMessage) (MessageCreateEvent, error) {
 		ChannelID string `json:"channel_id"`
 		GuildID   string `json:"guild_id"`
 		Content   string `json:"content"`
-		Author    struct {
+		// Type is decoded so a structural diagnostic (trace.go) and any
+		// future caller can tell a SYSTEM message (thread notices, pin
+		// notices, member-join notices, ...) apart from an ordinary user
+		// message — see MessageCreateEvent.Type's doc comment for why this
+		// was the single biggest gap in a prior investigation's evidence.
+		// Absent on any payload this integration has actually seen (Discord
+		// always sends it), so a missing field decodes to the zero value, 0
+		// (DEFAULT) — which is also a real message type, not a distinguishable
+		// "unknown"; that ambiguity is Discord's, not this decoder's to fix.
+		Type   int `json:"type"`
+		Author struct {
 			ID       string `json:"id"`
 			Username string `json:"username"`
 			Bot      bool   `json:"bot"`
@@ -321,6 +365,7 @@ func parseMessageCreate(data json.RawMessage) (MessageCreateEvent, error) {
 		ChannelID: raw.ChannelID,
 		GuildID:   raw.GuildID,
 		Content:   raw.Content,
+		Type:      raw.Type,
 		Author: MessageAuthor{
 			ID:       raw.Author.ID,
 			Username: raw.Author.Username,
@@ -334,6 +379,7 @@ func parseMessageCreate(data json.RawMessage) (MessageCreateEvent, error) {
 		}
 	}
 	if raw.MessageReference != nil {
+		evt.HasMessageReference = true
 		evt.ReplyToMessageID = raw.MessageReference.MessageID
 	}
 	if raw.ReferencedMessage != nil {

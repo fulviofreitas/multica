@@ -384,6 +384,92 @@ func TestDecodeDispatch_MessageCreate_ReplyWithMissingReferencedMessage(t *testi
 	}
 }
 
+// ---- message "type" decoding (Task Master T1) ----
+//
+// These pin the fix for the single biggest evidence gap in the
+// not_addressed_in_group investigation: nothing decoded the "type" field, so
+// a SYSTEM message (thread notice, pin notice, member-join notice, ...) and
+// an ordinary user message with no mentions and no content were structurally
+// indistinguishable. See MessageCreateEvent.Type's doc comment.
+
+func TestDecodeDispatch_MessageCreate_TypeDecoded(t *testing.T) {
+	d, _ := json.Marshal(map[string]any{
+		"id": "999", "channel_id": "chan-1", "guild_id": "guild-1",
+		"content": "",
+		"type":    7, // GUILD_MEMBER_JOIN, a SYSTEM message type
+		"author":  map[string]any{"id": "42", "username": "someuser", "bot": false},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	if evt.MessageCreate.Type != 7 {
+		t.Errorf("Type = %d, want 7", evt.MessageCreate.Type)
+	}
+}
+
+func TestDecodeDispatch_MessageCreate_TypeAbsentDefaultsToZero(t *testing.T) {
+	// No "type" field at all — Discord always sends one in practice, but the
+	// decoder must not panic or misreport if it were ever missing. Zero here
+	// is the DEFAULT message type, indistinguishable from an explicit
+	// "type":0; that ambiguity belongs to Discord's wire format, not to this
+	// decoder.
+	d, _ := json.Marshal(map[string]any{
+		"id": "999", "channel_id": "chan-1", "guild_id": "guild-1",
+		"content": "hello",
+		"author":  map[string]any{"id": "42", "username": "someuser", "bot": false},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	if evt.MessageCreate.Type != 0 {
+		t.Errorf("Type = %d, want 0 (DEFAULT) when the field is absent", evt.MessageCreate.Type)
+	}
+}
+
+// ---- HasMessageReference decoding (Task Master T1) ----
+
+func TestDecodeDispatch_MessageCreate_HasMessageReferenceTrue(t *testing.T) {
+	d, _ := json.Marshal(map[string]any{
+		"id": "999", "channel_id": "chan-1", "guild_id": "guild-1",
+		"content": "thanks!",
+		"author":  map[string]any{"id": "42", "username": "someuser", "bot": false},
+		"message_reference": map[string]any{
+			"message_id": "parent-1",
+		},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	if !evt.MessageCreate.HasMessageReference {
+		t.Error("HasMessageReference = false, want true when message_reference is present")
+	}
+}
+
+func TestDecodeDispatch_MessageCreate_HasMessageReferenceFalse(t *testing.T) {
+	d, _ := json.Marshal(map[string]any{
+		"id": "999", "channel_id": "chan-1", "guild_id": "guild-1",
+		"content": "hello",
+		"author":  map[string]any{"id": "42", "username": "someuser", "bot": false},
+	})
+
+	evt, err := DecodeDispatch("MESSAGE_CREATE", d)
+	if err != nil {
+		t.Fatalf("DecodeDispatch: %v", err)
+	}
+	if evt.MessageCreate.HasMessageReference {
+		t.Error("HasMessageReference = true, want false when message_reference is absent")
+	}
+	if evt.MessageCreate.ReplyToMessageID != "" {
+		t.Errorf("ReplyToMessageID = %q, want empty", evt.MessageCreate.ReplyToMessageID)
+	}
+}
+
 // ---- end-to-end over Run: IDENTIFY -> READY, unknown event tolerance, sequence tracking ----
 
 // TestRun_DispatchesReadyAndTracksSequence drives a full handshake over the

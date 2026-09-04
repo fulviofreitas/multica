@@ -1186,6 +1186,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			} else {
 				h.DiscordInstall = installSvc
 			}
+
+			// Structural inbound diagnostics. Off by default; mirrors
+			// wecom.SetTrace's wiring above, but for a different reason —
+			// see discord/trace.go's package comment.
+			// Nothing this switch records is message content, a token, or a
+			// credential, so the warn below is about log volume, not about
+			// content sensitivity.
+			if discord.SetTrace(os.Getenv("MULTICA_DISCORD_TRACE") == "1") {
+				slog.Warn("discord: inbound structural tracing ON (type/mentions/reference/ids only, never content); unset MULTICA_DISCORD_TRACE when done")
+			}
 			slog.Info("discord integration enabled (per-installation gateway)")
 		}
 	} else {

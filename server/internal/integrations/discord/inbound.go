@@ -296,6 +296,12 @@ func inboundFromMessageCreate(evt MessageCreateEvent, botID string) (channel.Inb
 // some tests build a discordChannel with no handler wired.
 func (c *discordChannel) handleMessageCreate(ctx context.Context, evt MessageCreateEvent) {
 	msg, ok := inboundFromMessageCreate(evt, c.appID)
+	// Structural diagnostics (trace.go), gated by MULTICA_DISCORD_TRACE and a
+	// no-op when off. Placed here rather than in identify.go's
+	// parseMessageCreate because this is the one point that also has this
+	// adapter's own verdict (ok / msg.AddressedToBot) alongside the decoded
+	// event — see traceInboundMessage's doc comment.
+	traceInboundMessage(c.logger, evt, c.appID, ok, msg.AddressedToBot)
 	if !ok || c.handler == nil {
 		return
 	}
