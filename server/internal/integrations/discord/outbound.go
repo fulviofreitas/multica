@@ -98,9 +98,18 @@ const maxInFlightFinalizes = 8
 // outboundQueries is the slice of generated queries this subscriber needs.
 // *db.Queries satisfies it. Mirrors telegram.outboundQueries exactly — same
 // generic channel_* tables, filtered to channel_type='discord'.
+//
+// SetChatMessageChannelOutboundProvenanceByTask and
+// RecordChannelOutboundMessage mirror slack.outboundQueries
+// (slack/outbound.go) exactly: they let finalize (below) leave the same
+// durable delivery ledger Slack already writes, on the same channel-agnostic
+// schema (channel_outbound_message, chat_message.channel_outbound_*) — see
+// docs/discord-outbound-persistence-parity-decision-2026-09-04.md.
 type outboundQueries interface {
 	GetChannelTaskDelivery(ctx context.Context, taskID pgtype.UUID) (db.ChannelTaskDelivery, error)
 	GetChannelInstallation(ctx context.Context, arg db.GetChannelInstallationParams) (db.ChannelInstallation, error)
+	SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error)
+	RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error
 }
 
 // DeliveryMetrics records the PRD's generated-vs-delivered ratio (see
@@ -123,6 +132,16 @@ type replyTarget struct {
 	channelID string
 	replyTo   string // Discord message id to quote on the very first post, or ""
 	botToken  string
+
+	// installationID/bindingID/routeRevision are carried onto replyTarget
+	// solely so finalize's post-delivery ledger write (persistDelivery) can
+	// populate RecordChannelOutboundMessageParams/
+	// SetChatMessageChannelOutboundProvenanceByTaskParams without a second
+	// lookup — they are read off db.ChannelTaskDelivery in resolveTarget,
+	// which already loads that row for every other field above.
+	installationID pgtype.UUID
+	bindingID      pgtype.UUID
+	routeRevision  int64
 }
 
 // streamState tracks one in-flight streamed reply, same-process only — see
@@ -405,6 +424,12 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 
 	snd := newSender(newDiscordAPI(o.apiBase, target.botToken, o.client), o.logger)
 
+	// deliveredIDs collects every message id Discord actually returned for
+	// this reply, in post order, so a successful delivery can be recorded in
+	// the outbound ledger below — mirroring slack/outbound.go:151-157's
+	// messageIDs collection.
+	deliveredIDs := make([]string, 0, len(chunks))
+
 	var deliverErr error
 	next := 0
 	if st != nil {
@@ -412,7 +437,7 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 		placeholderID := st.messageID
 		st.mu.Unlock()
 		if placeholderID != "" {
-			if _, err := snd.editWithRetry(ctx, target.channelID, placeholderID, discordMessagePayload{Content: chunks[0]}); err != nil {
+			if m, err := snd.editWithRetry(ctx, target.channelID, placeholderID, discordMessagePayload{Content: chunks[0]}); err != nil {
 				// The placeholder edit itself is retried by editWithRetry; if
 				// it still failed after exhausting retries, fall back to a
 				// fresh post so the reply is not lost outright.
@@ -420,6 +445,7 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 					"task_id", key, "error", err)
 			} else {
 				next = 1
+				deliveredIDs = append(deliveredIDs, m.ID)
 			}
 		}
 	}
@@ -429,10 +455,12 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 		if i == 0 && target.replyTo != "" {
 			payload.MessageReference = &discordMessageReference{MessageID: target.replyTo}
 		}
-		if _, err := snd.sendWithRetry(ctx, target.channelID, payload); err != nil {
+		m, err := snd.sendWithRetry(ctx, target.channelID, payload)
+		if err != nil {
 			deliverErr = fmt.Errorf("post chunk %d/%d: %w", i+1, len(chunks), err)
 			break
 		}
+		deliveredIDs = append(deliveredIDs, m.ID)
 	}
 
 	if deliverErr != nil {
@@ -441,6 +469,71 @@ func (o *Outbound) finalize(e events.Event, taskID pgtype.UUID, key, content str
 		return
 	}
 	o.metrics.RecordReplyDelivered(string(TypeDiscord), "delivered")
+
+	// Persist strictly AFTER delivery has already succeeded — see
+	// persistDelivery's own doc comment for why a ledger-write failure here
+	// must never retroactively change the outcome recorded above.
+	o.persistDelivery(ctx, target, taskID, key, deliveredIDs)
+}
+
+// persistDelivery writes the same two-part delivery ledger Slack already
+// writes for every successful reply (slack/outbound.go:158-184):
+// SetChatMessageChannelOutboundProvenanceByTask once for the whole reply
+// (the assistant chat_message row's provenance columns), then
+// RecordChannelOutboundMessage once per delivered chunk id (the
+// channel_outbound_message ledger). Both are already-generic, already-proven
+// idempotent writes (RecordChannelOutboundMessage is an
+// `ON CONFLICT ... DO NOTHING` insert) — see
+// docs/discord-outbound-persistence-parity-decision-2026-09-04.md.
+//
+// # Deliberate divergence from Slack: log-and-continue, not return an error
+//
+// slack/outbound.go's processEvent returns fmt.Errorf on either write
+// failing, and its only caller (handleEvent) just logs that return value —
+// the error never reaches, gates, or unwinds anything user-visible. Discord's
+// finalize runs the same way (its caller, the goroutine spawned from
+// handleChatDone, does not inspect finalize's return value either, and it has
+// none), so propagating an error here would add a return path with no
+// different effect, while a naive future refactor could accidentally wire it
+// into the delivery outcome above. By the time this function runs,
+// deliverErr == nil is already guaranteed by the caller: the reply is on
+// Discord's servers. A ledger-write failure must never turn that into a
+// reported failure, and must never delay or gate the delivery that already
+// happened — so this logs and returns, never touching
+// RecordReplyDelivered's "delivered" outcome already recorded above.
+func (o *Outbound) persistDelivery(ctx context.Context, target *replyTarget, taskID pgtype.UUID, key string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	rows, err := o.q.SetChatMessageChannelOutboundProvenanceByTask(ctx, db.SetChatMessageChannelOutboundProvenanceByTaskParams{
+		ChannelType:    pgtype.Text{String: string(TypeDiscord), Valid: true},
+		InstallationID: target.installationID,
+		ChannelChatID:  pgtype.Text{String: target.channelID, Valid: true},
+		MessageIds:     ids,
+		TaskID:         taskID,
+	})
+	if err != nil {
+		o.logger.WarnContext(ctx, "discord outbound: record reply provenance failed",
+			"task_id", key, "error", err)
+	} else if rows != 1 {
+		o.logger.WarnContext(ctx, "discord outbound: record reply provenance updated unexpected row count",
+			"task_id", key, "rows", rows)
+	}
+
+	for _, id := range ids {
+		if err := o.q.RecordChannelOutboundMessage(ctx, db.RecordChannelOutboundMessageParams{
+			OutboundInstallationID: target.installationID,
+			OutboundChannelType:    string(TypeDiscord),
+			OutboundMessageID:      id,
+			OutboundBindingID:      target.bindingID,
+			OutboundRouteRevision:  target.routeRevision,
+			OutboundTaskID:         taskID,
+			OutboundKind:           "task_reply",
+		}); err != nil {
+			o.logger.WarnContext(ctx, "discord outbound: record outbound message failed",
+				"task_id", key, "message_id", id, "error", err)
+		}
+	}
 }
 
 // ---- task failure / cancellation ----
@@ -570,10 +663,13 @@ func (o *Outbound) resolveTarget(ctx context.Context, e events.Event) (*replyTar
 		replyTo = delivery.ChannelMessageID.String
 	}
 	return &replyTarget{
-		streamKey: util.UUIDToString(taskID),
-		channelID: delivery.ChannelChatID,
-		replyTo:   replyTo,
-		botToken:  creds.BotToken,
+		streamKey:      util.UUIDToString(taskID),
+		channelID:      delivery.ChannelChatID,
+		replyTo:        replyTo,
+		botToken:       creds.BotToken,
+		installationID: delivery.InstallationID,
+		bindingID:      delivery.BindingID,
+		routeRevision:  delivery.RouteRevision,
 	}, nil
 }
 

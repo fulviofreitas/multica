@@ -49,6 +49,13 @@ type bindingMinter interface {
 	Mint(ctx context.Context, workspaceID, installationID pgtype.UUID, discordUserID string) (BindingToken, error)
 }
 
+// controlAckLedger is the ledger-write surface post (below) needs to record a
+// verdict-driven acknowledgement, mirroring slack.controlAckLedger
+// (slack/replier.go) exactly. *db.Queries satisfies it.
+type controlAckLedger interface {
+	RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error
+}
+
 // BindingToken is the minted token shape sendBindingPrompt renders into the
 // redeem link. Defined here (not in a binding.go) so this file compiles and
 // is fully testable before that service exists; a future
@@ -66,6 +73,7 @@ type OutboundReplier struct {
 	apiBase     string
 	client      *http.Client
 	logger      *slog.Logger
+	ledger      controlAckLedger
 }
 
 // OutboundReplierConfig configures the replier, mirroring
@@ -78,6 +86,15 @@ type OutboundReplierConfig struct {
 	APIBase     string
 	HTTPClient  *http.Client
 	Logger      *slog.Logger
+	// Queries mirrors slack.OutboundReplierConfig.Queries: when set, post
+	// (below) records every delivered verdict-ack in the same
+	// channel_outbound_message ledger the EventChatDone finalize path
+	// (outbound.go) writes to. Left nil, control-acks simply are not
+	// ledgered — matching Binding's own documented "not yet wired" degrade
+	// above, since router.go's discord.NewOutboundReplier call site is out
+	// of this change's file scope (see
+	// docs/discord-outbound-persistence-parity-decision-2026-09-04.md).
+	Queries *db.Queries
 }
 
 var _ engine.OutboundReplier = (*OutboundReplier)(nil)
@@ -95,7 +112,7 @@ func NewOutboundReplier(cfg OutboundReplierConfig) *OutboundReplier {
 	if !strings.HasPrefix(bindingPath, "/") {
 		bindingPath = "/" + bindingPath
 	}
-	return &OutboundReplier{
+	r := &OutboundReplier{
 		binding:     cfg.Binding,
 		decrypt:     cfg.Decrypt,
 		appURL:      strings.TrimRight(cfg.AppURL, "/"),
@@ -104,6 +121,18 @@ func NewOutboundReplier(cfg OutboundReplierConfig) *OutboundReplier {
 		client:      cfg.HTTPClient,
 		logger:      logger,
 	}
+	// Assign only when non-nil: cfg.Queries is a concrete *db.Queries, and
+	// storing a nil *db.Queries directly into the controlAckLedger interface
+	// field would produce a non-nil interface wrapping a nil pointer (the
+	// classic Go "typed nil" trap), which would make post's `r.ledger == nil`
+	// guard below false and panic on the first ledger write attempt instead
+	// of skipping it. Guarding here keeps r.ledger a true nil interface when
+	// Queries is not configured, exactly like this file's bindingMinter
+	// degrade above.
+	if cfg.Queries != nil {
+		r.ledger = cfg.Queries
+	}
+	return r
 }
 
 // Reply routes each outcome to its user-visible message. Errors are logged,
@@ -117,27 +146,27 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeAgentOffline:
-		if err := r.post(ctx, inst, msg, msgAgentOffline); err != nil {
+		if err := r.post(ctx, inst, msg, res, msgAgentOffline); err != nil {
 			r.logger.WarnContext(ctx, "discord replier: offline notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeAgentArchived:
-		if err := r.post(ctx, inst, msg, msgAgentArchived); err != nil {
+		if err := r.post(ctx, inst, msg, res, msgAgentArchived); err != nil {
 			r.logger.WarnContext(ctx, "discord replier: archived notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeFreshPending:
-		if err := r.post(ctx, inst, msg, msgFreshPending); err != nil {
+		if err := r.post(ctx, inst, msg, res, msgFreshPending); err != nil {
 			r.logger.WarnContext(ctx, "discord replier: fresh-start confirmation failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeChatStarted:
-		if err := r.post(ctx, inst, msg, msgChatStarted); err != nil {
+		if err := r.post(ctx, inst, msg, res, msgChatStarted); err != nil {
 			r.logger.WarnContext(ctx, "discord replier: new-chat confirmation failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeIssueUsage:
-		if err := r.post(ctx, inst, msg, msgIssueUsage); err != nil {
+		if err := r.post(ctx, inst, msg, res, msgIssueUsage); err != nil {
 			r.logger.WarnContext(ctx, "discord replier: issue usage reply failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
@@ -147,14 +176,14 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 			if res.IssueDuplicate {
 				text = issueDuplicateText(res)
 			}
-			if err := r.post(ctx, inst, msg, text); err != nil {
+			if err := r.post(ctx, inst, msg, res, text); err != nil {
 				r.logger.WarnContext(ctx, "discord replier: issue outcome reply failed",
 					"installation_id", util.UUIDToString(inst.ID), "error", err)
 			}
 		}
 	case engine.OutcomeDropped:
 		if text := droppedReplyText(res, msg); text != "" {
-			if err := r.post(ctx, inst, msg, text); err != nil {
+			if err := r.post(ctx, inst, msg, res, text); err != nil {
 				r.logger.WarnContext(ctx, "discord replier: drop refusal failed",
 					"installation_id", util.UUIDToString(inst.ID), "error", err)
 			}
@@ -168,7 +197,7 @@ func (r *OutboundReplier) sendBindingPrompt(ctx context.Context, inst engine.Res
 	// Multica user. Mirrors telegram.OutboundReplier.sendBindingPrompt: only
 	// a direct-message prompt carries a redeem token.
 	if msg.Source.ChatType == channel.ChatTypeGroup {
-		return r.post(ctx, inst, msg, msgBindingGroupHint)
+		return r.post(ctx, inst, msg, res, msgBindingGroupHint)
 	}
 	sender := res.Sender
 	if sender == "" {
@@ -189,7 +218,7 @@ func (r *OutboundReplier) sendBindingPrompt(ctx context.Context, inst engine.Res
 	}
 	bindURL := r.appURL + r.bindingPath + "?token=" + url.QueryEscape(token.Raw)
 	text := "👋 To start chatting with me, link your Discord account to Multica:\n" + bindURL + "\n(This link expires in 15 minutes.)"
-	return r.post(ctx, inst, msg, text)
+	return r.post(ctx, inst, msg, res, text)
 }
 
 // post resolves the installation's bot token from the carried platform row
@@ -198,7 +227,14 @@ func (r *OutboundReplier) sendBindingPrompt(ctx context.Context, inst engine.Res
 // replies are always short, fixed strings) and no retry (best-effort,
 // matching every other adapter's replier — the definitive agent reply, which
 // DOES retry, is outbound.go's job).
-func (r *OutboundReplier) post(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage, text string) error {
+//
+// After a successful send, it records the delivered message id in the
+// outbound ledger — mirroring slack.OutboundReplier.postResult
+// (slack/replier.go:160-196) exactly, including its own res.ChannelBindingID
+// guard and its "control_ack"/"issue_ack" kind values. Best-effort, same as
+// Slack: a ledger-write failure here is logged, never returned, since the
+// verdict reply has already been sent by the time this runs.
+func (r *OutboundReplier) post(ctx context.Context, inst engine.ResolvedInstallation, msg channel.InboundMessage, res engine.Result, text string) error {
 	row, ok := inst.Platform.(db.ChannelInstallation)
 	if !ok {
 		return errors.New("installation platform row unavailable")
@@ -215,8 +251,35 @@ func (r *OutboundReplier) post(ctx context.Context, inst engine.ResolvedInstalla
 		payload.MessageReference = &discordMessageReference{MessageID: msg.MessageID}
 	}
 	api := newDiscordAPI(r.apiBase, creds.BotToken, r.client)
-	if _, err := api.CreateMessage(ctx, msg.Source.ChatID, payload); err != nil {
+	sent, err := api.CreateMessage(ctx, msg.Source.ChatID, payload)
+	if err != nil {
 		return fmt.Errorf("post discord reply: %w", err)
+	}
+
+	if r.ledger == nil || !res.ChannelBindingID.Valid || sent.ID == "" {
+		return nil
+	}
+	kind := "control_ack"
+	if res.Outcome == engine.OutcomeIngested && res.IssueID.Valid {
+		kind = "issue_ack"
+	}
+	// NOTE (divergence from slack.postResult, and from outbound.go's own
+	// persistDelivery comment above): this write is best-effort by the same
+	// reasoning — the verdict reply already left api.CreateMessage
+	// successfully above, so a ledger-write failure must not be surfaced as
+	// a reply failure. Reply (the only caller) only logs errors it gets back
+	// from post, so returning nil here (rather than an error slack.postResult
+	// would return) keeps that logging path accurate: the reply DID succeed.
+	if err := r.ledger.RecordChannelOutboundMessage(ctx, db.RecordChannelOutboundMessageParams{
+		OutboundInstallationID: inst.ID,
+		OutboundChannelType:    string(TypeDiscord),
+		OutboundMessageID:      sent.ID,
+		OutboundBindingID:      res.ChannelBindingID,
+		OutboundRouteRevision:  res.ChannelRouteRevision,
+		OutboundKind:           kind,
+	}); err != nil {
+		r.logger.WarnContext(ctx, "discord replier: record control acknowledgement failed",
+			"installation_id", util.UUIDToString(inst.ID), "error", err)
 	}
 	return nil
 }

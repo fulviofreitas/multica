@@ -3,6 +3,8 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -27,15 +29,69 @@ import (
 
 // fakeOutboundQueries is the outboundQueries fake. Keyed by task id / bot
 // key string so tests can wire up exactly the rows resolveTarget needs
-// without a database.
+// without a database. It also fakes the outbound delivery ledger
+// (SetChatMessageChannelOutboundProvenanceByTask / RecordChannelOutboundMessage)
+// added by this file's T7 change, mirroring slack/outbound_test.go's
+// fakeOutboundQueries shape so tests can assert ledger writes without a
+// database.
 type fakeOutboundQueries struct {
 	mu           sync.Mutex
 	deliveries   map[string]db.ChannelTaskDelivery
 	installation db.ChannelInstallation
+
+	provenanceCalls  []db.SetChatMessageChannelOutboundProvenanceByTaskParams
+	provenanceRows   int64
+	provenanceErr    error
+	recordedOutbound []db.RecordChannelOutboundMessageParams
+	// recordOutboundErrOn, if set, makes RecordChannelOutboundMessage fail
+	// for that one message id only (tests use this to prove a mid-loop
+	// ledger failure never aborts the remaining ledger rows or the already
+	// -delivered reply).
+	recordOutboundErrOn string
+	recordOutboundErr   error
 }
 
 func newFakeOutboundQueries() *fakeOutboundQueries {
 	return &fakeOutboundQueries{deliveries: make(map[string]db.ChannelTaskDelivery)}
+}
+
+func (f *fakeOutboundQueries) SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.provenanceCalls = append(f.provenanceCalls, arg)
+	if f.provenanceErr != nil {
+		return 0, f.provenanceErr
+	}
+	if f.provenanceRows != 0 {
+		return f.provenanceRows, nil
+	}
+	return 1, nil
+}
+
+func (f *fakeOutboundQueries) RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordedOutbound = append(f.recordedOutbound, arg)
+	if f.recordOutboundErr != nil && arg.OutboundMessageID == f.recordOutboundErrOn {
+		return f.recordOutboundErr
+	}
+	return nil
+}
+
+func (f *fakeOutboundQueries) recordedOutboundSnapshot() []db.RecordChannelOutboundMessageParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]db.RecordChannelOutboundMessageParams, len(f.recordedOutbound))
+	copy(out, f.recordedOutbound)
+	return out
+}
+
+func (f *fakeOutboundQueries) provenanceCallsSnapshot() []db.SetChatMessageChannelOutboundProvenanceByTaskParams {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]db.SetChatMessageChannelOutboundProvenanceByTaskParams, len(f.provenanceCalls))
+	copy(out, f.provenanceCalls)
+	return out
 }
 
 func (f *fakeOutboundQueries) setDelivery(taskID pgtype.UUID, d db.ChannelTaskDelivery) {
@@ -536,6 +592,182 @@ func TestOutbound_ChatDone_EmptyContentSkipsDelivery(t *testing.T) {
 	}
 	if metrics.generatedCount() != 0 {
 		t.Fatalf("generated count = %d, want 0 for empty content", metrics.generatedCount())
+	}
+}
+
+// ---- outbound delivery ledger (T7) ----
+//
+// Canonical layer for docs/discord-outbound-persistence-parity-decision-2026-09-04.md's
+// acceptance criteria: (a) one ledger row per delivered chunk id, in
+// delivery order; (b) a ledger-write failure never turns a delivered reply
+// into a reported failure and never affects delivery; (c) the provenance
+// update's id array matches exactly the ids Discord's REST calls returned.
+
+func TestOutbound_Finalize_MultiChunk_RecordsLedgerRowsInDeliveryOrder(t *testing.T) {
+	srv, _ := newOutboundTestServer(t, func(n int, req outboundRequest) (int, any) {
+		return http.StatusOK, discordMessageResponse{ID: fmt.Sprintf("msg-%d", n)}
+	})
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 40)
+	taskID := dbidTestUUID(41)
+	sessionID := dbidTestUUID(42)
+	bindingID := dbidTestUUID(43)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-ledger-1", BindingID: bindingID, RouteRevision: 7,
+	})
+
+	o := newOutbound(t, srv.URL, q, nil)
+	o.Start(context.Background())
+
+	longContent := strings.Repeat("word ", 1000) // forces multiple chunks
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, longContent),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	recorded := q.recordedOutboundSnapshot()
+	if len(recorded) < 2 {
+		t.Fatalf("expected multiple ledger rows for a multi-chunk reply, got %d", len(recorded))
+	}
+	wantIDs := make([]string, len(recorded))
+	for i, row := range recorded {
+		wantIDs[i] = fmt.Sprintf("msg-%d", i+1)
+		if row.OutboundMessageID != wantIDs[i] {
+			t.Fatalf("ledger row %d message id = %q, want %q (delivery order)", i, row.OutboundMessageID, wantIDs[i])
+		}
+		if row.OutboundInstallationID != instID {
+			t.Fatalf("ledger row %d installation id = %v, want %v", i, row.OutboundInstallationID, instID)
+		}
+		if row.OutboundChannelType != string(TypeDiscord) {
+			t.Fatalf("ledger row %d channel type = %q, want %q", i, row.OutboundChannelType, TypeDiscord)
+		}
+		if row.OutboundBindingID != bindingID {
+			t.Fatalf("ledger row %d binding id = %v, want %v", i, row.OutboundBindingID, bindingID)
+		}
+		if row.OutboundRouteRevision != 7 {
+			t.Fatalf("ledger row %d route revision = %d, want 7", i, row.OutboundRouteRevision)
+		}
+		if row.OutboundTaskID != taskID {
+			t.Fatalf("ledger row %d task id = %v, want %v", i, row.OutboundTaskID, taskID)
+		}
+		if row.OutboundKind != "task_reply" {
+			t.Fatalf("ledger row %d kind = %q, want %q (matching slack's own kind value)", i, row.OutboundKind, "task_reply")
+		}
+	}
+
+	provenance := q.provenanceCallsSnapshot()
+	if len(provenance) != 1 {
+		t.Fatalf("expected exactly 1 provenance update, got %d", len(provenance))
+	}
+	if provenance[0].TaskID != taskID {
+		t.Fatalf("provenance task id = %v, want %v", provenance[0].TaskID, taskID)
+	}
+	if len(provenance[0].MessageIds) != len(wantIDs) {
+		t.Fatalf("provenance id array length = %d, want %d", len(provenance[0].MessageIds), len(wantIDs))
+	}
+	for i, id := range provenance[0].MessageIds {
+		if id != wantIDs[i] {
+			t.Fatalf("provenance id[%d] = %q, want %q (must equal exactly the ids Discord's REST calls returned, in order)", i, id, wantIDs[i])
+		}
+	}
+}
+
+// TestOutbound_Finalize_LedgerWriteFailureDoesNotAffectDelivery is the T7
+// amendment's binding requirement: a ledger-write failure must never turn an
+// already-delivered reply into a reported failure, and must never
+// prevent/alter delivery. Both the provenance update AND one of the
+// per-chunk ledger inserts fail here; the reply must still be reported
+// delivered, and every chunk must still have reached Discord.
+func TestOutbound_Finalize_LedgerWriteFailureDoesNotAffectDelivery(t *testing.T) {
+	srv, log := newOutboundTestServer(t, func(n int, req outboundRequest) (int, any) {
+		return http.StatusOK, discordMessageResponse{ID: fmt.Sprintf("msg-%d", n)}
+	})
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 44)
+	taskID := dbidTestUUID(45)
+	sessionID := dbidTestUUID(46)
+	bindingID := dbidTestUUID(47)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-ledger-2", BindingID: bindingID, RouteRevision: 3,
+	})
+	q.provenanceErr = errors.New("provenance write exploded")
+	q.recordOutboundErrOn = "msg-1"
+	q.recordOutboundErr = errors.New("ledger insert exploded")
+
+	metrics := &recordingMetrics{}
+	o := newOutbound(t, srv.URL, q, metrics)
+	o.Start(context.Background())
+
+	longContent := strings.Repeat("word ", 1000) // forces multiple chunks
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, longContent),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	// The reply must still be reported delivered, never failed, despite both
+	// ledger writes above erroring.
+	if got := metrics.deliveredCount("discord:delivered"); got != 1 {
+		t.Fatalf("delivered{delivered} count = %d, want 1 (a ledger failure must not turn a delivered reply into a reported failure)", got)
+	}
+	if got := metrics.deliveredCount("discord:failed"); got != 0 {
+		t.Fatalf("delivered{failed} count = %d, want 0", got)
+	}
+	// Every chunk must still have actually reached Discord: the one
+	// erroring ledger insert (for msg-1) must not have aborted the
+	// remaining chunks' delivery or their own ledger attempts.
+	posted := log.snapshot()
+	if len(posted) < 2 {
+		t.Fatalf("expected every chunk to still be posted to discord, got %d", len(posted))
+	}
+	recorded := q.recordedOutboundSnapshot()
+	if len(recorded) != len(posted) {
+		t.Fatalf("expected a RecordChannelOutboundMessage attempt per delivered chunk (even the ones that errored), got %d attempts for %d posted chunks", len(recorded), len(posted))
+	}
+}
+
+func TestOutbound_Finalize_SingleChunk_ProvenanceMatchesReturnedID(t *testing.T) {
+	srv, _ := newOutboundTestServer(t, func(n int, req outboundRequest) (int, any) {
+		return http.StatusOK, discordMessageResponse{ID: "msg-single-1"}
+	})
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 48)
+	taskID := dbidTestUUID(49)
+	sessionID := dbidTestUUID(50)
+	bindingID := dbidTestUUID(51)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-ledger-3", BindingID: bindingID, RouteRevision: 1,
+	})
+
+	o := newOutbound(t, srv.URL, q, nil)
+	o.Start(context.Background())
+
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, "single chunk reply"),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	recorded := q.recordedOutboundSnapshot()
+	if len(recorded) != 1 || recorded[0].OutboundMessageID != "msg-single-1" {
+		t.Fatalf("recorded ledger rows = %#v, want exactly 1 row for msg-single-1", recorded)
+	}
+	provenance := q.provenanceCallsSnapshot()
+	if len(provenance) != 1 || len(provenance[0].MessageIds) != 1 || provenance[0].MessageIds[0] != "msg-single-1" {
+		t.Fatalf("provenance calls = %#v, want exactly [msg-single-1]", provenance)
 	}
 }
 
