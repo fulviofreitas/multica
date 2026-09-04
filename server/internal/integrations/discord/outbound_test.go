@@ -1,10 +1,12 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -39,10 +41,21 @@ type fakeOutboundQueries struct {
 	deliveries   map[string]db.ChannelTaskDelivery
 	installation db.ChannelInstallation
 
-	provenanceCalls  []db.SetChatMessageChannelOutboundProvenanceByTaskParams
-	provenanceRows   int64
-	provenanceErr    error
-	recordedOutbound []db.RecordChannelOutboundMessageParams
+	provenanceCalls []db.SetChatMessageChannelOutboundProvenanceByTaskParams
+	// provenanceRows is returned verbatim by SetChatMessageChannelOutboundProvenanceByTask
+	// (no hidden "0 means default to 1" fallback): newFakeOutboundQueries
+	// seeds it to 1, matching the real query's expected single-row update, so
+	// every existing test that never touches this field keeps its prior
+	// behavior; a test that wants to exercise persistDelivery's "updated
+	// unexpected row count" branch sets it to 0 (or any value != 1)
+	// explicitly.
+	provenanceRows int64
+	provenanceErr  error
+	// panicOnProvenance, if true, makes SetChatMessageChannelOutboundProvenanceByTask
+	// panic instead of returning — used to prove persistDelivery's recover
+	// contains a panicking ledger write.
+	panicOnProvenance bool
+	recordedOutbound  []db.RecordChannelOutboundMessageParams
 	// recordOutboundErrOn, if set, makes RecordChannelOutboundMessage fail
 	// for that one message id only (tests use this to prove a mid-loop
 	// ledger failure never aborts the remaining ledger rows or the already
@@ -52,20 +65,23 @@ type fakeOutboundQueries struct {
 }
 
 func newFakeOutboundQueries() *fakeOutboundQueries {
-	return &fakeOutboundQueries{deliveries: make(map[string]db.ChannelTaskDelivery)}
+	return &fakeOutboundQueries{deliveries: make(map[string]db.ChannelTaskDelivery), provenanceRows: 1}
 }
 
 func (f *fakeOutboundQueries) SetChatMessageChannelOutboundProvenanceByTask(ctx context.Context, arg db.SetChatMessageChannelOutboundProvenanceByTaskParams) (int64, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.provenanceCalls = append(f.provenanceCalls, arg)
-	if f.provenanceErr != nil {
-		return 0, f.provenanceErr
+	panicOnProvenance := f.panicOnProvenance
+	provenanceErr := f.provenanceErr
+	provenanceRows := f.provenanceRows
+	f.mu.Unlock()
+	if panicOnProvenance {
+		panic("simulated ledger panic")
 	}
-	if f.provenanceRows != 0 {
-		return f.provenanceRows, nil
+	if provenanceErr != nil {
+		return 0, provenanceErr
 	}
-	return 1, nil
+	return provenanceRows, nil
 }
 
 func (f *fakeOutboundQueries) RecordChannelOutboundMessage(ctx context.Context, arg db.RecordChannelOutboundMessageParams) error {
@@ -768,6 +784,109 @@ func TestOutbound_Finalize_SingleChunk_ProvenanceMatchesReturnedID(t *testing.T)
 	provenance := q.provenanceCallsSnapshot()
 	if len(provenance) != 1 || len(provenance[0].MessageIds) != 1 || provenance[0].MessageIds[0] != "msg-single-1" {
 		t.Fatalf("provenance calls = %#v, want exactly [msg-single-1]", provenance)
+	}
+}
+
+// TestOutbound_Finalize_PanicInLedgerWriteDoesNotCrashOrAffectDelivery proves
+// persistDelivery's recover contains a panic in the ledger write: it must
+// never propagate out of finalize's goroutine (which would crash the whole
+// process — events.Bus.Publish's own recover only covers the SYNCHRONOUS
+// handler call, not work a handler goes on to do in a goroutine it spawns,
+// exactly finalize's shape), and it must never turn an already-delivered
+// reply into a reported failure. If persistDelivery's recover were removed,
+// this test would crash the test binary rather than fail an assertion.
+func TestOutbound_Finalize_PanicInLedgerWriteDoesNotCrashOrAffectDelivery(t *testing.T) {
+	srv, log := newOutboundTestServer(t, func(n int, req outboundRequest) (int, any) {
+		return http.StatusOK, discordMessageResponse{ID: fmt.Sprintf("msg-%d", n)}
+	})
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 52)
+	taskID := dbidTestUUID(53)
+	sessionID := dbidTestUUID(54)
+	bindingID := dbidTestUUID(55)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-ledger-panic", BindingID: bindingID, RouteRevision: 1,
+	})
+	q.panicOnProvenance = true
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	metrics := &recordingMetrics{}
+	o := NewOutbound(q, nil, srv.URL, &http.Client{Timeout: 2 * time.Second}, metrics, logger)
+	o.Start(context.Background())
+
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, "reply whose ledger write panics"),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time — the panic escaped persistDelivery's recover and the goroutine never returned")
+	}
+
+	// The reply was already sent to Discord before persistDelivery ran; a
+	// panic in the ledger write must not retroactively report it failed.
+	if got := metrics.deliveredCount("discord:delivered"); got != 1 {
+		t.Fatalf("delivered{delivered} count = %d, want 1 (a panicking ledger write must not turn a delivered reply into a reported failure)", got)
+	}
+	if got := metrics.deliveredCount("discord:failed"); got != 0 {
+		t.Fatalf("delivered{failed} count = %d, want 0", got)
+	}
+	if got := len(log.snapshot()); got != 1 {
+		t.Fatalf("expected the single chunk to still reach discord, got %d posts", got)
+	}
+	if !strings.Contains(logBuf.String(), "panic in outbound ledger write recovered") {
+		t.Fatalf("expected the recovered panic to be logged, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "simulated ledger panic") {
+		t.Fatalf("expected the recovered value to be logged, got: %s", logBuf.String())
+	}
+}
+
+// TestOutbound_Finalize_ProvenanceRowCountMismatchIsLoggedNotFatal covers
+// persistDelivery's "updated unexpected row count" branch — the case where
+// SetChatMessageChannelOutboundProvenanceByTask succeeds but reports it did
+// not update exactly 1 row. fakeOutboundQueries defaults provenanceRows to 1
+// (see its own doc comment), so this test must set it explicitly to exercise
+// the branch; a naive fake that special-cased 0 as "unset" could never reach
+// it.
+func TestOutbound_Finalize_ProvenanceRowCountMismatchIsLoggedNotFatal(t *testing.T) {
+	srv, log := newOutboundTestServer(t, nil)
+	q := newFakeOutboundQueries()
+	instID := testInstallationID(t, 56)
+	taskID := dbidTestUUID(57)
+	sessionID := dbidTestUUID(58)
+	bindingID := dbidTestUUID(59)
+	q.installation = newOutboundTestInstallation(t, instID)
+	q.setDelivery(taskID, db.ChannelTaskDelivery{
+		TaskID: taskID, InstallationID: instID, ChannelType: string(TypeDiscord),
+		ChannelChatID: "chan-ledger-rowcount", BindingID: bindingID, RouteRevision: 1,
+	})
+	q.provenanceRows = 0 // simulates "0 rows updated" (e.g. the assistant row vanished)
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	metrics := &recordingMetrics{}
+	o := NewOutbound(q, nil, srv.URL, &http.Client{Timeout: 2 * time.Second}, metrics, logger)
+	o.Start(context.Background())
+
+	o.handleChatDone(events.Event{
+		TaskID: util.UUIDToString(taskID), ChatSessionID: util.UUIDToString(sessionID),
+		Payload: chatDoneEvent(taskID, sessionID, "reply with a 0-row provenance update"),
+	})
+	if !o.WaitWithTimeout(2 * time.Second) {
+		t.Fatal("finalize did not complete in time")
+	}
+
+	if got := metrics.deliveredCount("discord:delivered"); got != 1 {
+		t.Fatalf("delivered{delivered} count = %d, want 1 (a row-count mismatch must not affect delivery)", got)
+	}
+	if got := len(log.snapshot()); got != 1 {
+		t.Fatalf("expected the reply to still reach discord, got %d posts", got)
+	}
+	if !strings.Contains(logBuf.String(), "record reply provenance updated unexpected row count") {
+		t.Fatalf("expected the row-count mismatch to be logged, got: %s", logBuf.String())
 	}
 }
 

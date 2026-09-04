@@ -505,6 +505,29 @@ func (o *Outbound) persistDelivery(ctx context.Context, target *replyTarget, tas
 	if len(ids) == 0 {
 		return
 	}
+	// This function is the first place finalize hands control to an external
+	// dependency (a DB call via o.q) from inside a goroutine handleChatDone
+	// spawns directly (outbound.go, not through events.Bus.Publish). Bus.Publish
+	// (internal/events/bus.go) only recovers panics from the SYNCHRONOUS
+	// handler call it makes; it has no visibility into — and cannot protect —
+	// work a handler goes on to do in its own background goroutine, which is
+	// exactly finalize's shape. Before this file's persistence write points
+	// existed, nothing reachable from that goroutine could panic on a
+	// data-dependent code path (network/marshal errors were already values,
+	// not panics), so the gap was real but dormant. o.q is a caller-supplied
+	// interface — a queries implementation panicking (nil pointer, driver
+	// bug, a future test/fake) is exactly the kind of failure this delivery
+	// path must survive: the reply has already been sent to Discord by the
+	// time persistDelivery runs (see this function's doc above), so a panic
+	// here must never take the whole backend process down with it. Recover
+	// and log, mirroring bus.go's own established idiom for the same
+	// problem.
+	defer func() {
+		if r := recover(); r != nil {
+			o.logger.ErrorContext(ctx, "discord outbound: panic in outbound ledger write recovered",
+				"task_id", key, "recovered", r)
+		}
+	}()
 	rows, err := o.q.SetChatMessageChannelOutboundProvenanceByTask(ctx, db.SetChatMessageChannelOutboundProvenanceByTaskParams{
 		ChannelType:    pgtype.Text{String: string(TypeDiscord), Valid: true},
 		InstallationID: target.installationID,
