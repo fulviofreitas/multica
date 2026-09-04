@@ -91,6 +91,18 @@ func (c *discordChannel) connect(ctx context.Context) error {
 	// entry — see resume.go).
 	sessionEntry := initialEntry
 
+	// resumeSucceeded is per-connection state, reset to false on every call
+	// to connect() (it is a fresh local, not a field): it only ever becomes
+	// true on THIS connection's own RESUMED dispatch. Its only reader is the
+	// ActionFreshIdentify branch below, evaluated once, after gc.Run has
+	// already returned for this connection. A long-lived connection that
+	// resumed successfully and only later dropped for an unrelated reason
+	// (e.g. a late invalid_seq) must not be mislabeled as "resume rejected"
+	// just because dial() attempted RESUME at the START of this connection —
+	// initialEntry alone cannot distinguish "attempted and rejected" from
+	// "attempted, succeeded, and something else later went wrong".
+	resumeSucceeded := false
+
 	dispatch := NewDispatchFunc(
 		func(evt DispatchEvent) {
 			switch evt.Kind {
@@ -131,6 +143,7 @@ func (c *discordChannel) connect(ctx context.Context) error {
 					// "RESUMED" is not decoded into its own DispatchEventKind
 					// by identify.go (out of this task's file scope), so it
 					// is recognized here by its raw event name instead.
+					resumeSucceeded = true
 					log.Info("discord gateway: session resumed",
 						"installation_id", idStr,
 					)
@@ -189,16 +202,23 @@ func (c *discordChannel) connect(ctx context.Context) error {
 		if sessionEntry != nil {
 			c.resumeCache.Clear(c.installationID, sessionEntry)
 		}
-		if initialEntry != nil {
-			// dial() only returns a non-nil initialEntry when THIS
-			// connection attempted RESUME (see dial's doc comment), so
-			// landing here means that attempt was rejected — the answer to
-			// the other half of the previously-unobservable "does resume
-			// ever actually work?" question (see the RESUMED branch above).
-			// A generic "disconnected, fresh identify required" line would
-			// not distinguish this from a fresh-IDENTIFY session going bad
-			// on its own (e.g. an invalid_seq close with no resume attempt
-			// in this cycle at all).
+		if initialEntry != nil && !resumeSucceeded {
+			// dial() only returns a non-nil initialEntry when THIS connection
+			// attempted RESUME (see dial's doc comment), and resumeSucceeded is
+			// still false, meaning RESUME was attempted but never confirmed by
+			// a RESUMED dispatch before this connection ended — the answer to
+			// the other half of the previously-unobservable "does resume ever
+			// actually work?" question (see the RESUMED branch above).
+			// Requiring !resumeSucceeded matters: without it, a long-lived
+			// connection that DID resume successfully and only later hit an
+			// unrelated ActionFreshIdentify close (e.g. a late invalid_seq, or
+			// a stale not_authenticated) would be mislabeled as a rejected
+			// resume, even though the RESUME earlier in this same connection
+			// demonstrably worked — exactly the false-negative a live
+			// validation run must not see. A generic "disconnected, fresh
+			// identify required" line would not distinguish a genuine
+			// rejection from a fresh-IDENTIFY session going bad on its own
+			// (no resume attempted in this cycle at all).
 			log.Warn("discord gateway: resume rejected, fresh identify required",
 				"installation_id", idStr,
 				"close_code", decision.CloseCodeName,

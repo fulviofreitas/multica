@@ -155,8 +155,8 @@ func (n *discordTypingNotifier) OnIngested(ctx context.Context, inst engine.Reso
 	n.loops[sessionID] = loop
 	n.mu.Unlock()
 
-	n.postTyping(loopCtx, sessionID, creds.BotToken, channelID)
-	go n.runLoop(loopCtx, sessionID, loop, creds.BotToken, channelID)
+	n.postTyping(loopCtx, inst.ID, sessionID, creds.BotToken, channelID)
+	go n.runLoop(loopCtx, inst.ID, sessionID, loop, creds.BotToken, channelID)
 }
 
 // OnSettled stops the refresh loop for sessionID, if one is running.
@@ -237,7 +237,7 @@ func chatSessionIDFromEvent(e events.Event) (pgtype.UUID, bool) {
 // itself and closes loop.done. Guaranteed to terminate: the for-select only
 // blocks on the ticker and ctx.Done(), and ctx always has a deadline
 // (n.maxLifetime) even if OnSettled never arrives.
-func (n *discordTypingNotifier) runLoop(ctx context.Context, sessionID pgtype.UUID, loop *discordTypingLoop, token, channelID string) {
+func (n *discordTypingNotifier) runLoop(ctx context.Context, installationID, sessionID pgtype.UUID, loop *discordTypingLoop, token, channelID string) {
 	defer close(loop.done)
 	defer loop.cancel()
 	defer n.clearLoop(sessionID, loop)
@@ -250,7 +250,7 @@ func (n *discordTypingNotifier) runLoop(ctx context.Context, sessionID pgtype.UU
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n.postTyping(ctx, sessionID, token, channelID)
+			n.postTyping(ctx, installationID, sessionID, token, channelID)
 		}
 	}
 }
@@ -274,11 +274,16 @@ func (n *discordTypingNotifier) clearLoop(sessionID pgtype.UUID, loop *discordTy
 // never block or fail message ingestion.
 //
 // A successful POST also logs, at Debug — see the "refresh posted" line
-// below for why. sessionID is Multica's own internal chat-session id (the
-// map key runLoop/OnIngested already use), not any Discord credential or
-// Gateway session identifier, so logging it carries no privacy concern; it
-// exists purely to correlate this POST with the loop that issued it.
-func (n *discordTypingNotifier) postTyping(ctx context.Context, sessionID pgtype.UUID, token, channelID string) {
+// below for why. installationID/sessionID are Multica's own internal ids
+// (the ResolvedInstallation.ID OnIngested was called with, and the
+// chat-session id keying runLoop/OnIngested's map), not any Discord
+// credential or Gateway session identifier, so logging them carries no
+// privacy concern. installationID is the join key with connect.go's
+// "installation_id" field on the resume/reconnect log lines, so the two log
+// families can be correlated on a live host without an out-of-band
+// session-to-installation lookup; sessionID additionally scopes a line to
+// the specific refresh loop that issued it.
+func (n *discordTypingNotifier) postTyping(ctx context.Context, installationID, sessionID pgtype.UUID, token, channelID string) {
 	reqCtx, cancel := context.WithTimeout(ctx, discordTypingPostTimeout)
 	defer cancel()
 
@@ -313,6 +318,7 @@ func (n *discordTypingNotifier) postTyping(ctx context.Context, sessionID pgtype
 	// level, but a live timed re-test can turn Debug on for one installation
 	// and finally see the positive signal it needs to correlate against.
 	n.logger.DebugContext(ctx, "discord typing: refresh posted",
+		"installation_id", util.UUIDToString(installationID),
 		"session_id", util.UUIDToString(sessionID),
 		"channel_id", channelID,
 		"status", resp.StatusCode,

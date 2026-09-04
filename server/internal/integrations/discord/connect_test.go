@@ -593,3 +593,60 @@ func TestConnect_ResumeRejected_LogsDistinctFromFreshSessionInvalidated(t *testi
 		t.Errorf("captured log contains a credential or the Discord session id, want neither ever logged: %s", got)
 	}
 }
+
+// TestConnect_ResumeSucceedsThenLaterUnrelatedDisconnect_DoesNotLogResumeRejected
+// is the regression this task's blocker fix exists for: dial() attempted
+// RESUME and it WORKED (a RESUMED dispatch arrives, same as
+// TestConnect_ResumeSucceeds_LogsSessionResumed), but LATER, on this SAME
+// long-lived connection, an unrelated close (here: a late Invalid Session,
+// resumable=false — the same close reconnect.go classifies ActionFreshIdentify
+// for) forces a fresh IDENTIFY next attempt. Before resumeSucceeded existed,
+// initialEntry != nil alone gated the "resume rejected" label, which cannot
+// tell "attempted and rejected" apart from "attempted, succeeded, and
+// something else later went wrong" — so this exact sequence produced a false
+// "resume rejected" line for a resume that demonstrably worked. This is the
+// common path on a long-lived connection, not an exotic one: most disconnects
+// are unrelated to how the connection was established.
+func TestConnect_ResumeSucceedsThenLaterUnrelatedDisconnect_DoesNotLogResumeRejected(t *testing.T) {
+	srv := newFakeGateway(t, func(conn *websocket.Conn) {
+		sendHello(t, conn, 5000)
+		readOpFrame(t, conn, opResume)
+		// The RESUME succeeds: Discord confirms with RESUMED, no READY.
+		sendDispatch(t, conn, 100, "RESUMED", map[string]any{})
+		time.Sleep(20 * time.Millisecond)
+		// Only afterward, on this same connection, does something unrelated
+		// go wrong: a late Invalid Session, not resumable — classifies
+		// ActionFreshIdentify, same as TestConnect_ResumeRejected_
+		// LogsDistinctFromFreshSessionInvalidated, but this time AFTER a
+		// successful RESUMED, not instead of one.
+		d, _ := json.Marshal(false)
+		frame, _ := json.Marshal(gatewayFrame{Op: opInvalidSession, D: d})
+		_ = conn.WriteMessage(websocket.TextMessage, frame)
+	})
+
+	logger, buf := newCapturingLogger(slog.LevelInfo)
+	c := newTestChannelWithLogger(t, "ws://127.0.0.1:0", logger)
+	c.resumeCache.Store(c.installationID, "sess-cached", wsURL(srv.URL), 42)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := c.connect(ctx)
+	if err == nil {
+		t.Fatal("connect() = nil, want an error (invalid_session, not resumable)")
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "discord gateway: session resumed") {
+		t.Fatalf("expected \"session resumed\" to be logged for the successful RESUME, got: %s", got)
+	}
+	if strings.Contains(got, "resume rejected") {
+		t.Errorf("RESUME succeeded earlier in this connection — the later, unrelated fresh-identify close must NOT be mislabeled \"resume rejected\": %s", got)
+	}
+	if !strings.Contains(got, "discord gateway: disconnected, fresh identify required") {
+		t.Errorf("expected the generic fresh-identify line for the later unrelated close, got: %s", got)
+	}
+	if strings.Contains(got, "test-token") || strings.Contains(got, "sess-cached") {
+		t.Errorf("captured log contains a credential or the Discord session id, want neither ever logged: %s", got)
+	}
+}

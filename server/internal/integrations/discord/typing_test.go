@@ -89,8 +89,15 @@ func newTestNotifierWithLogger(base string, refresh, maxLifetime time.Duration, 
 	return n
 }
 
+// testInstallationUUID is a fixed, valid installation id for tests that need
+// ResolvedInstallation.ID to round-trip through postTyping's "installation_id"
+// log field (see TestDiscordTypingSuccessfulRefreshLogsPositiveSignal) without
+// every existing testInstallation caller having to supply one.
+var testInstallationUUID = pgtype.UUID{Bytes: [16]byte{0xaa}, Valid: true}
+
 func testInstallation(config []byte) engine.ResolvedInstallation {
 	return engine.ResolvedInstallation{
+		ID:       testInstallationUUID,
 		Platform: db.ChannelInstallation{Config: config},
 	}
 }
@@ -492,7 +499,10 @@ func TestDiscordTypingRestartReplacesStaleLoop(t *testing.T) {
 // logged failures — so a live-Gateway validation run had no way to tell
 // "the refresh fired" from "nothing happened at all" apart from watching
 // Discord's UI directly. This asserts the positive signal exists, is
-// distinguishable from the failure line, and never leaks the bot token.
+// distinguishable from the failure line, never leaks the bot token, and
+// carries "installation_id" — the same field name connect.go's resume/
+// reconnect lines use — so the two log families can be joined on a live
+// host without an out-of-band session-to-installation lookup.
 func TestDiscordTypingSuccessfulRefreshLogsPositiveSignal(t *testing.T) {
 	srv, _ := newTypingTestServer(t, http.StatusNoContent)
 	logger, buf := newCapturingLogger(slog.LevelDebug)
@@ -514,6 +524,10 @@ func TestDiscordTypingSuccessfulRefreshLogsPositiveSignal(t *testing.T) {
 	}
 	if !strings.Contains(got, "chan-success") {
 		t.Errorf("expected the channel id in the refresh-posted line for correlation, got: %s", got)
+	}
+	wantInstallationID := util.UUIDToString(testInstallationUUID)
+	if !strings.Contains(got, "installation_id="+wantInstallationID) {
+		t.Errorf("expected installation_id=%s in the refresh-posted line (the join key with connect.go's resume/reconnect lines), got: %s", wantInstallationID, got)
 	}
 }
 
